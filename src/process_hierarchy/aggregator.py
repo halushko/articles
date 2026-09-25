@@ -85,6 +85,7 @@ class HierarchicalAggregator:
                     current_graph,
                     max_candidate_nodes=level_config.max_candidate_nodes,
                     radius=level_config.radius,
+                    max_candidates=level_config.max_candidates,
                 )
             ]
 
@@ -302,9 +303,19 @@ class HierarchicalAggregator:
         )
         return ProcessNode(
             id=target_id,
-            operation=candidate_name or "Aggregate: " + "; ".join(operations),
+            operation=candidate_name
+            or HierarchicalAggregator._automatic_aggregate_name(operations),
             role=_dominant_or_mixed(roles),
             system=_dominant_or_mixed(systems),
             member_ids=atomic_node_ids,
             source_fragment_ids=tuple(source_fragments),
+        )
+
+    @staticmethod
+    def _automatic_aggregate_name(operations: list[str]) -> str:
+        if len(operations) == 2:
+            return f"Stage: {operations[0]} → {operations[1]}"
+        return (
+            f"Stage: {operations[0]} → {operations[-1]} "
+            f"({len(operations)} actions)"
         )

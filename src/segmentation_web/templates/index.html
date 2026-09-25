@@ -60,7 +60,7 @@
             Explore documentation
           </button>
           <button id="process-button" class="secondary" type="button" hidden>
-            Build process hierarchy
+            Build process hierarchy with LLM
           </button>
         </div>
       </section>
@@ -114,7 +114,7 @@
         <div class="panel-heading">
           <div>
             <p class="eyebrow">L0 → L1 → L2</p>
-            <h2>Hierarchical process model</h2>
+            <h2 id="process-title">Hierarchical process model</h2>
             <p id="process-message" class="panel-message"></p>
           </div>
           <dl id="process-metrics" class="compact-metrics" hidden>
@@ -124,16 +124,13 @@
         </div>
 
         <p id="derivation-note" class="control-baseline-note"></p>
+        <div id="process-warnings" class="process-warnings" hidden></div>
 
-        <div class="level-summary" aria-label="Hierarchy levels">
-          <span><strong>L0</strong><small>18 actions · 21 transitions</small></span>
-          <span><strong>L1</strong><small>5 stages · 5 transitions</small></span>
-          <span><strong>L2</strong><small>3 macro stages · 2 transitions</small></span>
-        </div>
+        <div id="level-summary" class="level-summary" aria-label="Hierarchy levels"></div>
 
         <div class="process-toolbar">
           <span>View:</span>
-          <button type="button" data-process-level="2" class="active">L2 overview</button>
+          <button type="button" data-process-level="2">L2 overview</button>
           <button type="button" data-process-level="1">L1 stages</button>
           <button type="button" data-process-level="0">L0 actions</button>
         </div>
@@ -150,7 +147,7 @@
 
         <div class="process-workspace">
           <div id="process-canvas" class="process-canvas" role="application" aria-label="Hierarchical process model">
-            <svg id="process-edges" class="process-edges" aria-hidden="true"></svg>
+            <svg id="process-edges" class="process-edges" aria-label="Process transitions"></svg>
             <div id="process-nodes" class="process-nodes"></div>
           </div>
         </div>
@@ -166,6 +163,20 @@
           </dl>
           <h4>Source evidence</h4>
           <div id="process-evidence" class="process-evidence"></div>
+        </aside>
+
+        <aside id="transition-details" class="process-details" hidden>
+          <span class="detail-type">Selected transition</span>
+          <h3 id="transition-detail-label"></h3>
+          <dl>
+            <div><dt>Type</dt><dd id="transition-detail-type">—</dd></div>
+            <div><dt>Condition</dt><dd id="transition-detail-condition">—</dd></div>
+            <div><dt>Confidence</dt><dd id="transition-detail-confidence">—</dd></div>
+          </dl>
+          <h4>Why this transition exists</h4>
+          <div id="transition-reasons" class="transition-reasons"></div>
+          <h4>Source evidence</h4>
+          <div id="transition-evidence" class="process-evidence"></div>
         </aside>
 
         <details class="calculation-panel">

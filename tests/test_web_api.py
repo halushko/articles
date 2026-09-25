@@ -55,6 +55,11 @@ def test_builtin_example_run_and_result_download(tmp_path):
             assert body["status"] == "completed"
             assert body["document_count"] == 2
             assert body["fragment_count"] > 0
+            assert body["process_model_available"] is False
+            assert "LLM_API_KEY" in body["process_model_unavailable_reason"]
+
+            unavailable_process = await client.post(body["process_model_url"])
+            assert unavailable_process.status_code == 503
 
             status = await client.get(f"/api/v1/runs/{body['run_id']}")
             assert status.status_code == 200

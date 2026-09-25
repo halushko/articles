@@ -1,10 +1,19 @@
 from pathlib import Path
 
+import pytest
+
 from process_hierarchy.aggregator import HierarchicalAggregator
+from process_hierarchy.candidates import (
+    CandidateGenerationLimitError,
+    generate_connected_candidates,
+)
 from process_hierarchy.markdown_graph import MarkdownProcessGraphParser
 from process_hierarchy.models import (
     AggregationConfig,
     AggregationLevelConfig,
+    ProcessEdge,
+    ProcessGraph,
+    ProcessNode,
     ScoreWeights,
 )
 from process_hierarchy.report import render_markdown_report
@@ -73,3 +82,27 @@ def test_control_candidate_set_reproduces_five_and_three_node_levels():
         encoding="utf-8"
     )
     assert render_markdown_report(result) == expected_report
+
+
+def test_candidate_generation_stops_at_configured_safety_limit():
+    nodes = {
+        f"v{index}": ProcessNode(
+            id=f"v{index}",
+            operation=f"Operation {index}",
+            role="Role",
+            system="System",
+        )
+        for index in range(1, 7)
+    }
+    edges = tuple(
+        ProcessEdge(id=f"e{index}", source="v1", target=f"v{index}")
+        for index in range(2, 7)
+    )
+
+    with pytest.raises(CandidateGenerationLimitError, match="limit of 5"):
+        generate_connected_candidates(
+            ProcessGraph(nodes=nodes, edges=edges),
+            max_candidate_nodes=4,
+            radius=3,
+            max_candidates=5,
+        )
