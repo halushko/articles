@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Documentation Fragmentation</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">Process model research prototype</p>
+        <h1>Documentation Fragmentation</h1>
+        <p class="intro">
+          Split Markdown documentation into versioned fragment cards and download
+          a reproducible JSON result.
+        </p>
+      </header>
+
+      <section class="panel" aria-labelledby="source-heading">
+        <form id="run-form">
+          <h2 id="source-heading">Choose documentation</h2>
+
+          <label class="source-option selected" data-source-card>
+            <input type="radio" name="source" value="example" checked>
+            <span>
+              <strong>Built-in example</strong>
+              <small>Use the {{ example_count }} realistic access-recovery documents.</small>
+            </span>
+          </label>
+
+          <label class="source-option" data-source-card>
+            <input type="radio" name="source" value="upload">
+            <span>
+              <strong>Upload a ZIP archive</strong>
+              <small>UTF-8 Markdown only, up to {{ max_archive_mb }} MB.</small>
+            </span>
+          </label>
+
+          <div id="upload-field" class="upload-field" hidden>
+            <label for="archive">Documentation archive</label>
+            <input id="archive" name="archive" type="file" accept=".zip,application/zip">
+          </div>
+
+          <button id="run-button" type="submit">Run segmentation</button>
+        </form>
+      </section>
+
+      <section id="status-panel" class="panel status-panel" aria-live="polite" hidden>
+        <h2>Run result</h2>
+        <p id="status-message"></p>
+        <dl id="run-metrics" hidden>
+          <div><dt>Documents</dt><dd id="document-count">—</dd></div>
+          <div><dt>Fragments</dt><dd id="fragment-count">—</dd></div>
+          <div><dt>Cache hits</dt><dd id="cache-hits">—</dd></div>
+        </dl>
+        <a id="download-link" class="download" href="#" hidden>Download result ZIP</a>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+  </body>
+</html>
