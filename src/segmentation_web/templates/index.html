@@ -54,7 +54,56 @@
           <div><dt>Fragments</dt><dd id="fragment-count">—</dd></div>
           <div><dt>Cache hits</dt><dd id="cache-hits">—</dd></div>
         </dl>
-        <a id="download-link" class="download" href="#" hidden>Download result ZIP</a>
+        <div class="actions">
+          <a id="download-link" class="download" href="#" hidden>Download result ZIP</a>
+          <button id="graph-button" class="secondary" type="button" hidden>
+            Build documentation graph
+          </button>
+        </div>
+      </section>
+
+      <section id="graph-panel" class="panel graph-panel" aria-live="polite" hidden>
+        <div class="graph-heading">
+          <div>
+            <p class="eyebrow">Deterministic source graph</p>
+            <h2>Documentation graph</h2>
+            <p id="graph-message" class="graph-message"></p>
+          </div>
+          <dl id="graph-metrics" class="graph-metrics" hidden>
+            <div><dt>Nodes</dt><dd id="graph-node-count">—</dd></div>
+            <div><dt>Edges</dt><dd id="graph-edge-count">—</dd></div>
+          </dl>
+        </div>
+
+        <p class="graph-help">
+          Double-click a document or section to expand or collapse it. Select a
+          node to inspect its source. Structural order is not yet a process-flow claim.
+        </p>
+        <div class="legend" aria-label="Graph legend">
+          <span><i class="legend-document"></i>Document</span>
+          <span><i class="legend-section"></i>Section</span>
+          <span><i class="legend-fragment"></i>Fragment</span>
+          <span><i class="legend-reference"></i>Explicit reference</span>
+        </div>
+
+        <div class="graph-workspace">
+          <div id="graph-canvas" class="graph-canvas" role="application" aria-label="Documentation graph">
+            <svg id="graph-edges" class="graph-edges" aria-hidden="true"></svg>
+            <div id="graph-nodes" class="graph-nodes"></div>
+          </div>
+        </div>
+
+        <aside id="node-details" class="node-details" hidden>
+          <div>
+            <span id="detail-type" class="detail-type"></span>
+            <h3 id="detail-label"></h3>
+          </div>
+          <dl>
+            <div><dt>Source</dt><dd id="detail-source">—</dd></div>
+            <div><dt>Lines</dt><dd id="detail-lines">—</dd></div>
+            <div><dt>Method</dt><dd id="detail-method">—</dd></div>
+          </dl>
+        </aside>
       </section>
     </main>
 

@@ -60,11 +60,24 @@ def test_builtin_example_run_and_result_download(tmp_path):
             assert status.status_code == 200
             assert status.json()["corpus_sha256"] == body["corpus_sha256"]
 
+            graph = await client.post(body["documentation_graph_url"])
+            assert graph.status_code == 201
+            graph_body = graph.json()
+            assert graph_body["node_count"] > body["document_count"]
+            assert graph_body["graph"]["semantic_analysis"]["status"] == (
+                "not_started"
+            )
+
+            cached_graph = await client.post(body["documentation_graph_url"])
+            assert cached_graph.status_code == 200
+            assert cached_graph.json()["cache_hit"] is True
+
             result = await client.get(body["result_url"])
             assert result.status_code == 200
             assert result.headers["content-type"] == "application/zip"
             with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
                 assert "manifest.json" in archive.namelist()
+                assert "documentation_graph.json" in archive.namelist()
 
     asyncio.run(scenario())
 
