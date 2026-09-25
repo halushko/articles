@@ -10,7 +10,13 @@ from pathlib import PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db_models import DocumentVersion, RunDocument, SegmentationResult, SegmentationRun
+from .db_models import (
+    DocumentationGraphResult,
+    DocumentVersion,
+    RunDocument,
+    SegmentationResult,
+    SegmentationRun,
+)
 
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -44,6 +50,11 @@ def build_result_zip(session: Session, run_id: str) -> bytes:
     manifest_documents: list[dict[str, object]] = []
     exported_documents: list[dict[str, object]] = []
     errors: list[dict[str, str]] = []
+    graph = session.scalar(
+        select(DocumentationGraphResult)
+        .where(DocumentationGraphResult.run_id == run_id)
+        .order_by(DocumentationGraphResult.created_at.desc())
+    )
 
     output = io.BytesIO()
     with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -92,6 +103,16 @@ def build_result_zip(session: Session, run_id: str) -> bytes:
             },
             "documents": manifest_documents,
         }
+        if graph is not None:
+            graph_file = "documentation_graph.json"
+            archive.writestr(graph_file, _json_bytes(graph.payload))
+            manifest["documentation_graph"] = {
+                "id": graph.id,
+                "builder_version": graph.builder_version,
+                "node_count": graph.node_count,
+                "edge_count": graph.edge_count,
+                "result_file": graph_file,
+            }
         archive.writestr("manifest.json", _json_bytes(manifest))
         archive.writestr(
             "all_fragments.json",

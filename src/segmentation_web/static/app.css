@@ -14,7 +14,7 @@ body {
 }
 
 .shell {
-  width: min(760px, calc(100% - 32px));
+  width: min(1180px, calc(100% - 32px));
   margin: 0 auto;
   padding: 64px 0;
 }
@@ -78,6 +78,11 @@ button, .download {
   cursor: pointer;
 }
 
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.actions button, .actions .download { margin-top: 22px; }
+button.secondary { background: #edf1ff; color: #2948b5; }
+button.secondary:hover { background: #dfe6ff; }
+
 button:hover, .download:hover { background: #2948b5; }
 button:disabled { cursor: wait; opacity: 0.65; }
 
@@ -87,10 +92,81 @@ dl div { padding: 14px; border-radius: 10px; background: #f5f7fb; }
 dt { color: #6c778b; font-size: 0.78rem; }
 dd { margin: 5px 0 0; font-size: 1.35rem; font-weight: 750; }
 
+.graph-panel { padding: 24px; }
+.graph-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.graph-heading h2 { margin-bottom: 8px; }
+.graph-message, .graph-help { color: #59657b; line-height: 1.5; }
+.graph-message { margin: 0; }
+.graph-help {
+  margin: 18px 0 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f5f7fb;
+  font-size: 0.9rem;
+}
+.graph-metrics { width: min(300px, 100%); margin: 0; grid-template-columns: repeat(2, 1fr); }
+.graph-metrics dd { font-size: 1.1rem; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 14px 0; color: #59657b; font-size: 0.82rem; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { width: 14px; height: 14px; border: 2px solid transparent; border-radius: 4px; }
+.legend-document { background: #e7edff; border-color: #4968cd !important; }
+.legend-section { background: #ebf8f3; border-color: #2e8c6b !important; }
+.legend-fragment { background: #fff7df; border-color: #b98018 !important; }
+.legend-reference { width: 24px !important; height: 0 !important; border: 0 !important; border-top: 3px dashed #b0527b !important; border-radius: 0 !important; }
+
+.graph-workspace {
+  overflow: auto;
+  max-height: 680px;
+  min-height: 280px;
+  border: 1px solid #dbe2ef;
+  border-radius: 14px;
+  background-color: #fbfcff;
+  background-image: radial-gradient(#dce3f2 0.75px, transparent 0.75px);
+  background-size: 18px 18px;
+}
+.graph-canvas { position: relative; min-width: 100%; min-height: 278px; }
+.graph-edges, .graph-nodes { position: absolute; inset: 0; }
+.graph-edges { overflow: visible; pointer-events: none; }
+.graph-edge { fill: none; stroke: #aab5c9; stroke-width: 1.5; }
+.graph-edge-reference { stroke: #b0527b; stroke-width: 2.25; stroke-dasharray: 8 6; }
+.graph-edge-order { stroke: #d1a03e; stroke-dasharray: 3 5; opacity: 0.75; }
+.graph-node {
+  position: absolute;
+  display: block;
+  width: 260px;
+  min-height: 66px;
+  margin: 0;
+  padding: 11px 13px;
+  overflow: hidden;
+  border: 2px solid;
+  border-radius: 12px;
+  color: #172033;
+  text-align: left;
+  box-shadow: 0 7px 18px rgba(42, 58, 101, 0.1);
+}
+.graph-node:hover { color: #172033; filter: brightness(0.98); }
+.graph-node-document { border-color: #4968cd; background: #e7edff; }
+.graph-node-section { border-color: #2e8c6b; background: #ebf8f3; }
+.graph-node-fragment { border-color: #b98018; background: #fff7df; }
+.graph-node.selected { outline: 3px solid rgba(54, 87, 200, 0.24); outline-offset: 2px; }
+.node-kind { display: block; margin-bottom: 4px; color: #66728a; font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.node-label { display: -webkit-box; overflow: hidden; font-size: 0.86rem; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.node-toggle { position: absolute; top: 8px; right: 10px; color: #536077; font-size: 0.8rem; }
+
+.node-details { margin-top: 16px; padding: 18px; border: 1px solid #dbe2ef; border-radius: 12px; background: #f8faff; }
+.node-details h3 { margin: 5px 0 14px; font-size: 1rem; line-height: 1.5; }
+.detail-type { color: #526fd4; font-size: 0.72rem; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
+.node-details dl { grid-template-columns: 2fr 0.7fr 1fr; margin: 0; }
+.node-details dd { overflow-wrap: anywhere; font-size: 0.86rem; font-weight: 600; line-height: 1.4; }
+
 [hidden] { display: none !important; }
 
 @media (max-width: 560px) {
   .shell { padding: 32px 0; }
   .panel { padding: 20px; }
   dl { grid-template-columns: 1fr; }
+  .graph-heading { display: block; }
+  .graph-metrics { margin-top: 14px; grid-template-columns: repeat(2, 1fr); }
+  .node-details dl { grid-template-columns: 1fr; }
 }

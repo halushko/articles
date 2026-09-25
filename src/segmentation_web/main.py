@@ -15,11 +15,26 @@ from starlette.concurrency import run_in_threadpool
 
 from .archive import InputValidationError, documents_from_directory, documents_from_zip
 from .database import create_database_engine, create_session_factory
+from .documentation_graph import (
+    DocumentationGraphBuilder,
+    DocumentationGraphSummary,
+)
 from .exporter import build_result_zip
 from .pipeline import SegmentationPipeline, get_run_summary
 from .settings import Settings
 
 PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def _graph_response(summary: DocumentationGraphSummary) -> dict[str, object]:
+    return {
+        "graph_id": summary.id,
+        "run_id": summary.run_id,
+        "node_count": summary.node_count,
+        "edge_count": summary.edge_count,
+        "cache_hit": summary.cache_hit,
+        "graph": summary.payload,
+    }
 
 
 def create_app(
@@ -102,6 +117,9 @@ def create_app(
                 "fragment_count": summary.fragment_count,
                 "cache_hits": summary.cache_hits,
                 "result_url": f"/api/v1/runs/{summary.run_id}/result",
+                "documentation_graph_url": (
+                    f"/api/v1/runs/{summary.run_id}/documentation-graph"
+                ),
             },
             status_code=201,
         )
@@ -121,8 +139,41 @@ def create_app(
                 "fragment_count": summary.fragment_count,
                 "cache_hits": summary.cache_hits,
                 "result_url": f"/api/v1/runs/{summary.run_id}/result",
+                "documentation_graph_url": (
+                    f"/api/v1/runs/{summary.run_id}/documentation-graph"
+                ),
             }
         )
+
+    @app.post("/api/v1/runs/{run_id}/documentation-graph")
+    async def build_documentation_graph(run_id: str) -> JSONResponse:
+        try:
+            summary = await run_in_threadpool(
+                DocumentationGraphBuilder(session_factory).build,
+                run_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404, detail="Segmentation run not found"
+            ) from exc
+
+        return JSONResponse(
+            _graph_response(summary),
+            status_code=200 if summary.cache_hit else 201,
+        )
+
+    @app.get("/api/v1/runs/{run_id}/documentation-graph")
+    async def get_documentation_graph(run_id: str) -> JSONResponse:
+        summary = await run_in_threadpool(
+            DocumentationGraphBuilder(session_factory).get,
+            run_id,
+        )
+        if summary is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Documentation graph has not been built for this run",
+            )
+        return JSONResponse(_graph_response(summary))
 
     @app.get("/api/v1/runs/{run_id}/result")
     async def download_result(run_id: str) -> StreamingResponse:
