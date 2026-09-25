@@ -41,6 +41,9 @@ class Segmenter:
         if block.block_type == "heading":
             return [self._heading_fragment(artifact_id, block)]
 
+        if block.block_type == "table_row":
+            return [self._table_row_fragment(artifact_id, block)]
+
         api = detect_api_operation(block.text)
         if api:
             return self._api_operation_fragments(artifact_id, block, api)
@@ -98,6 +101,22 @@ class Segmenter:
             segmentation_method="markdown_structure",
             segmentation_trigger=block.structural_fields.get("heading_marker", "heading"),
             segmentation_confidence=1.0,
+            structural_fields=block.structural_fields,
+        )
+
+    def _table_row_fragment(self, artifact_id: str, block: RawBlock) -> Fragment:
+        is_header = bool(block.structural_fields.get("table_header"))
+        return self.factory.create(
+            artifact_id=artifact_id,
+            parent_block_id=block.parent_block_id,
+            parent_fragment_id=None,
+            text=block.text,
+            fragment_type="table_row",
+            hierarchy_path=block.hierarchy_path,
+            source_position=block.source_position,
+            segmentation_method="markdown_structure",
+            segmentation_trigger="table_header" if is_header else "table_row",
+            segmentation_confidence=0.98,
             structural_fields=block.structural_fields,
         )
 

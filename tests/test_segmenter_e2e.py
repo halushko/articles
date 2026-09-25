@@ -30,3 +30,25 @@ def test_segmenter_end_to_end_checkout_example():
 
     superseded = [f for f in fragments if f.status == "superseded"]
     assert superseded
+
+
+def test_segmenter_preserves_each_markdown_table_row_as_one_fragment():
+    text = """# Operations
+
+| Node | Operation | System |
+|---|---|---|
+| v1 | Receive request | ITSM |
+| v2 | Register incident | ITSM |
+"""
+
+    fragments = Segmenter(artifact_format="markdown").segment("table_doc", text)
+    rows = [fragment for fragment in fragments if fragment.fragment_type == "table_row"]
+
+    assert [row.structural_fields["cells"] for row in rows] == [
+        ["Node", "Operation", "System"],
+        ["v1", "Receive request", "ITSM"],
+        ["v2", "Register incident", "ITSM"],
+    ]
+    assert rows[0].segmentation_trigger == "table_header"
+    assert rows[1].segmentation_trigger == "table_row"
+    assert not any("---" in row.text for row in rows)

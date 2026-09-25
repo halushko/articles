@@ -8,15 +8,30 @@ version = "0.1.0"
 description = "MVP segmenter for documentation artifacts into logical Fragment objects"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "alembic>=1.13,<2",
+    "fastapi>=0.115,<1",
+    "jinja2>=3.1,<4",
+    "psycopg[binary]>=3.2,<4",
+    "python-multipart>=0.0.9,<1",
+    "sqlalchemy>=2.0,<3",
+    "uvicorn[standard]>=0.30,<1",
+]
 
 [project.optional-dependencies]
 markdown = ["markdown-it-py>=3.0.0"]
 unstructured = ["unstructured>=0.14.0"]
-dev = ["pytest>=8.0.0"]
+dev = [
+    "httpx>=0.27,<1",
+    "pytest>=8.0.0",
+]
 
 [project.scripts]
 fragment-segment = "fragment_segmenter.cli:main"
+segmentation-web = "segmentation_web.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+segmentation_web = ["static/*.css", "static/*.js", "templates/*.html"]
