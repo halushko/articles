@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 LIST_ITEM_RE = re.compile(r"^\s*(?P<marker>[-*+]|\d+\.)\s+(?P<text>.+)$")
+TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
 
 USER_STORY_RE = re.compile(
     r"^As\s+(?P<role>.+?),\s*I\s+want\s+(?P<goal>.+?)"
@@ -52,6 +53,22 @@ def detect_list_item(line: str) -> Optional[dict[str, Any]]:
     return {
         "marker": match.group("marker"),
         "text": match.group("text").strip(),
+    }
+
+
+def detect_table_row(line: str) -> Optional[dict[str, Any]]:
+    """Parse a pipe-delimited Markdown table row."""
+    stripped = line.strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return None
+
+    cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+    if len(cells) < 2 or any(not cell for cell in cells):
+        return None
+
+    return {
+        "cells": cells,
+        "is_separator": all(TABLE_SEPARATOR_CELL_RE.fullmatch(cell) for cell in cells),
     }
 
 

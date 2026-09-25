@@ -1,6 +1,7 @@
 from fragment_segmenter.detectors import (
     detect_api_operation,
     detect_acceptance_criterion,
+    detect_table_row,
     detect_user_story,
 )
 
@@ -28,3 +29,18 @@ def test_acceptance_criterion_gherkin():
 
     assert result["criterion_format"] == "gherkin"
     assert result["gherkin_keyword"] == "Then"
+
+
+def test_markdown_table_row_detection():
+    row = detect_table_row("| v1 | Receive user request | ITSM |")
+    separator = detect_table_row("|---|:---|---:|")
+
+    assert row == {
+        "cells": ["v1", "Receive user request", "ITSM"],
+        "is_separator": False,
+    }
+    assert separator == {
+        "cells": ["---", ":---", "---:"],
+        "is_separator": True,
+    }
+    assert detect_table_row("Use A | B in prose") is None

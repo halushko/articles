@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..detectors import detect_api_operation, detect_heading, detect_list_item
+from ..detectors import detect_api_operation, detect_heading, detect_list_item, detect_table_row
 from ..models import RawBlock, SourcePosition
 from ..normalizer import normalize_document_text
 from .base import DocumentPartitioner
@@ -64,6 +64,7 @@ class MarkdownRulePartitioner(DocumentPartitioner):
 
             heading = detect_heading(raw_line)
             list_item = detect_list_item(raw_line)
+            table_row = detect_table_row(raw_line)
 
             if not stripped:
                 flush_paragraph(line_index - 1, char_pos)
@@ -107,6 +108,41 @@ class MarkdownRulePartitioner(DocumentPartitioner):
                 )
 
                 hierarchy_stack.append((level, title, block_id))
+                char_pos += len(line)
+                paragraph_line_start = line_index + 1
+                paragraph_char_start = char_pos
+                continue
+
+            if table_row:
+                flush_paragraph(line_index - 1, char_pos)
+
+                if not table_row["is_separator"]:
+                    next_row = None
+                    if line_index < len(lines):
+                        next_row = detect_table_row(lines[line_index].rstrip("\n"))
+
+                    block_id = next_block_id()
+                    blocks.append(
+                        RawBlock(
+                            id=block_id,
+                            block_type="table_row",
+                            text=" | ".join(table_row["cells"]),
+                            hierarchy_path=current_hierarchy(),
+                            parent_block_id=current_parent_block_id(),
+                            source_position=SourcePosition(
+                                line_start=line_index,
+                                line_end=line_index,
+                                char_start=char_pos,
+                                char_end=char_pos + len(line),
+                            ),
+                            structural_fields={
+                                "source_parser": "markdown_rule",
+                                "cells": table_row["cells"],
+                                "table_header": bool(next_row and next_row["is_separator"]),
+                            },
+                        )
+                    )
+
                 char_pos += len(line)
                 paragraph_line_start = line_index + 1
                 paragraph_char_start = char_pos
