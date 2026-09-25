@@ -1,0 +1,715 @@
+[
+  {
+    "id": "frag_00001",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": null,
+    "parent_fragment_id": null,
+    "text": "Checkout Process",
+    "normalized_text": "Checkout Process",
+    "fragment_type": "heading",
+    "hierarchy_path": [
+      "Checkout Process"
+    ],
+    "source_position": {
+      "line_start": 1,
+      "line_end": 1,
+      "char_start": 0,
+      "char_end": 19
+    },
+    "segmentation_method": "markdown_structure",
+    "segmentation_trigger": "#",
+    "segmentation_confidence": 1.0,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "heading_level": 1,
+      "heading_marker": "#"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00002",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00001",
+    "parent_fragment_id": null,
+    "text": "As a customer, I want to pay for an order, so that I can complete the checkout.",
+    "normalized_text": "As a customer, I want to pay for an order, so that I can complete the checkout.",
+    "fragment_type": "user_story",
+    "hierarchy_path": [
+      "Checkout Process"
+    ],
+    "source_position": {
+      "line_start": 3,
+      "line_end": 3,
+      "char_start": 20,
+      "char_end": 100
+    },
+    "segmentation_method": "user_story_detection",
+    "segmentation_trigger": "as_i_want_so_that",
+    "segmentation_confidence": 0.98,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "role": "a customer",
+      "goal": "to pay for an order",
+      "benefit": "I can complete the checkout",
+      "pattern": "as_i_want_so_that"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00003",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00001",
+    "parent_fragment_id": null,
+    "text": "Payment Flow",
+    "normalized_text": "Payment Flow",
+    "fragment_type": "heading",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 5,
+      "line_end": 5,
+      "char_start": 101,
+      "char_end": 117
+    },
+    "segmentation_method": "markdown_structure",
+    "segmentation_trigger": "##",
+    "segmentation_confidence": 1.0,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "heading_level": 2,
+      "heading_marker": "##"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00004",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00003",
+    "parent_fragment_id": null,
+    "text": "The user opens the checkout page. The system loads available payment methods, e.g. card, PayPal, etc. The user submits the form and then the system validates the input.",
+    "normalized_text": "The user opens the checkout page. The system loads available payment methods, e.g. card, PayPal, etc. The user submits the form and then the system validates the input.",
+    "fragment_type": "paragraph",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 7,
+      "line_end": 7,
+      "char_start": 118,
+      "char_end": 287
+    },
+    "segmentation_method": "markdown_structure",
+    "segmentation_trigger": "paragraph",
+    "segmentation_confidence": 0.95,
+    "structural_fields": {
+      "source_parser": "markdown_rule"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00005",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00004",
+    "parent_fragment_id": "frag_00004",
+    "text": "The user opens the checkout page.",
+    "normalized_text": "The user opens the checkout page.",
+    "fragment_type": "sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 7,
+      "line_end": 7,
+      "char_start": 118,
+      "char_end": 287
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source_fragment_type": "paragraph"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00006",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00004",
+    "parent_fragment_id": "frag_00004",
+    "text": "The system loads available payment methods, e.g. card, PayPal, etc.",
+    "normalized_text": "The system loads available payment methods, e.g. card, PayPal, etc.",
+    "fragment_type": "sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 7,
+      "line_end": 7,
+      "char_start": 118,
+      "char_end": 287
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source_fragment_type": "paragraph"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00007",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00004",
+    "parent_fragment_id": "frag_00004",
+    "text": "The user submits the form and then the system validates the input.",
+    "normalized_text": "The user submits the form and then the system validates the input.",
+    "fragment_type": "sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 7,
+      "line_end": 7,
+      "char_start": 118,
+      "char_end": 287
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source_fragment_type": "paragraph"
+    },
+    "status": "superseded"
+  },
+  {
+    "id": "frag_00008",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00004",
+    "parent_fragment_id": "frag_00007",
+    "text": "The user submits the form",
+    "normalized_text": "The user submits the form",
+    "fragment_type": "process_step",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 7,
+      "line_end": 7,
+      "char_start": 118,
+      "char_end": 287
+    },
+    "segmentation_method": "hard_process_split",
+    "segmentation_trigger": "and then",
+    "segmentation_confidence": 0.86,
+    "structural_fields": {
+      "step_index": 1,
+      "source_sentence_type": "sentence"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00009",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00004",
+    "parent_fragment_id": "frag_00007",
+    "text": "the system validates the input",
+    "normalized_text": "the system validates the input",
+    "fragment_type": "process_step",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 7,
+      "line_end": 7,
+      "char_start": 118,
+      "char_end": 287
+    },
+    "segmentation_method": "hard_process_split",
+    "segmentation_trigger": "and then",
+    "segmentation_confidence": 0.86,
+    "structural_fields": {
+      "step_index": 2,
+      "source_sentence_type": "sentence"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00010",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00003",
+    "parent_fragment_id": null,
+    "text": "If payment fails, the system shows an error message. After that, the user can try again.",
+    "normalized_text": "If payment fails, the system shows an error message. After that, the user can try again.",
+    "fragment_type": "paragraph",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 9,
+      "line_end": 9,
+      "char_start": 288,
+      "char_end": 377
+    },
+    "segmentation_method": "markdown_structure",
+    "segmentation_trigger": "paragraph",
+    "segmentation_confidence": 0.95,
+    "structural_fields": {
+      "source_parser": "markdown_rule"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00011",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00005",
+    "parent_fragment_id": "frag_00010",
+    "text": "If payment fails, the system shows an error message.",
+    "normalized_text": "If payment fails, the system shows an error message.",
+    "fragment_type": "sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 9,
+      "line_end": 9,
+      "char_start": 288,
+      "char_end": 377
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source_fragment_type": "paragraph"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00012",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00005",
+    "parent_fragment_id": "frag_00011",
+    "text": "if payment fails",
+    "normalized_text": "if payment fails",
+    "fragment_type": "condition_clause",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 9,
+      "line_end": 9,
+      "char_start": 288,
+      "char_end": 377
+    },
+    "segmentation_method": "soft_process_split",
+    "segmentation_trigger": "if",
+    "segmentation_confidence": 0.82,
+    "structural_fields": {
+      "condition_trigger": "if"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00013",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00005",
+    "parent_fragment_id": "frag_00011",
+    "text": "the system shows an error message.",
+    "normalized_text": "the system shows an error message.",
+    "fragment_type": "conditional_scope",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 9,
+      "line_end": 9,
+      "char_start": 288,
+      "char_end": 377
+    },
+    "segmentation_method": "soft_process_split",
+    "segmentation_trigger": "if",
+    "segmentation_confidence": 0.82,
+    "structural_fields": {
+      "condition_trigger": "if"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00014",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00005",
+    "parent_fragment_id": "frag_00010",
+    "text": "After that, the user can try again.",
+    "normalized_text": "After that, the user can try again.",
+    "fragment_type": "sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Payment Flow"
+    ],
+    "source_position": {
+      "line_start": 9,
+      "line_end": 9,
+      "char_start": 288,
+      "char_end": 377
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source_fragment_type": "paragraph"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00015",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00001",
+    "parent_fragment_id": null,
+    "text": "Acceptance Criteria",
+    "normalized_text": "Acceptance Criteria",
+    "fragment_type": "heading",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Acceptance Criteria"
+    ],
+    "source_position": {
+      "line_start": 11,
+      "line_end": 11,
+      "char_start": 378,
+      "char_end": 401
+    },
+    "segmentation_method": "markdown_structure",
+    "segmentation_trigger": "##",
+    "segmentation_confidence": 1.0,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "heading_level": 2,
+      "heading_marker": "##"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00016",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00006",
+    "parent_fragment_id": null,
+    "text": "Given the cart contains items",
+    "normalized_text": "Given the cart contains items",
+    "fragment_type": "acceptance_criterion",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Acceptance Criteria"
+    ],
+    "source_position": {
+      "line_start": 13,
+      "line_end": 13,
+      "char_start": 402,
+      "char_end": 434
+    },
+    "segmentation_method": "acceptance_criteria_detection",
+    "segmentation_trigger": "Given",
+    "segmentation_confidence": 0.96,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "list_marker": "-",
+      "criterion_id": null,
+      "criterion_text": "Given the cart contains items",
+      "criterion_format": "gherkin",
+      "gherkin_keyword": "Given"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00017",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00006",
+    "parent_fragment_id": null,
+    "text": "When the user submits a valid payment form",
+    "normalized_text": "When the user submits a valid payment form",
+    "fragment_type": "acceptance_criterion",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Acceptance Criteria"
+    ],
+    "source_position": {
+      "line_start": 14,
+      "line_end": 14,
+      "char_start": 434,
+      "char_end": 479
+    },
+    "segmentation_method": "acceptance_criteria_detection",
+    "segmentation_trigger": "When",
+    "segmentation_confidence": 0.96,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "list_marker": "-",
+      "criterion_id": null,
+      "criterion_text": "When the user submits a valid payment form",
+      "criterion_format": "gherkin",
+      "gherkin_keyword": "When"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00018",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00006",
+    "parent_fragment_id": null,
+    "text": "Then the order is created and then confirmation email is sent",
+    "normalized_text": "Then the order is created and then confirmation email is sent",
+    "fragment_type": "acceptance_criterion",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Acceptance Criteria"
+    ],
+    "source_position": {
+      "line_start": 15,
+      "line_end": 15,
+      "char_start": 479,
+      "char_end": 543
+    },
+    "segmentation_method": "acceptance_criteria_detection",
+    "segmentation_trigger": "Then",
+    "segmentation_confidence": 0.96,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "list_marker": "-",
+      "criterion_id": null,
+      "criterion_text": "Then the order is created and then confirmation email is sent",
+      "criterion_format": "gherkin",
+      "gherkin_keyword": "Then"
+    },
+    "status": "superseded"
+  },
+  {
+    "id": "frag_00019",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00009",
+    "parent_fragment_id": "frag_00018",
+    "text": "Then the order is created",
+    "normalized_text": "Then the order is created",
+    "fragment_type": "process_step",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Acceptance Criteria"
+    ],
+    "source_position": {
+      "line_start": 15,
+      "line_end": 15,
+      "char_start": 479,
+      "char_end": 543
+    },
+    "segmentation_method": "hard_process_split",
+    "segmentation_trigger": "and then",
+    "segmentation_confidence": 0.86,
+    "structural_fields": {
+      "step_index": 1,
+      "source_sentence_type": "acceptance_criterion_sentence"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00020",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00009",
+    "parent_fragment_id": "frag_00018",
+    "text": "confirmation email is sent",
+    "normalized_text": "confirmation email is sent",
+    "fragment_type": "process_step",
+    "hierarchy_path": [
+      "Checkout Process",
+      "Acceptance Criteria"
+    ],
+    "source_position": {
+      "line_start": 15,
+      "line_end": 15,
+      "char_start": 479,
+      "char_end": 543
+    },
+    "segmentation_method": "hard_process_split",
+    "segmentation_trigger": "and then",
+    "segmentation_confidence": 0.86,
+    "structural_fields": {
+      "step_index": 2,
+      "source_sentence_type": "acceptance_criterion_sentence"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00021",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00001",
+    "parent_fragment_id": null,
+    "text": "API",
+    "normalized_text": "API",
+    "fragment_type": "heading",
+    "hierarchy_path": [
+      "Checkout Process",
+      "API"
+    ],
+    "source_position": {
+      "line_start": 17,
+      "line_end": 17,
+      "char_start": 544,
+      "char_end": 551
+    },
+    "segmentation_method": "markdown_structure",
+    "segmentation_trigger": "##",
+    "segmentation_confidence": 1.0,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "heading_level": 2,
+      "heading_marker": "##"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00022",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00010",
+    "parent_fragment_id": null,
+    "text": "POST /api/v1/orders/{orderId}/payments - Creates a payment for the selected order. Returns v1.2 response format.",
+    "normalized_text": "POST /api/v1/orders/{orderId}/payments - Creates a payment for the selected order. Returns v1.2 response format.",
+    "fragment_type": "api_operation",
+    "hierarchy_path": [
+      "Checkout Process",
+      "API"
+    ],
+    "source_position": {
+      "line_start": 19,
+      "line_end": 19,
+      "char_start": 552,
+      "char_end": 665
+    },
+    "segmentation_method": "api_operation_detection",
+    "segmentation_trigger": "http_method_path",
+    "segmentation_confidence": 0.99,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "detected_block_type": "api_operation",
+      "method": "POST",
+      "path": "/api/v1/orders/{orderId}/payments",
+      "description": "Creates a payment for the selected order. Returns v1.2 response format."
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00023",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00011",
+    "parent_fragment_id": "frag_00022",
+    "text": "Creates a payment for the selected order.",
+    "normalized_text": "Creates a payment for the selected order.",
+    "fragment_type": "api_description_sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "API"
+    ],
+    "source_position": {
+      "line_start": 19,
+      "line_end": 19,
+      "char_start": 552,
+      "char_end": 665
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source": "api_description"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00024",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00011",
+    "parent_fragment_id": "frag_00022",
+    "text": "Returns v1.2 response format.",
+    "normalized_text": "Returns v1.2 response format.",
+    "fragment_type": "api_description_sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "API"
+    ],
+    "source_position": {
+      "line_start": 19,
+      "line_end": 19,
+      "char_start": 552,
+      "char_end": 665
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source": "api_description"
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00025",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00010",
+    "parent_fragment_id": null,
+    "text": "GET /api/v1/orders/{orderId} - Returns order details.",
+    "normalized_text": "GET /api/v1/orders/{orderId} - Returns order details.",
+    "fragment_type": "api_operation",
+    "hierarchy_path": [
+      "Checkout Process",
+      "API"
+    ],
+    "source_position": {
+      "line_start": 20,
+      "line_end": 20,
+      "char_start": 665,
+      "char_end": 719
+    },
+    "segmentation_method": "api_operation_detection",
+    "segmentation_trigger": "http_method_path",
+    "segmentation_confidence": 0.99,
+    "structural_fields": {
+      "source_parser": "markdown_rule",
+      "detected_block_type": "api_operation",
+      "method": "GET",
+      "path": "/api/v1/orders/{orderId}",
+      "description": "Returns order details."
+    },
+    "status": "active"
+  },
+  {
+    "id": "frag_00026",
+    "artifact_id": "checkout_doc",
+    "parent_block_id": "block_00012",
+    "parent_fragment_id": "frag_00025",
+    "text": "Returns order details.",
+    "normalized_text": "Returns order details.",
+    "fragment_type": "api_description_sentence",
+    "hierarchy_path": [
+      "Checkout Process",
+      "API"
+    ],
+    "source_position": {
+      "line_start": 20,
+      "line_end": 20,
+      "char_start": 665,
+      "char_end": 719
+    },
+    "segmentation_method": "sentence_segmentation",
+    "segmentation_trigger": "sentence_boundary",
+    "segmentation_confidence": 0.9,
+    "structural_fields": {
+      "source": "api_description"
+    },
+    "status": "active"
+  }
+]
