@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -25,6 +25,13 @@ from .documentation_graph import (
     DocumentationGraphSummary,
 )
 from .exporter import build_result_zip
+from .llm_process import (
+    LLMConfigurationError,
+    LLMProcessModelBuilder,
+    LLMProviderError,
+    OpenAICompatibleClient,
+    ProcessExtractionError,
+)
 from .pipeline import SegmentationPipeline, get_run_summary
 from .settings import Settings
 
@@ -57,22 +64,59 @@ def create_app(
     *,
     settings: Settings | None = None,
     session_factory: sessionmaker[Session] | None = None,
+    process_model_builder: Any | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings.from_env()
     if session_factory is None:
         engine = create_database_engine(app_settings.database_url)
         session_factory = create_session_factory(engine)
 
+    if process_model_builder is None:
+        if app_settings.process_model_mode == "control":
+            process_model_builder = ControlProcessModelBuilder(
+                session_factory,
+                app_settings.control_process_path,
+            )
+        elif app_settings.process_model_mode == "llm" and app_settings.llm_configured:
+            process_model_builder = LLMProcessModelBuilder(
+                session_factory,
+                OpenAICompatibleClient(
+                    base_url=app_settings.llm_base_url,
+                    api_key=app_settings.llm_api_key,
+                    model=app_settings.llm_model,
+                    timeout_seconds=app_settings.llm_timeout_seconds,
+                    max_output_tokens=app_settings.llm_max_output_tokens,
+                    response_format=app_settings.llm_response_format,
+                ),
+                max_input_chars=app_settings.llm_max_input_chars,
+            )
+        elif app_settings.process_model_mode not in {"control", "llm"}:
+            raise ValueError("PROCESS_MODEL_MODE must be 'llm' or 'control'")
+
     app = FastAPI(
         title="Documentation to Process Hierarchy",
-        version="0.2.0",
+        version="0.3.0",
         description=(
             "Segment Markdown documentation, inspect its source structure, "
-            "and build a traceable hierarchical control process model."
+            "and build a traceable LLM-grounded hierarchical process model."
         ),
     )
     app.state.settings = app_settings
     app.state.session_factory = session_factory
+    app.state.process_model_builder = process_model_builder
+
+    def process_model_capability(source_type: str) -> tuple[bool, str | None]:
+        if process_model_builder is None:
+            return (
+                False,
+                "Set LLM_API_KEY and LLM_MODEL in .env to enable process extraction.",
+            )
+        if app_settings.process_model_mode == "control" and source_type != "example":
+            return (
+                False,
+                "Control mode supports only the built-in D1-D5 corpus.",
+            )
+        return True, None
 
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
@@ -127,6 +171,9 @@ def create_app(
         except InputValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        process_available, process_reason = process_model_capability(
+            summary.source_type
+        )
         return JSONResponse(
             {
                 "run_id": summary.run_id,
@@ -140,7 +187,8 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
-                "process_model_available": summary.source_type == "example",
+                "process_model_available": process_available,
+                "process_model_unavailable_reason": process_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             },
             status_code=201,
@@ -152,6 +200,9 @@ def create_app(
             summary = get_run_summary(session, run_id)
         if summary is None:
             raise HTTPException(status_code=404, detail="Segmentation run not found")
+        process_available, process_reason = process_model_capability(
+            summary.source_type
+        )
         return JSONResponse(
             {
                 "run_id": summary.run_id,
@@ -165,7 +216,8 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
-                "process_model_available": summary.source_type == "example",
+                "process_model_available": process_available,
+                "process_model_unavailable_reason": process_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             }
         )
@@ -202,17 +254,27 @@ def create_app(
 
     @app.post("/api/v1/runs/{run_id}/process-model")
     async def build_process_model(run_id: str) -> JSONResponse:
-        builder = ControlProcessModelBuilder(
-            session_factory,
-            app_settings.control_process_path,
-        )
+        if process_model_builder is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "LLM process extraction is not configured. Set LLM_API_KEY "
+                    "and LLM_MODEL in the local .env file."
+                ),
+            )
         try:
-            summary = await run_in_threadpool(builder.build, run_id)
+            summary = await run_in_threadpool(process_model_builder.build, run_id)
         except KeyError as exc:
             raise HTTPException(
                 status_code=404, detail="Segmentation run not found"
             ) from exc
         except ProcessModelUnavailableError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except LLMConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except LLMProviderError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ProcessExtractionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         return JSONResponse(
@@ -222,11 +284,13 @@ def create_app(
 
     @app.get("/api/v1/runs/{run_id}/process-model")
     async def get_process_model(run_id: str) -> JSONResponse:
+        if process_model_builder is None:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM process extraction is not configured",
+            )
         summary = await run_in_threadpool(
-            ControlProcessModelBuilder(
-                session_factory,
-                app_settings.control_process_path,
-            ).get,
+            process_model_builder.get,
             run_id,
         )
         if summary is None:

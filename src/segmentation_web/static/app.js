@@ -25,6 +25,9 @@ const processCanvas = document.querySelector("#process-canvas");
 const processEdges = document.querySelector("#process-edges");
 const processNodes = document.querySelector("#process-nodes");
 const processDetails = document.querySelector("#process-details");
+const transitionDetails = document.querySelector("#transition-details");
+const processWarnings = document.querySelector("#process-warnings");
+const levelSummary = document.querySelector("#level-summary");
 const aggregationTableBody = document.querySelector("#aggregation-table-body");
 
 let documentationGraphUrl = null;
@@ -114,6 +117,9 @@ form.addEventListener("submit", async (event) => {
     processModelUrl = body.process_model_url;
     documentationButton.hidden = !documentationGraphUrl;
     processButton.hidden = !body.process_model_available;
+    if (!body.process_model_available && body.process_model_unavailable_reason) {
+      statusMessage.textContent += ` Process extraction is unavailable: ${body.process_model_unavailable_reason}`;
+    }
   } catch (error) {
     statusMessage.textContent = error.message;
   } finally {
@@ -311,7 +317,7 @@ function renderDocumentTree(documentId) {
 processButton.addEventListener("click", async () => {
   if (!processModelUrl) return;
   processPanel.hidden = false;
-  processMessage.textContent = "Building the deterministic control hierarchy…";
+  processMessage.textContent = "Extracting a grounded process graph and building its hierarchy…";
   processMetrics.hidden = true;
   processButton.disabled = true;
   try {
@@ -320,8 +326,15 @@ processButton.addEventListener("click", async () => {
     if (!response.ok) throw new Error(body.detail || "The process hierarchy could not be built.");
     processModel = body.process_model;
     derivationNote.textContent = processModel.derivation.message;
-    processMessage.textContent = "Choose a level or expand individual stages. Every action remains linked to source evidence.";
-    setExactProcessLevel(2);
+    setText(
+      "#process-title",
+      processModel.process_title || "Hierarchical process model",
+    );
+    processMessage.textContent = "Choose a level, expand stages, or select an arrow to inspect why the transition exists.";
+    renderProcessWarnings();
+    renderLevelControls();
+    const availableLevels = [...processGraphs().keys()];
+    setExactProcessLevel(Math.max(...availableLevels));
     renderAggregationTable();
     processButton.textContent = "Reopen process hierarchy";
     processPanel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -336,6 +349,45 @@ function processGraphs() {
   const graphs = new Map([[0, processModel.hierarchy.base_graph]]);
   processModel.hierarchy.levels.forEach((level) => graphs.set(level.target_level, level.graph));
   return graphs;
+}
+
+function renderProcessWarnings() {
+  processWarnings.replaceChildren();
+  const warnings = processModel.warnings || [];
+  if (!warnings.length) {
+    processWarnings.hidden = true;
+    return;
+  }
+  const strong = document.createElement("strong");
+  strong.textContent = "Extraction warnings";
+  const list = document.createElement("ul");
+  warnings.forEach((warning) => {
+    const item = document.createElement("li");
+    item.textContent = warning;
+    list.append(item);
+  });
+  processWarnings.append(strong, list);
+  processWarnings.hidden = false;
+}
+
+function renderLevelControls() {
+  const summaryByLevel = new Map(
+    (processModel.summary || []).map((item) => [item.level, item]),
+  );
+  levelSummary.replaceChildren();
+  [...summaryByLevel.keys()].sort((left, right) => left - right).forEach((level) => {
+    const summary = summaryByLevel.get(level);
+    const item = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = `L${level}`;
+    const counts = document.createElement("small");
+    counts.textContent = `${summary.node_count} nodes · ${summary.edge_count} transitions`;
+    item.append(title, counts);
+    levelSummary.append(item);
+  });
+  document.querySelectorAll("[data-process-level]").forEach((button) => {
+    button.hidden = !summaryByLevel.has(Number(button.dataset.processLevel));
+  });
 }
 
 function atomicNumber(nodeId) {
@@ -374,6 +426,13 @@ function processIndex() {
   return { graphs, nodeById, childrenByParent, parentByChild, scoreByNode };
 }
 
+function processNodeKind(nodeId, children) {
+  if (children.length) return "stage";
+  return processModel.node_metadata?.[nodeId]?.node_type === "gateway"
+    ? "gateway"
+    : "action";
+}
+
 document.querySelectorAll("[data-process-level]").forEach((button) => {
   button.addEventListener("click", () => setExactProcessLevel(Number(button.dataset.processLevel)));
 });
@@ -387,6 +446,7 @@ function setExactProcessLevel(level) {
   visibleProcessNodeIds = new Set(graph.nodes.map((node) => node.id));
   selectedProcessNodeId = null;
   processDetails.hidden = true;
+  transitionDetails.hidden = true;
   document.querySelectorAll("[data-process-level]").forEach((button) => {
     button.classList.toggle("active", Number(button.dataset.processLevel) === level);
   });
@@ -400,6 +460,7 @@ function expandProcessNode(nodeId) {
   children.forEach((child) => visibleProcessNodeIds.add(child));
   selectedProcessNodeId = null;
   processDetails.hidden = true;
+  transitionDetails.hidden = true;
   document.querySelectorAll("[data-process-level]").forEach((button) => button.classList.remove("active"));
   renderProcessGraph();
 }
@@ -550,14 +611,31 @@ function renderProcessEdge(edge, layout) {
   const targetY = target.y + target.height / 2;
   const middleX = sourceX + (targetX - sourceX) / 2;
   const isConditional = edge.edgeType !== "sequence";
+  const pathDefinition = `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
+  const selectTransition = (event) => {
+    event.stopPropagation();
+    showTransitionDetails(edge);
+  };
+  const hitPath = svgElement("path", {
+    class: "process-edge-hit",
+    d: pathDefinition,
+    tabindex: "0",
+    role: "button",
+    "aria-label": `Inspect transition ${edge.source} to ${edge.target}`,
+  });
+  hitPath.addEventListener("click", selectTransition);
+  hitPath.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") selectTransition(event);
+  });
   const path = svgElement("path", {
     class: `process-edge${isConditional ? " process-edge-conditional" : ""}`,
-    d: `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`,
+    d: pathDefinition,
   });
   const title = svgElement("title");
   title.textContent = `${edge.source} → ${edge.target}; ${edge.edgeType}; ${edge.condition || "no condition"}; source transitions: ${edge.originalIds.join(", ")}`;
   path.append(title);
-  processEdges.append(path);
+  path.addEventListener("click", selectTransition);
+  processEdges.append(hitPath, path);
 
   if (edge.condition) {
     const labelX = middleX;
@@ -606,7 +684,7 @@ function renderProcessGraph() {
     const position = layout.positions.get(nodeId);
     const children = processIndexCache.childrenByParent.get(nodeId) || [];
     const parent = processIndexCache.parentByChild.get(nodeId);
-    const kind = children.length ? "stage" : (["v5", "v15"].includes(nodeId) ? "gateway" : "action");
+    const kind = processNodeKind(nodeId, children);
     const box = document.createElement("div");
     box.className = `process-node process-node-${kind}`;
     if (nodeId === selectedProcessNodeId) box.classList.add("selected");
@@ -682,7 +760,10 @@ function showProcessDetails(nodeId) {
   const node = processIndexCache.nodeById.get(nodeId);
   if (!node) return;
   const children = processIndexCache.childrenByParent.get(nodeId) || [];
-  const type = children.length ? "Aggregated stage" : (["v5", "v15"].includes(nodeId) ? "Decision gateway" : "Atomic action");
+  const kind = processNodeKind(nodeId, children);
+  const type = kind === "stage"
+    ? "Aggregated stage"
+    : (kind === "gateway" ? "Decision gateway" : "Atomic action");
   setText("#process-detail-type", `${type} · ${nodeId}`);
   setText("#process-detail-label", node.operation);
   setText("#process-detail-role", node.role);
@@ -707,7 +788,69 @@ function showProcessDetails(nodeId) {
     });
   });
   if (!evidenceBox.children.length) evidenceBox.append(emptyState("No source evidence is recorded for this node."));
+  transitionDetails.hidden = true;
   processDetails.hidden = false;
+}
+
+function showTransitionDetails(edge) {
+  const source = processIndexCache.nodeById.get(edge.source);
+  const target = processIndexCache.nodeById.get(edge.target);
+  setText(
+    "#transition-detail-label",
+    `${source?.operation || edge.source} → ${target?.operation || edge.target}`,
+  );
+  setText("#transition-detail-type", edge.edgeType);
+  setText("#transition-detail-condition", edge.condition || "none");
+
+  const records = edge.originalIds
+    .map((edgeId) => processModel.transition_provenance?.[edgeId])
+    .filter(Boolean);
+  const confidences = records
+    .map((record) => record.confidence)
+    .filter((value) => typeof value === "number");
+  setText(
+    "#transition-detail-confidence",
+    confidences.length
+      ? `${Math.min(...confidences).toFixed(2)}–${Math.max(...confidences).toFixed(2)}`
+      : "not recorded",
+  );
+
+  const reasons = document.querySelector("#transition-reasons");
+  reasons.replaceChildren();
+  const uniqueReasons = [...new Set(records.map((record) => record.reason).filter(Boolean))];
+  if (!uniqueReasons.length) {
+    uniqueReasons.push("This transition is defined by the selected process graph.");
+  }
+  uniqueReasons.forEach((reason) => {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = reason;
+    reasons.append(paragraph);
+  });
+
+  const evidenceBox = document.querySelector("#transition-evidence");
+  evidenceBox.replaceChildren();
+  const evidenceItems = records.flatMap((record) => record.evidence || []);
+  const evidenceKeys = new Set();
+  evidenceItems.forEach((evidence) => {
+    const key = `${evidence.document_path}\u001f${evidence.fragment_id}`;
+    if (evidenceKeys.has(key)) return;
+    evidenceKeys.add(key);
+    const article = document.createElement("article");
+    const quote = document.createElement("p");
+    quote.textContent = `“${evidence.quote}”`;
+    const meta = document.createElement("div");
+    meta.className = "source-meta";
+    meta.textContent = `${evidence.document_path} · ${lineLabel(evidence)}`;
+    article.append(quote, meta);
+    evidenceBox.append(article);
+  });
+  if (!evidenceBox.children.length) {
+    evidenceBox.append(emptyState("No transition-specific source evidence is recorded."));
+  }
+  selectedProcessNodeId = null;
+  processNodes.querySelectorAll(".selected").forEach((node) => node.classList.remove("selected"));
+  processDetails.hidden = true;
+  transitionDetails.hidden = false;
 }
 
 function renderAggregationTable() {

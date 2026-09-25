@@ -318,8 +318,26 @@ class ControlProcessModelBuilder:
                 ),
             },
             "configuration": PROCESS_MODEL_CONFIG,
+            "process_title": "User Access Recovery Process",
+            "warnings": [],
             "summary": self._hierarchy_summary(aggregation),
             "provenance": provenance,
+            "node_metadata": {
+                node_id: {
+                    "node_type": "gateway" if node_id in {"v5", "v15"} else "action",
+                    "confidence": 1.0,
+                    "source": "control_baseline",
+                }
+                for node_id in graph.nodes
+            },
+            "transition_provenance": {
+                edge.id: {
+                    "reason": "Defined in the control process baseline.",
+                    "confidence": 1.0,
+                    "evidence": [],
+                }
+                for edge in graph.edges
+            },
             "hierarchy": hierarchy,
         }
 

@@ -89,6 +89,7 @@ def test_process_model_api_and_result_zip():
         database_url="sqlite://",
         example_docs_dir=EXAMPLE_DOCS,
         control_process_path=PROCESS_DEFINITION,
+        process_model_mode="control",
         max_archive_bytes=1024 * 1024,
         max_uncompressed_bytes=2 * 1024 * 1024,
         max_documents=10,

@@ -171,3 +171,30 @@ class ProcessModelResult(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class LLMExtractionResult(Base):
+    __tablename__ = "llm_extraction_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "corpus_sha256",
+            "analyzer_version",
+            "config_sha256",
+            name="uq_llm_extraction_cache_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    corpus_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    analyzer_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    config_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model: Mapped[str] = mapped_column(String(150), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_PAYLOAD, nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
