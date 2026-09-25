@@ -24,6 +24,7 @@ services:
       EXAMPLE_DOCS_DIR: /app/examples/access_recovery_source_docs
       CONTROL_PROCESS_PATH: /app/examples/access_recovery_process.md
       PROCESS_MODEL_MODE: ${PROCESS_MODEL_MODE:-llm}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gpt-5-mini}

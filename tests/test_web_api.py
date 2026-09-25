@@ -56,10 +56,14 @@ def test_builtin_example_run_and_result_download(tmp_path):
             assert body["document_count"] == 2
             assert body["fragment_count"] > 0
             assert body["process_model_available"] is False
-            assert "LLM_API_KEY" in body["process_model_unavailable_reason"]
+            assert body["process_model_unavailable_reason"] == "Без LLM"
 
             unavailable_process = await client.post(body["process_model_url"])
             assert unavailable_process.status_code == 503
+            assert unavailable_process.json() == {
+                "detail": "Без LLM",
+                "code": "without_llm",
+            }
 
             status = await client.get(f"/api/v1/runs/{body['run_id']}")
             assert status.status_code == 200
@@ -141,5 +145,43 @@ def test_unknown_run_returns_not_found(tmp_path):
         ) as client:
             response = await client.get("/api/v1/runs/not-a-real-id")
             assert response.status_code == 404
+
+    asyncio.run(scenario())
+
+
+def test_llm_flag_disables_an_injected_builder(tmp_path):
+    class UnexpectedBuilder:
+        def build(self, run_id):
+            raise AssertionError("The disabled LLM builder must not be called")
+
+    app = make_client(tmp_path)
+    app.state.settings = Settings(
+        database_url="sqlite://",
+        example_docs_dir=tmp_path / "examples",
+        process_model_mode="llm",
+        llm_enabled=False,
+    )
+
+    sessions = app.state.session_factory
+    disabled_app = create_app(
+        settings=app.state.settings,
+        session_factory=sessions,
+        process_model_builder=UnexpectedBuilder(),
+    )
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=disabled_app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post("/api/v1/runs", data={"source": "example"})
+            assert response.status_code == 201
+            body = response.json()
+            assert body["process_model_available"] is False
+            assert body["process_model_unavailable_reason"] == "Без LLM"
+
+            process = await client.post(body["process_model_url"])
+            assert process.status_code == 503
+            assert process.json()["code"] == "without_llm"
 
     asyncio.run(scenario())

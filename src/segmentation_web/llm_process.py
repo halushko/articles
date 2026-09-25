@@ -178,6 +178,10 @@ class LLMProviderError(RuntimeError):
     pass
 
 
+class LLMUnavailableError(LLMProviderError):
+    """Raised when the provider confirms that no paid LLM quota is available."""
+
+
 class ProcessExtractionError(ValueError):
     pass
 
@@ -355,6 +359,8 @@ class OpenAICompatibleClient:
                 )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if _is_exhausted_quota_response(exc.response):
+                raise LLMUnavailableError("Без LLM") from exc
             detail = exc.response.text[:500]
             raise LLMProviderError(
                 f"LLM provider returned HTTP {exc.response.status_code}: {detail}"
@@ -444,6 +450,46 @@ def _strip_json_fence(value: str) -> str:
         if len(lines) >= 3:
             return "\n".join(lines[1:-1]).strip()
     return value
+
+
+def _is_exhausted_quota_response(response: httpx.Response) -> bool:
+    if response.status_code not in {402, 429}:
+        return False
+
+    error_type = ""
+    error_code = ""
+    error_message = ""
+    try:
+        body = response.json()
+        error = body.get("error", body) if isinstance(body, dict) else {}
+        if isinstance(error, dict):
+            error_type = str(error.get("type") or "").strip().lower()
+            error_code = str(error.get("code") or "").strip().lower()
+            error_message = str(error.get("message") or "").strip().lower()
+    except (TypeError, ValueError):
+        error_message = response.text[:500].strip().lower()
+
+    exhausted_codes = {
+        "billing_hard_limit_reached",
+        "billing_not_active",
+        "credits_exhausted",
+        "insufficient_credits",
+        "insufficient_quota",
+        "usage_limit_reached",
+    }
+    if error_type in exhausted_codes or error_code in exhausted_codes:
+        return True
+
+    exhausted_messages = (
+        "billing hard limit",
+        "credit balance",
+        "credits are exhausted",
+        "exceeded your current quota",
+        "insufficient credits",
+        "no credits remaining",
+        "plan and billing details",
+    )
+    return any(marker in error_message for marker in exhausted_messages)
 
 
 def _optional_int(value: Any) -> int | None:

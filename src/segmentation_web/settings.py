@@ -5,12 +5,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    value = raw_value.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        f"{name} must be one of: true, false, 1, 0, yes, no, on, off"
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
     example_docs_dir: Path
     control_process_path: Path = Path("examples/access_recovery_process.md")
     process_model_mode: str = "llm"
+    llm_enabled: bool = True
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = field(default="", repr=False)
     llm_model: str = "gpt-5-mini"
@@ -40,6 +56,7 @@ class Settings:
                 )
             ),
             process_model_mode=os.getenv("PROCESS_MODEL_MODE", "llm").strip(),
+            llm_enabled=_env_bool("LLM_ENABLED", True),
             llm_base_url=os.getenv(
                 "LLM_BASE_URL",
                 "https://api.openai.com/v1",
@@ -68,4 +85,9 @@ class Settings:
 
     @property
     def llm_configured(self) -> bool:
-        return bool(self.llm_api_key and self.llm_model and self.llm_base_url)
+        return bool(
+            self.llm_enabled
+            and self.llm_api_key
+            and self.llm_model
+            and self.llm_base_url
+        )
