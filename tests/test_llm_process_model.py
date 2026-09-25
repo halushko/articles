@@ -16,6 +16,7 @@ from segmentation_web.db_models import LLMExtractionResult, ProcessModelResult
 from segmentation_web.llm_process import (
     LLMCompletion,
     LLMProcessModelBuilder,
+    LLMProviderError,
     OpenAICompatibleClient,
     ProcessExtractionError,
 )
@@ -303,7 +304,11 @@ def test_openai_compatible_client_requests_strict_structured_output(monkeypatch)
                         "message": {"content": '{"nodes":[],"edges":[]}'},
                     }
                 ],
-                "usage": {"prompt_tokens": 12, "completion_tokens": 7},
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 7,
+                    "completion_tokens_details": {"reasoning_tokens": 2},
+                },
             },
         )
 
@@ -350,7 +355,63 @@ def test_openai_compatible_client_requests_strict_structured_output(monkeypatch)
         },
     }
     assert captured["body"]["max_completion_tokens"] == 500
+    assert captured["body"]["reasoning_effort"] == "low"
     assert completion.data == {"nodes": [], "edges": []}
     assert completion.request_id == "request-123"
     assert completion.input_tokens == 12
     assert completion.output_tokens == 7
+    assert completion.reasoning_tokens == 2
+
+
+def test_openai_compatible_client_reports_truncated_structured_output(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "request-truncated"},
+            json={
+                "id": "completion-truncated",
+                "model": "test-model",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": ""},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 9000,
+                    "completion_tokens": 12000,
+                    "completion_tokens_details": {"reasoning_tokens": 11950},
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=12000,
+        response_format="json_schema",
+        reasoning_effort="low",
+    )
+
+    with pytest.raises(LLMProviderError) as error:
+        client.complete_json(
+            schema_name="process_graph",
+            schema={"type": "object"},
+            system_prompt="Return grounded JSON",
+            user_payload={"documents": []},
+        )
+
+    message = str(error.value)
+    assert "truncated" in message
+    assert "finish_reason=length" in message
+    assert "reasoning_tokens=11950" in message
+    assert "request_id=request-truncated" in message

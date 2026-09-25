@@ -217,12 +217,17 @@ LLM_RESPONSE_FORMAT=json_schema
 LLM_TIMEOUT_SECONDS=180
 LLM_MAX_INPUT_CHARS=120000
 LLM_MAX_OUTPUT_TOKENS=12000
+LLM_REASONING_EFFORT=low
 ```
 
 `json_schema` є рекомендованим режимом: провайдер має підтримувати OpenAI-style
 Structured Outputs. Для сумісного сервера без цього режиму можна встановити
 `LLM_RESPONSE_FORMAT=json_object`; серверна валідація результату все одно
 залишається обов'язковою.
+
+`LLM_REASONING_EFFORT=low` залишає основну частину completion-бюджету для
+великого структурованого JSON. Якщо провайдер не підтримує цей OpenAI-параметр,
+задайте порожнє значення `LLM_REASONING_EFFORT=`.
 
 Поточна версія робить один LLM-запит на корпус, щоб модель бачила міждокументні
 залежності. Якщо serialized prompt перевищує `LLM_MAX_INPUT_CHARS`, операція
