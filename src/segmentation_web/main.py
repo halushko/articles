@@ -14,6 +14,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
 from .archive import InputValidationError, documents_from_directory, documents_from_zip
+from .control_process import (
+    ControlProcessModelBuilder,
+    ProcessModelSummary,
+    ProcessModelUnavailableError,
+)
 from .database import create_database_engine, create_session_factory
 from .documentation_graph import (
     DocumentationGraphBuilder,
@@ -37,6 +42,17 @@ def _graph_response(summary: DocumentationGraphSummary) -> dict[str, object]:
     }
 
 
+def _process_model_response(summary: ProcessModelSummary) -> dict[str, object]:
+    return {
+        "process_model_id": summary.id,
+        "run_id": summary.run_id,
+        "level_count": summary.level_count,
+        "atomic_node_count": summary.atomic_node_count,
+        "cache_hit": summary.cache_hit,
+        "process_model": summary.payload,
+    }
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -48,9 +64,12 @@ def create_app(
         session_factory = create_session_factory(engine)
 
     app = FastAPI(
-        title="Documentation Fragmentation MVP",
-        version="0.1.0",
-        description="Segment Markdown documentation into versioned fragment cards.",
+        title="Documentation to Process Hierarchy",
+        version="0.2.0",
+        description=(
+            "Segment Markdown documentation, inspect its source structure, "
+            "and build a traceable hierarchical control process model."
+        ),
     )
     app.state.settings = app_settings
     app.state.session_factory = session_factory
@@ -111,6 +130,7 @@ def create_app(
         return JSONResponse(
             {
                 "run_id": summary.run_id,
+                "source_type": summary.source_type,
                 "status": summary.status,
                 "corpus_sha256": summary.corpus_sha256,
                 "document_count": summary.document_count,
@@ -120,6 +140,8 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
+                "process_model_available": summary.source_type == "example",
+                "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             },
             status_code=201,
         )
@@ -133,6 +155,7 @@ def create_app(
         return JSONResponse(
             {
                 "run_id": summary.run_id,
+                "source_type": summary.source_type,
                 "status": summary.status,
                 "corpus_sha256": summary.corpus_sha256,
                 "document_count": summary.document_count,
@@ -142,6 +165,8 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
+                "process_model_available": summary.source_type == "example",
+                "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             }
         )
 
@@ -174,6 +199,42 @@ def create_app(
                 detail="Documentation graph has not been built for this run",
             )
         return JSONResponse(_graph_response(summary))
+
+    @app.post("/api/v1/runs/{run_id}/process-model")
+    async def build_process_model(run_id: str) -> JSONResponse:
+        builder = ControlProcessModelBuilder(
+            session_factory,
+            app_settings.control_process_path,
+        )
+        try:
+            summary = await run_in_threadpool(builder.build, run_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404, detail="Segmentation run not found"
+            ) from exc
+        except ProcessModelUnavailableError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return JSONResponse(
+            _process_model_response(summary),
+            status_code=200 if summary.cache_hit else 201,
+        )
+
+    @app.get("/api/v1/runs/{run_id}/process-model")
+    async def get_process_model(run_id: str) -> JSONResponse:
+        summary = await run_in_threadpool(
+            ControlProcessModelBuilder(
+                session_factory,
+                app_settings.control_process_path,
+            ).get,
+            run_id,
+        )
+        if summary is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Process model has not been built for this run",
+            )
+        return JSONResponse(_process_model_response(summary))
 
     @app.get("/api/v1/runs/{run_id}/result")
     async def download_result(run_id: str) -> StreamingResponse:

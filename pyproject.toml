@@ -28,6 +28,7 @@ dev = [
 
 [project.scripts]
 fragment-segment = "fragment_segmenter.cli:main"
+process-hierarchy = "process_hierarchy.cli:main"
 segmentation-web = "segmentation_web.cli:main"
 
 [tool.setuptools.packages.find]

@@ -6,19 +6,34 @@ const statusPanel = document.querySelector("#status-panel");
 const statusMessage = document.querySelector("#status-message");
 const runMetrics = document.querySelector("#run-metrics");
 const downloadLink = document.querySelector("#download-link");
-const graphButton = document.querySelector("#graph-button");
-const graphPanel = document.querySelector("#graph-panel");
-const graphMessage = document.querySelector("#graph-message");
-const graphMetrics = document.querySelector("#graph-metrics");
-const graphCanvas = document.querySelector("#graph-canvas");
-const graphEdges = document.querySelector("#graph-edges");
-const graphNodes = document.querySelector("#graph-nodes");
-const nodeDetails = document.querySelector("#node-details");
+
+const documentationButton = document.querySelector("#documentation-button");
+const documentationPanel = document.querySelector("#documentation-panel");
+const documentationMessage = document.querySelector("#documentation-message");
+const documentationMetrics = document.querySelector("#documentation-metrics");
+const documentCards = document.querySelector("#document-cards");
+const referenceList = document.querySelector("#reference-list");
+const documentSelect = document.querySelector("#document-select");
+const documentTree = document.querySelector("#document-tree");
+
+const processButton = document.querySelector("#process-button");
+const processPanel = document.querySelector("#process-panel");
+const processMessage = document.querySelector("#process-message");
+const processMetrics = document.querySelector("#process-metrics");
+const derivationNote = document.querySelector("#derivation-note");
+const processCanvas = document.querySelector("#process-canvas");
+const processEdges = document.querySelector("#process-edges");
+const processNodes = document.querySelector("#process-nodes");
+const processDetails = document.querySelector("#process-details");
+const aggregationTableBody = document.querySelector("#aggregation-table-body");
 
 let documentationGraphUrl = null;
-let graphData = null;
-let expandedNodes = new Set();
-let selectedNodeId = null;
+let processModelUrl = null;
+let documentationGraph = null;
+let processModel = null;
+let processIndexCache = null;
+let selectedProcessNodeId = null;
+let visibleProcessNodeIds = new Set();
 
 function selectedSource() {
   return form.querySelector('input[name="source"]:checked').value;
@@ -33,6 +48,24 @@ function updateSourceUI() {
   });
 }
 
+function setText(selector, value) {
+  document.querySelector(selector).textContent = value;
+}
+
+function lineLabel(source) {
+  const start = source?.line_start;
+  const end = source?.line_end;
+  if (!start) return "line not recorded";
+  return end && end !== start ? `lines ${start}–${end}` : `line ${start}`;
+}
+
+function emptyState(message) {
+  const paragraph = document.createElement("p");
+  paragraph.className = "context-note";
+  paragraph.textContent = message;
+  return paragraph;
+}
+
 form.querySelectorAll('input[name="source"]').forEach((input) => {
   input.addEventListener("change", updateSourceUI);
 });
@@ -40,7 +73,6 @@ form.querySelectorAll('input[name="source"]').forEach((input) => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const source = selectedSource();
-
   if (source === "upload" && !archiveInput.files.length) {
     archiveInput.reportValidity();
     return;
@@ -48,37 +80,40 @@ form.addEventListener("submit", async (event) => {
 
   const payload = new FormData();
   payload.append("source", source);
-  if (source === "upload") {
-    payload.append("archive", archiveInput.files[0]);
-  }
+  if (source === "upload") payload.append("archive", archiveInput.files[0]);
 
   statusPanel.hidden = false;
   statusMessage.textContent = "Segmenting documentation…";
   runMetrics.hidden = true;
   downloadLink.hidden = true;
-  graphButton.hidden = true;
-  graphPanel.hidden = true;
+  documentationButton.hidden = true;
+  processButton.hidden = true;
+  documentationPanel.hidden = true;
+  processPanel.hidden = true;
   documentationGraphUrl = null;
+  processModelUrl = null;
+  documentationGraph = null;
+  processModel = null;
   runButton.disabled = true;
 
   try {
     const response = await fetch("/api/v1/runs", { method: "POST", body: payload });
     const body = await response.json();
-    if (!response.ok) {
-      throw new Error(body.detail || "The segmentation run failed.");
-    }
+    if (!response.ok) throw new Error(body.detail || "The segmentation run failed.");
 
     statusMessage.textContent = body.status === "completed"
-      ? "Segmentation completed. You can now inspect its documentation graph."
+      ? "Segmentation completed. Inspect the source structure before building the process hierarchy."
       : "Segmentation completed with errors; see errors.json in the result.";
-    document.querySelector("#document-count").textContent = body.document_count;
-    document.querySelector("#fragment-count").textContent = body.fragment_count;
-    document.querySelector("#cache-hits").textContent = body.cache_hits;
+    setText("#document-count", body.document_count);
+    setText("#fragment-count", body.fragment_count);
+    setText("#cache-hits", body.cache_hits);
     runMetrics.hidden = false;
     downloadLink.href = body.result_url;
     downloadLink.hidden = false;
     documentationGraphUrl = body.documentation_graph_url;
-    graphButton.hidden = !documentationGraphUrl;
+    processModelUrl = body.process_model_url;
+    documentationButton.hidden = !documentationGraphUrl;
+    processButton.hidden = !body.process_model_available;
   } catch (error) {
     statusMessage.textContent = error.message;
   } finally {
@@ -86,224 +121,629 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-graphButton.addEventListener("click", async () => {
+documentationButton.addEventListener("click", async () => {
   if (!documentationGraphUrl) return;
-
-  graphPanel.hidden = false;
-  graphMessage.textContent = "Building the documentation graph…";
-  graphMetrics.hidden = true;
-  graphButton.disabled = true;
-
+  documentationPanel.hidden = false;
+  documentationMessage.textContent = "Reading document structure and explicit references…";
+  documentationMetrics.hidden = true;
+  documentationButton.disabled = true;
   try {
     const response = await fetch(documentationGraphUrl, { method: "POST" });
     const body = await response.json();
-    if (!response.ok) {
-      throw new Error(body.detail || "The documentation graph could not be built.");
-    }
-
-    graphData = body.graph;
-    expandedNodes = new Set();
-    selectedNodeId = null;
-    document.querySelector("#graph-node-count").textContent = body.node_count;
-    document.querySelector("#graph-edge-count").textContent = body.edge_count;
-    graphMetrics.hidden = false;
-    graphMessage.textContent = graphData.semantic_analysis.message;
-    graphButton.textContent = "Reopen documentation graph";
-    renderGraph();
-    graphPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!response.ok) throw new Error(body.detail || "The documentation view could not be built.");
+    documentationGraph = body.graph;
+    renderDocumentationExplorer();
+    documentationButton.textContent = "Reopen documentation";
+    documentationPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
-    graphMessage.textContent = error.message;
+    documentationMessage.textContent = error.message;
   } finally {
-    graphButton.disabled = false;
+    documentationButton.disabled = false;
   }
 });
 
-function graphIndex() {
-  const nodeById = new Map(graphData.nodes.map((node) => [node.id, node]));
+function documentationIndex() {
+  const nodeById = new Map(documentationGraph.nodes.map((node) => [node.id, node]));
   const childrenById = new Map();
-  graphData.nodes.forEach((node) => {
+  documentationGraph.nodes.forEach((node) => {
     if (!node.parent_id) return;
     if (!childrenById.has(node.parent_id)) childrenById.set(node.parent_id, []);
     childrenById.get(node.parent_id).push(node);
   });
   childrenById.forEach((children) => children.sort((left, right) => {
-    const leftLine = left.source.line_start || left.metadata.position || 0;
-    const rightLine = right.source.line_start || right.metadata.position || 0;
+    const leftLine = Number(left.source?.line_start || left.metadata?.position || 0);
+    const rightLine = Number(right.source?.line_start || right.metadata?.position || 0);
     return leftLine - rightLine || left.label.localeCompare(right.label);
   }));
-  return { nodeById, childrenById };
+  const documents = documentationGraph.nodes
+    .filter((node) => node.type === "document")
+    .sort((left, right) => left.metadata.position - right.metadata.position);
+  return { nodeById, childrenById, documents };
 }
 
-function visibleTree(index) {
-  const visible = [];
-  const visit = (node) => {
-    visible.push(node);
-    if (!expandedNodes.has(node.id)) return;
-    (index.childrenById.get(node.id) || []).forEach(visit);
-  };
-  graphData.nodes
-    .filter((node) => node.parent_id === null)
-    .sort((left, right) => left.metadata.position - right.metadata.position)
-    .forEach(visit);
-  return visible;
+function renderDocumentationExplorer() {
+  const index = documentationIndex();
+  const references = documentationGraph.edges.filter((edge) => edge.type === "references");
+  setText("#documentation-count", index.documents.length);
+  setText("#reference-count", references.length);
+  documentationMetrics.hidden = false;
+  documentationMessage.textContent = documentationGraph.semantic_analysis.message;
+
+  documentCards.replaceChildren();
+  documentSelect.replaceChildren();
+  index.documents.forEach((doc) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "document-card";
+    const title = document.createElement("strong");
+    title.textContent = doc.label;
+    const meta = document.createElement("small");
+    meta.textContent = `${doc.metadata.leaf_fragment_count} leaf fragments · ${doc.source.path}`;
+    card.append(title, meta);
+    card.addEventListener("click", () => openDocumentStructure(doc.id));
+    documentCards.append(card);
+
+    const option = document.createElement("option");
+    option.value = doc.id;
+    option.textContent = doc.label;
+    documentSelect.append(option);
+  });
+
+  referenceList.replaceChildren();
+  if (!references.length) {
+    referenceList.append(emptyState("No explicit references between document titles were found."));
+  } else {
+    references.forEach((edge) => {
+      const source = index.nodeById.get(edge.source);
+      const target = index.nodeById.get(edge.target);
+      const item = document.createElement("details");
+      item.className = "reference-item";
+      const summary = document.createElement("summary");
+      const sourceName = document.createElement("strong");
+      sourceName.textContent = source?.label || edge.source;
+      const arrow = document.createElement("span");
+      arrow.className = "reference-arrow";
+      arrow.textContent = "→";
+      const targetName = document.createElement("strong");
+      targetName.textContent = target?.label || edge.target;
+      const badge = document.createElement("span");
+      badge.className = "reference-badge";
+      badge.textContent = `${edge.evidence.length} source ${edge.evidence.length === 1 ? "quote" : "quotes"}`;
+      summary.append(sourceName, arrow, targetName, badge);
+      item.append(summary);
+
+      const evidenceBox = document.createElement("div");
+      evidenceBox.className = "reference-evidence";
+      edge.evidence.forEach((evidence) => {
+        const quote = document.createElement("p");
+        quote.className = "evidence-quote";
+        quote.textContent = `“${evidence.quote}”`;
+        const meta = document.createElement("div");
+        meta.className = "source-meta";
+        const sourceNode = index.nodeById.get(evidence.node_id);
+        meta.textContent = `${source?.source.path || "source document"} · ${lineLabel(sourceNode?.source)}`;
+        evidenceBox.append(quote, meta);
+      });
+      item.append(evidenceBox);
+      referenceList.append(item);
+    });
+  }
+
+  if (index.documents.length) {
+    documentSelect.value = index.documents[0].id;
+    renderDocumentTree(index.documents[0].id);
+  }
 }
 
-function layoutVisibleNodes(index, visibleNodes) {
-  const visibleIds = new Set(visibleNodes.map((node) => node.id));
-  const positions = new Map();
-  const nodeWidth = 260;
-  const nodeHeight = 70;
-  const xGap = 90;
-  const yGap = 22;
-  const rootGap = 34;
-  let cursorY = 36;
-  let maxDepth = 0;
+document.querySelectorAll("[data-documentation-view]").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("[data-documentation-view]").forEach((candidate) => {
+      candidate.classList.toggle("active", candidate === button);
+    });
+    const structure = button.dataset.documentationView === "structure";
+    document.querySelector("#documentation-map-view").hidden = structure;
+    document.querySelector("#documentation-structure-view").hidden = !structure;
+  });
+});
 
-  const place = (node, visibleDepth) => {
-    maxDepth = Math.max(maxDepth, visibleDepth);
-    const children = (index.childrenById.get(node.id) || [])
-      .filter((child) => visibleIds.has(child.id));
-    let centerY;
-    if (children.length) {
-      const childCenters = children.map((child) => place(child, visibleDepth + 1));
-      centerY = (childCenters[0] + childCenters[childCenters.length - 1]) / 2;
-    } else {
-      centerY = cursorY + nodeHeight / 2;
-      cursorY += nodeHeight + yGap;
+documentSelect.addEventListener("change", () => renderDocumentTree(documentSelect.value));
+
+function openDocumentStructure(documentId) {
+  documentSelect.value = documentId;
+  renderDocumentTree(documentId);
+  document.querySelector('[data-documentation-view="structure"]').click();
+}
+
+function fragmentCard(node) {
+  const card = document.createElement("article");
+  card.className = "fragment-card";
+  const text = document.createElement("p");
+  text.textContent = node.label;
+  const meta = document.createElement("div");
+  meta.className = "fragment-meta";
+  const type = document.createElement("span");
+  type.textContent = node.metadata.fragment_type || "fragment";
+  const lines = document.createElement("span");
+  lines.textContent = lineLabel(node.source);
+  const method = document.createElement("span");
+  method.textContent = node.metadata.segmentation_method || "structural";
+  meta.append(type, lines, method);
+  card.append(text, meta);
+  return card;
+}
+
+function sectionBranch(node, index) {
+  const branch = document.createElement("details");
+  branch.className = "section-branch";
+  branch.open = node.depth <= 1;
+  const summary = document.createElement("summary");
+  summary.textContent = node.label;
+  branch.append(summary);
+  const fragments = document.createElement("div");
+  fragments.className = "fragment-list";
+  (index.childrenById.get(node.id) || []).forEach((child) => {
+    fragments.append(child.type === "section" ? sectionBranch(child, index) : fragmentCard(child));
+  });
+  branch.append(fragments);
+  return branch;
+}
+
+function renderDocumentTree(documentId) {
+  if (!documentationGraph) return;
+  const index = documentationIndex();
+  const doc = index.nodeById.get(documentId);
+  documentTree.replaceChildren();
+  if (!doc) return;
+  const children = index.childrenById.get(documentId) || [];
+  const rootFragments = children.filter((node) => node.type === "fragment");
+  if (rootFragments.length) {
+    const rootBox = document.createElement("div");
+    rootBox.className = "document-root-fragments fragment-list";
+    rootFragments.forEach((fragment) => rootBox.append(fragmentCard(fragment)));
+    documentTree.append(rootBox);
+  }
+  children
+    .filter((node) => node.type === "section")
+    .forEach((section) => documentTree.append(sectionBranch(section, index)));
+  if (!children.length) documentTree.append(emptyState("This document contains no active leaf fragments."));
+}
+
+processButton.addEventListener("click", async () => {
+  if (!processModelUrl) return;
+  processPanel.hidden = false;
+  processMessage.textContent = "Building the deterministic control hierarchy…";
+  processMetrics.hidden = true;
+  processButton.disabled = true;
+  try {
+    const response = await fetch(processModelUrl, { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || "The process hierarchy could not be built.");
+    processModel = body.process_model;
+    derivationNote.textContent = processModel.derivation.message;
+    processMessage.textContent = "Choose a level or expand individual stages. Every action remains linked to source evidence.";
+    setExactProcessLevel(2);
+    renderAggregationTable();
+    processButton.textContent = "Reopen process hierarchy";
+    processPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    processMessage.textContent = error.message;
+  } finally {
+    processButton.disabled = false;
+  }
+});
+
+function processGraphs() {
+  const graphs = new Map([[0, processModel.hierarchy.base_graph]]);
+  processModel.hierarchy.levels.forEach((level) => graphs.set(level.target_level, level.graph));
+  return graphs;
+}
+
+function atomicNumber(nodeId) {
+  const match = /^v(\d+)$/.exec(nodeId);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+function processNodeOrder(leftId, rightId) {
+  const left = processIndexCache?.nodeById.get(leftId);
+  const right = processIndexCache?.nodeById.get(rightId);
+  const leftMember = Math.min(...(left?.member_ids || [leftId]).map(atomicNumber));
+  const rightMember = Math.min(...(right?.member_ids || [rightId]).map(atomicNumber));
+  return leftMember - rightMember || leftId.localeCompare(rightId);
+}
+
+function processIndex() {
+  const graphs = processGraphs();
+  const nodeById = new Map();
+  graphs.forEach((graph) => graph.nodes.forEach((node) => nodeById.set(node.id, node)));
+  const childrenByParent = new Map();
+  const parentByChild = new Map();
+  processModel.hierarchy.levels.forEach((level) => {
+    Object.entries(level.mapping).forEach(([child, parent]) => {
+      if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+      childrenByParent.get(parent).push(child);
+      parentByChild.set(child, parent);
+    });
+  });
+  const scoreByNode = new Map();
+  processModel.hierarchy.levels.forEach((level) => {
+    level.accepted_candidates.forEach((candidate) => {
+      const target = level.mapping[candidate.visible_node_ids[0]];
+      if (target) scoreByNode.set(target, candidate);
+    });
+  });
+  return { graphs, nodeById, childrenByParent, parentByChild, scoreByNode };
+}
+
+document.querySelectorAll("[data-process-level]").forEach((button) => {
+  button.addEventListener("click", () => setExactProcessLevel(Number(button.dataset.processLevel)));
+});
+
+function setExactProcessLevel(level) {
+  if (!processModel) return;
+  processIndexCache = processIndex();
+  processIndexCache.childrenByParent.forEach((children) => children.sort(processNodeOrder));
+  const graph = processIndexCache.graphs.get(level);
+  if (!graph) return;
+  visibleProcessNodeIds = new Set(graph.nodes.map((node) => node.id));
+  selectedProcessNodeId = null;
+  processDetails.hidden = true;
+  document.querySelectorAll("[data-process-level]").forEach((button) => {
+    button.classList.toggle("active", Number(button.dataset.processLevel) === level);
+  });
+  renderProcessGraph();
+}
+
+function expandProcessNode(nodeId) {
+  const children = processIndexCache.childrenByParent.get(nodeId) || [];
+  if (!children.length) return;
+  visibleProcessNodeIds.delete(nodeId);
+  children.forEach((child) => visibleProcessNodeIds.add(child));
+  selectedProcessNodeId = null;
+  processDetails.hidden = true;
+  document.querySelectorAll("[data-process-level]").forEach((button) => button.classList.remove("active"));
+  renderProcessGraph();
+}
+
+function collapseToProcessParent(parentId) {
+  const parent = processIndexCache.nodeById.get(parentId);
+  if (!parent) return;
+  const members = new Set(parent.member_ids);
+  [...visibleProcessNodeIds].forEach((visibleId) => {
+    const visible = processIndexCache.nodeById.get(visibleId);
+    if (visible && visible.member_ids.every((member) => members.has(member))) {
+      visibleProcessNodeIds.delete(visibleId);
     }
-    positions.set(node.id, {
-      x: 28 + visibleDepth * (nodeWidth + xGap),
-      y: centerY - nodeHeight / 2,
-      width: nodeWidth,
-      height: nodeHeight,
-      centerY,
-    });
-    return centerY;
-  };
+  });
+  visibleProcessNodeIds.add(parentId);
+  selectedProcessNodeId = parentId;
+  document.querySelectorAll("[data-process-level]").forEach((button) => button.classList.remove("active"));
+  renderProcessGraph();
+  showProcessDetails(parentId);
+}
 
-  visibleNodes
-    .filter((node) => node.parent_id === null)
-    .forEach((root) => {
-      place(root, 0);
-      cursorY += rootGap;
-    });
+function visibleRepresentative(atomicId) {
+  for (const visibleId of visibleProcessNodeIds) {
+    const visible = processIndexCache.nodeById.get(visibleId);
+    if (visible?.member_ids.includes(atomicId)) return visibleId;
+  }
+  return null;
+}
 
+function visibleProcessEdges() {
+  const groups = new Map();
+  processModel.hierarchy.base_graph.edges.forEach((edge) => {
+    const source = visibleRepresentative(edge.source);
+    const target = visibleRepresentative(edge.target);
+    if (!source || !target || source === target) return;
+    const key = `${source}\u001f${target}`;
+    if (!groups.has(key)) {
+      groups.set(key, { source, target, types: new Set(), conditions: new Set(), originalIds: [] });
+    }
+    const group = groups.get(key);
+    group.types.add(edge.edge_type);
+    if (edge.condition) group.conditions.add(edge.condition);
+    group.originalIds.push(...edge.original_edge_ids);
+  });
+  return [...groups.values()].map((group, index) => ({
+    id: `visible-edge-${index + 1}`,
+    source: group.source,
+    target: group.target,
+    edgeType: group.types.size === 1 ? [...group.types][0] : "mixed",
+    condition: [...group.conditions].join(" | "),
+    originalIds: [...new Set(group.originalIds)],
+  }));
+}
+
+function processLayout(nodeIds, edges) {
+  const outgoing = new Map(nodeIds.map((id) => [id, []]));
+  const indegree = new Map(nodeIds.map((id) => [id, 0]));
+  edges.forEach((edge) => {
+    outgoing.get(edge.source).push(edge.target);
+    indegree.set(edge.target, indegree.get(edge.target) + 1);
+  });
+  const queue = nodeIds.filter((id) => indegree.get(id) === 0).sort(processNodeOrder);
+  const layers = new Map(nodeIds.map((id) => [id, 0]));
+  const visited = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    visited.add(current);
+    (outgoing.get(current) || []).forEach((target) => {
+      layers.set(target, Math.max(layers.get(target), layers.get(current) + 1));
+      indegree.set(target, indegree.get(target) - 1);
+      if (indegree.get(target) === 0) {
+        queue.push(target);
+        queue.sort(processNodeOrder);
+      }
+    });
+  }
+  nodeIds.filter((id) => !visited.has(id)).sort(processNodeOrder).forEach((id, index) => {
+    layers.set(id, Math.max(layers.get(id), index));
+  });
+
+  const byLayer = new Map();
+  nodeIds.forEach((id) => {
+    const layer = layers.get(id);
+    if (!byLayer.has(layer)) byLayer.set(layer, []);
+    byLayer.get(layer).push(id);
+  });
+  byLayer.forEach((ids) => ids.sort(processNodeOrder));
+
+  const width = 230;
+  const height = 94;
+  const horizontalGap = 150;
+  const verticalGap = 42;
+  const margin = 34;
+  const maxRows = Math.max(...[...byLayer.values()].map((ids) => ids.length));
+  const positions = new Map();
+  byLayer.forEach((ids, layer) => {
+    const columnHeight = ids.length * height + Math.max(0, ids.length - 1) * verticalGap;
+    const totalHeight = maxRows * height + Math.max(0, maxRows - 1) * verticalGap;
+    const startY = margin + (totalHeight - columnHeight) / 2;
+    ids.forEach((id, row) => {
+      positions.set(id, {
+        x: margin + layer * (width + horizontalGap),
+        y: startY + row * (height + verticalGap),
+        width,
+        height,
+      });
+    });
+  });
+  const maxLayer = Math.max(...layers.values());
   return {
     positions,
-    width: Math.max(760, 56 + (maxDepth + 1) * nodeWidth + maxDepth * xGap),
-    height: Math.max(278, cursorY + 16),
+    width: Math.max(820, margin * 2 + (maxLayer + 1) * width + maxLayer * horizontalGap),
+    height: Math.max(360, margin * 2 + maxRows * height + Math.max(0, maxRows - 1) * verticalGap),
   };
 }
 
-function edgePath(source, target, type) {
-  if (type === "references" && source.x === target.x) {
-    const sourceX = source.x + source.width;
-    const targetX = target.x + target.width;
-    const loopX = sourceX + 42;
-    return `M ${sourceX} ${source.centerY} C ${loopX} ${source.centerY}, ${loopX} ${target.centerY}, ${targetX} ${target.centerY}`;
-  }
-  const sourceX = source.x + source.width;
-  const targetX = target.x;
-  const middle = (sourceX + targetX) / 2;
-  return `M ${sourceX} ${source.centerY} C ${middle} ${source.centerY}, ${middle} ${target.centerY}, ${targetX} ${target.centerY}`;
+function svgElement(name, attributes = {}) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+  return element;
 }
 
-function renderGraph() {
-  if (!graphData) return;
-  const index = graphIndex();
-  const visibleNodes = visibleTree(index);
-  const visibleIds = new Set(visibleNodes.map((node) => node.id));
-  const layout = layoutVisibleNodes(index, visibleNodes);
-
-  graphCanvas.style.width = `${layout.width}px`;
-  graphCanvas.style.height = `${layout.height}px`;
-  graphEdges.setAttribute("width", layout.width);
-  graphEdges.setAttribute("height", layout.height);
-  graphEdges.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
-  graphEdges.replaceChildren();
-  graphNodes.replaceChildren();
-
-  graphData.edges.forEach((edge) => {
-    if (!visibleIds.has(edge.source) || !visibleIds.has(edge.target)) return;
-    const source = layout.positions.get(edge.source);
-    const target = layout.positions.get(edge.target);
-    if (!source || !target) return;
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    const classNames = ["graph-edge"];
-    if (edge.type === "references") classNames.push("graph-edge-reference");
-    if (edge.type === "document_order") classNames.push("graph-edge-order");
-    path.setAttribute("class", classNames.join(" "));
-    path.setAttribute("d", edgePath(source, target, edge.type));
-    graphEdges.append(path);
+function addArrowMarkers() {
+  const defs = svgElement("defs");
+  [["arrow-sequence", "#8491a7"], ["arrow-conditional", "#c47c17"]].forEach(([id, color]) => {
+    const marker = svgElement("marker", {
+      id,
+      viewBox: "0 0 10 10",
+      refX: "9",
+      refY: "5",
+      markerWidth: "7",
+      markerHeight: "7",
+      orient: "auto-start-reverse",
+    });
+    marker.append(svgElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: color }));
+    defs.append(marker);
   });
+  processEdges.append(defs);
+}
 
-  visibleNodes.forEach((node) => {
-    const position = layout.positions.get(node.id);
-    const children = index.childrenById.get(node.id) || [];
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `graph-node graph-node-${node.type}`;
-    if (node.id === selectedNodeId) button.classList.add("selected");
-    button.style.left = `${position.x}px`;
-    button.style.top = `${position.y}px`;
-    button.dataset.nodeId = node.id;
-    button.title = children.length
-      ? "Double-click to expand or collapse"
-      : "Select to inspect source";
+function renderProcessEdge(edge, layout) {
+  const source = layout.positions.get(edge.source);
+  const target = layout.positions.get(edge.target);
+  if (!source || !target) return;
+  const sourceX = source.x + source.width;
+  const sourceY = source.y + source.height / 2;
+  const targetX = target.x;
+  const targetY = target.y + target.height / 2;
+  const middleX = sourceX + (targetX - sourceX) / 2;
+  const isConditional = edge.edgeType !== "sequence";
+  const path = svgElement("path", {
+    class: `process-edge${isConditional ? " process-edge-conditional" : ""}`,
+    d: `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`,
+  });
+  const title = svgElement("title");
+  title.textContent = `${edge.source} → ${edge.target}; ${edge.edgeType}; ${edge.condition || "no condition"}; source transitions: ${edge.originalIds.join(", ")}`;
+  path.append(title);
+  processEdges.append(path);
 
-    const kind = document.createElement("span");
-    kind.className = "node-kind";
-    kind.textContent = node.type;
+  if (edge.condition) {
+    const labelX = middleX;
+    const labelY = (sourceY + targetY) / 2;
+    const visibleLabel = edge.condition.length > 30
+      ? `${edge.condition.slice(0, 29)}…`
+      : edge.condition;
+    const labelWidth = Math.max(54, visibleLabel.length * 6.2 + 16);
+    processEdges.append(svgElement("rect", {
+      class: "process-edge-label-bg",
+      x: String(labelX - labelWidth / 2),
+      y: String(labelY - 11),
+      width: String(labelWidth),
+      height: "22",
+      rx: "6",
+    }));
+    const label = svgElement("text", {
+      class: "process-edge-label",
+      x: String(labelX),
+      y: String(labelY),
+    });
+    label.textContent = visibleLabel;
+    processEdges.append(label);
+  }
+}
+
+function renderProcessGraph() {
+  if (!processModel) return;
+  if (!processIndexCache) processIndexCache = processIndex();
+  const nodeIds = [...visibleProcessNodeIds].sort(processNodeOrder);
+  const edges = visibleProcessEdges();
+  const layout = processLayout(nodeIds, edges);
+
+  processCanvas.style.width = `${layout.width}px`;
+  processCanvas.style.height = `${layout.height}px`;
+  processEdges.setAttribute("width", layout.width);
+  processEdges.setAttribute("height", layout.height);
+  processEdges.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+  processEdges.replaceChildren();
+  processNodes.replaceChildren();
+  addArrowMarkers();
+  edges.forEach((edge) => renderProcessEdge(edge, layout));
+
+  nodeIds.forEach((nodeId) => {
+    const node = processIndexCache.nodeById.get(nodeId);
+    const position = layout.positions.get(nodeId);
+    const children = processIndexCache.childrenByParent.get(nodeId) || [];
+    const parent = processIndexCache.parentByChild.get(nodeId);
+    const kind = children.length ? "stage" : (["v5", "v15"].includes(nodeId) ? "gateway" : "action");
+    const box = document.createElement("div");
+    box.className = `process-node process-node-${kind}`;
+    if (nodeId === selectedProcessNodeId) box.classList.add("selected");
+    box.style.left = `${position.x}px`;
+    box.style.top = `${position.y}px`;
+    box.dataset.nodeId = nodeId;
+    box.tabIndex = 0;
+    box.setAttribute("role", "button");
+    box.title = children.length ? "Double-click to expand this stage" : "Select to inspect source evidence";
+
+    const type = document.createElement("span");
+    type.className = "process-node-kind";
+    type.textContent = `${kind} · ${nodeId}`;
     const label = document.createElement("span");
-    label.className = "node-label";
-    label.textContent = node.label;
-    button.append(kind, label);
+    label.className = "process-node-label";
+    label.textContent = node.operation;
+    const members = document.createElement("span");
+    members.className = "process-node-members";
+    members.textContent = node.member_ids.length === 1 ? "1 atomic action" : `${node.member_ids.length} atomic actions`;
+    box.append(type, label, members);
 
     if (children.length) {
-      const toggle = document.createElement("span");
-      toggle.className = "node-toggle";
-      toggle.textContent = expandedNodes.has(node.id) ? "−" : "+";
-      button.append(toggle);
-    }
-
-    button.addEventListener("click", () => {
-      selectedNodeId = node.id;
-      showNodeDetails(node);
-      graphNodes.querySelectorAll(".graph-node.selected").forEach((selected) => {
-        selected.classList.remove("selected");
+      const expand = document.createElement("button");
+      expand.type = "button";
+      expand.className = "process-expand";
+      expand.textContent = "+";
+      expand.title = "Expand one level";
+      expand.addEventListener("click", (event) => {
+        event.stopPropagation();
+        expandProcessNode(nodeId);
       });
-      button.classList.add("selected");
+      box.append(expand);
+    }
+    if (parent && !visibleProcessNodeIds.has(parent)) {
+      const collapse = document.createElement("button");
+      collapse.type = "button";
+      collapse.className = "process-collapse";
+      collapse.textContent = "↑";
+      collapse.title = "Collapse parent stage";
+      collapse.addEventListener("click", (event) => {
+        event.stopPropagation();
+        collapseToProcessParent(parent);
+      });
+      box.append(collapse);
+    }
+    box.addEventListener("click", () => {
+      selectedProcessNodeId = nodeId;
+      showProcessDetails(nodeId);
+      processNodes.querySelectorAll(".selected").forEach((selected) => selected.classList.remove("selected"));
+      box.classList.add("selected");
     });
-    button.addEventListener("dblclick", (event) => {
+    box.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      if (!children.length) return;
-      if (expandedNodes.has(node.id)) {
-        collapseNode(node.id, index.childrenById);
-      } else {
-        expandedNodes.add(node.id);
-      }
-      renderGraph();
+      if (children.length) expandProcessNode(nodeId);
+      else if (parent) collapseToProcessParent(parent);
     });
-    graphNodes.append(button);
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectedProcessNodeId = nodeId;
+        showProcessDetails(nodeId);
+      }
+    });
+    processNodes.append(box);
   });
+
+  setText("#visible-process-nodes", nodeIds.length);
+  setText("#visible-process-edges", edges.length);
+  processMetrics.hidden = false;
 }
 
-function collapseNode(nodeId, childrenById) {
-  expandedNodes.delete(nodeId);
-  (childrenById.get(nodeId) || []).forEach((child) => collapseNode(child.id, childrenById));
+function showProcessDetails(nodeId) {
+  const node = processIndexCache.nodeById.get(nodeId);
+  if (!node) return;
+  const children = processIndexCache.childrenByParent.get(nodeId) || [];
+  const type = children.length ? "Aggregated stage" : (["v5", "v15"].includes(nodeId) ? "Decision gateway" : "Atomic action");
+  setText("#process-detail-type", `${type} · ${nodeId}`);
+  setText("#process-detail-label", node.operation);
+  setText("#process-detail-role", node.role);
+  setText("#process-detail-system", node.system);
+  setText("#process-detail-members", node.member_ids.join(", "));
+  const score = processIndexCache.scoreByNode.get(nodeId);
+  setText("#process-detail-score", score ? `Q = ${score.q.toFixed(3)}` : "not aggregated");
+
+  const evidenceBox = document.querySelector("#process-evidence");
+  evidenceBox.replaceChildren();
+  node.member_ids.forEach((atomicId) => {
+    const atomicNode = processIndexCache.nodeById.get(atomicId);
+    (processModel.provenance[atomicId] || []).forEach((evidence) => {
+      const article = document.createElement("article");
+      const quote = document.createElement("p");
+      quote.textContent = `“${evidence.quote}”`;
+      const meta = document.createElement("div");
+      meta.className = "source-meta";
+      meta.textContent = `${atomicId} ${atomicNode?.operation || ""} · ${evidence.document_path} · ${lineLabel(evidence)}`;
+      article.append(quote, meta);
+      evidenceBox.append(article);
+    });
+  });
+  if (!evidenceBox.children.length) evidenceBox.append(emptyState("No source evidence is recorded for this node."));
+  processDetails.hidden = false;
 }
 
-function showNodeDetails(node) {
-  nodeDetails.hidden = false;
-  document.querySelector("#detail-type").textContent = node.type;
-  document.querySelector("#detail-label").textContent = node.label;
-  document.querySelector("#detail-source").textContent = node.source.path || "—";
-  const start = node.source.line_start;
-  const end = node.source.line_end;
-  document.querySelector("#detail-lines").textContent = start
-    ? (end && end !== start ? `${start}–${end}` : String(start))
-    : "—";
-  document.querySelector("#detail-method").textContent = node.metadata.segmentation_method || "structural";
+function renderAggregationTable() {
+  aggregationTableBody.replaceChildren();
+  processModel.hierarchy.levels.forEach((level) => {
+    const rows = [
+      ...level.accepted_candidates.map((candidate) => ({ candidate, accepted: true })),
+      ...level.rejected_candidates
+        .filter((candidate) => candidate.candidate_id || candidate.rejection_reason === "branch_integrity")
+        .map((candidate) => ({ candidate, accepted: false })),
+    ];
+    rows.forEach(({ candidate, accepted }) => {
+      const row = document.createElement("tr");
+      const values = [
+        `L${level.source_level} → L${level.target_level}`,
+        candidate.candidate_id || candidate.candidate_name || "generated",
+        candidate.atomic_node_ids.join(", "),
+        candidate.s_txt.toFixed(3),
+        candidate.s_ctx.toFixed(3),
+        candidate.s_flow.toFixed(3),
+        candidate.q.toFixed(3),
+      ];
+      values.forEach((value) => {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      });
+      const decision = document.createElement("td");
+      decision.className = accepted ? "decision-accepted" : "decision-rejected";
+      decision.textContent = accepted
+        ? `aggregated at L${level.target_level}`
+        : `rejected: ${(candidate.rejection_reason || "not selected").replaceAll("_", " ")}`;
+      row.append(decision);
+      aggregationTableBody.append(row);
+    });
+  });
 }
 
 updateSourceUI();

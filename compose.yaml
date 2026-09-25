@@ -22,6 +22,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-segmenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-segmenter}
       EXAMPLE_DOCS_DIR: /app/examples/access_recovery_source_docs
+      CONTROL_PROCESS_PATH: /app/examples/access_recovery_process.md
       MAX_ARCHIVE_BYTES: 20971520
       MAX_UNCOMPRESSED_BYTES: 52428800
       MAX_DOCUMENTS: 100
