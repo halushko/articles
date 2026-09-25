@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .db_models import (
     DocumentationGraphResult,
     DocumentVersion,
+    ProcessModelResult,
     RunDocument,
     SegmentationResult,
     SegmentationRun,
@@ -54,6 +55,11 @@ def build_result_zip(session: Session, run_id: str) -> bytes:
         select(DocumentationGraphResult)
         .where(DocumentationGraphResult.run_id == run_id)
         .order_by(DocumentationGraphResult.created_at.desc())
+    )
+    process_model = session.scalar(
+        select(ProcessModelResult)
+        .where(ProcessModelResult.run_id == run_id)
+        .order_by(ProcessModelResult.created_at.desc())
     )
 
     output = io.BytesIO()
@@ -112,6 +118,17 @@ def build_result_zip(session: Session, run_id: str) -> bytes:
                 "node_count": graph.node_count,
                 "edge_count": graph.edge_count,
                 "result_file": graph_file,
+            }
+        if process_model is not None:
+            process_model_file = "process_model_hierarchy.json"
+            archive.writestr(process_model_file, _json_bytes(process_model.payload))
+            manifest["process_model"] = {
+                "id": process_model.id,
+                "builder_version": process_model.builder_version,
+                "derivation_mode": process_model.derivation_mode,
+                "level_count": process_model.level_count,
+                "atomic_node_count": process_model.atomic_node_count,
+                "result_file": process_model_file,
             }
         archive.writestr("manifest.json", _json_bytes(manifest))
         archive.writestr(

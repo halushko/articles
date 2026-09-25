@@ -23,6 +23,7 @@ CONFIG_SHA256 = sha256_json(SEGMENTER_CONFIG)
 @dataclass(frozen=True)
 class RunSummary:
     run_id: str
+    source_type: str
     status: str
     corpus_sha256: str
     document_count: int
@@ -112,6 +113,7 @@ class SegmentationPipeline:
 
             return RunSummary(
                 run_id=run.id,
+                source_type=run.source_type,
                 status=run.status,
                 corpus_sha256=run.corpus_sha256,
                 document_count=run.document_count,
@@ -200,6 +202,7 @@ def get_run_summary(session: Session, run_id: str) -> RunSummary | None:
     ).all()
     return RunSummary(
         run_id=run.id,
+        source_type=run.source_type,
         status=run.status,
         corpus_sha256=run.corpus_sha256,
         document_count=run.document_count,

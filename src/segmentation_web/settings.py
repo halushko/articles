@@ -9,6 +9,7 @@ from pathlib import Path
 class Settings:
     database_url: str
     example_docs_dir: Path
+    control_process_path: Path = Path("examples/access_recovery_process.md")
     max_archive_bytes: int = 20 * 1024 * 1024
     max_uncompressed_bytes: int = 50 * 1024 * 1024
     max_documents: int = 100
@@ -22,6 +23,12 @@ class Settings:
             ),
             example_docs_dir=Path(
                 os.getenv("EXAMPLE_DOCS_DIR", "examples/access_recovery_source_docs")
+            ),
+            control_process_path=Path(
+                os.getenv(
+                    "CONTROL_PROCESS_PATH",
+                    "examples/access_recovery_process.md",
+                )
             ),
             max_archive_bytes=int(
                 os.getenv("MAX_ARCHIVE_BYTES", str(20 * 1024 * 1024))

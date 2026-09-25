@@ -143,3 +143,31 @@ class DocumentationGraphResult(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class ProcessModelResult(Base):
+    __tablename__ = "process_model_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "builder_version",
+            "config_sha256",
+            name="uq_process_model_cache_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("segmentation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    builder_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    config_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    derivation_mode: Mapped[str] = mapped_column(String(50), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_PAYLOAD, nullable=False)
+    level_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    atomic_node_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
