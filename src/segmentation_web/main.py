@@ -87,6 +87,7 @@ def create_app(
                     timeout_seconds=app_settings.llm_timeout_seconds,
                     max_output_tokens=app_settings.llm_max_output_tokens,
                     response_format=app_settings.llm_response_format,
+                    reasoning_effort=app_settings.llm_reasoning_effort,
                 ),
                 max_input_chars=app_settings.llm_max_input_chars,
             )

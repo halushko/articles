@@ -18,6 +18,7 @@ class Settings:
     llm_max_input_chars: int = 120_000
     llm_max_output_tokens: int = 12_000
     llm_response_format: str = "json_schema"
+    llm_reasoning_effort: str = "low"
     max_archive_bytes: int = 20 * 1024 * 1024
     max_uncompressed_bytes: int = 50 * 1024 * 1024
     max_documents: int = 100
@@ -51,6 +52,10 @@ class Settings:
             llm_response_format=os.getenv(
                 "LLM_RESPONSE_FORMAT",
                 "json_schema",
+            ).strip(),
+            llm_reasoning_effort=os.getenv(
+                "LLM_REASONING_EFFORT",
+                "low",
             ).strip(),
             max_archive_bytes=int(
                 os.getenv("MAX_ARCHIVE_BYTES", str(20 * 1024 * 1024))
