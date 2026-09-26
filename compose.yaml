@@ -24,6 +24,7 @@ services:
       EXAMPLE_DOCS_DIR: /app/examples/access_recovery_source_docs
       CONTROL_PROCESS_PATH: /app/examples/access_recovery_process.md
       PROCESS_MODEL_MODE: ${PROCESS_MODEL_MODE:-llm}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gpt-5-mini}
@@ -31,6 +32,7 @@ services:
       LLM_MAX_INPUT_CHARS: ${LLM_MAX_INPUT_CHARS:-120000}
       LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-12000}
       LLM_RESPONSE_FORMAT: ${LLM_RESPONSE_FORMAT:-json_schema}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-low}
       MAX_ARCHIVE_BYTES: 20971520
       MAX_UNCOMPRESSED_BYTES: 52428800
       MAX_DOCUMENTS: 100

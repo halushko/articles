@@ -29,6 +29,7 @@ from .llm_process import (
     LLMConfigurationError,
     LLMProcessModelBuilder,
     LLMProviderError,
+    LLMUnavailableError,
     OpenAICompatibleClient,
     ProcessExtractionError,
 )
@@ -36,6 +37,7 @@ from .pipeline import SegmentationPipeline, get_run_summary
 from .settings import Settings
 
 PACKAGE_DIR = Path(__file__).resolve().parent
+WITHOUT_LLM_MESSAGE = "Без LLM"
 
 
 def _graph_response(summary: DocumentationGraphSummary) -> dict[str, object]:
@@ -67,6 +69,7 @@ def create_app(
     process_model_builder: Any | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings.from_env()
+    builder_was_injected = process_model_builder is not None
     if session_factory is None:
         engine = create_database_engine(app_settings.database_url)
         session_factory = create_session_factory(engine)
@@ -87,6 +90,7 @@ def create_app(
                     timeout_seconds=app_settings.llm_timeout_seconds,
                     max_output_tokens=app_settings.llm_max_output_tokens,
                     response_format=app_settings.llm_response_format,
+                    reasoning_effort=app_settings.llm_reasoning_effort,
                 ),
                 max_input_chars=app_settings.llm_max_input_chars,
             )
@@ -104,13 +108,24 @@ def create_app(
     app.state.settings = app_settings
     app.state.session_factory = session_factory
     app.state.process_model_builder = process_model_builder
+    app.state.llm_disabled_reason = (
+        WITHOUT_LLM_MESSAGE
+        if app_settings.process_model_mode == "llm"
+        and (
+            not app_settings.llm_enabled
+            or (not builder_was_injected and not app_settings.llm_configured)
+        )
+        else None
+    )
 
     def process_model_capability(source_type: str) -> tuple[bool, str | None]:
+        if (
+            app_settings.process_model_mode == "llm"
+            and app.state.llm_disabled_reason is not None
+        ):
+            return False, WITHOUT_LLM_MESSAGE
         if process_model_builder is None:
-            return (
-                False,
-                "Set LLM_API_KEY and LLM_MODEL in .env to enable process extraction.",
-            )
+            return False, WITHOUT_LLM_MESSAGE
         if app_settings.process_model_mode == "control" and source_type != "example":
             return (
                 False,
@@ -254,13 +269,11 @@ def create_app(
 
     @app.post("/api/v1/runs/{run_id}/process-model")
     async def build_process_model(run_id: str) -> JSONResponse:
-        if process_model_builder is None:
-            raise HTTPException(
+        process_available, _ = process_model_capability("example")
+        if not process_available:
+            return JSONResponse(
+                {"detail": WITHOUT_LLM_MESSAGE, "code": "without_llm"},
                 status_code=503,
-                detail=(
-                    "LLM process extraction is not configured. Set LLM_API_KEY "
-                    "and LLM_MODEL in the local .env file."
-                ),
             )
         try:
             summary = await run_in_threadpool(process_model_builder.build, run_id)
@@ -272,6 +285,12 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except LLMConfigurationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except LLMUnavailableError:
+            app.state.llm_disabled_reason = WITHOUT_LLM_MESSAGE
+            return JSONResponse(
+                {"detail": WITHOUT_LLM_MESSAGE, "code": "without_llm"},
+                status_code=503,
+            )
         except LLMProviderError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ProcessExtractionError as exc:
@@ -284,10 +303,11 @@ def create_app(
 
     @app.get("/api/v1/runs/{run_id}/process-model")
     async def get_process_model(run_id: str) -> JSONResponse:
-        if process_model_builder is None:
-            raise HTTPException(
+        process_available, _ = process_model_capability("example")
+        if not process_available:
+            return JSONResponse(
+                {"detail": WITHOUT_LLM_MESSAGE, "code": "without_llm"},
                 status_code=503,
-                detail="LLM process extraction is not configured",
             )
         summary = await run_in_threadpool(
             process_model_builder.get,

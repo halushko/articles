@@ -178,6 +178,10 @@ class LLMProviderError(RuntimeError):
     pass
 
 
+class LLMUnavailableError(LLMProviderError):
+    """Raised when the provider confirms that no paid LLM quota is available."""
+
+
 class ProcessExtractionError(ValueError):
     pass
 
@@ -223,6 +227,7 @@ class LLMCompletion:
     finish_reason: str | None
     input_tokens: int | None
     output_tokens: int | None
+    reasoning_tokens: int | None = None
 
 
 class StructuredLLMClient(Protocol):
@@ -255,6 +260,7 @@ class OpenAICompatibleClient:
         timeout_seconds: float,
         max_output_tokens: int,
         response_format: str,
+        reasoning_effort: str = "low",
     ) -> None:
         if not base_url or not model:
             raise LLMConfigurationError("LLM_BASE_URL and LLM_MODEL must be configured")
@@ -267,12 +273,19 @@ class OpenAICompatibleClient:
             raise LLMConfigurationError(
                 "LLM_RESPONSE_FORMAT must be json_schema or json_object"
             )
+        allowed_efforts = {"", "none", "minimal", "low", "medium", "high", "xhigh"}
+        if reasoning_effort not in allowed_efforts:
+            raise LLMConfigurationError(
+                "LLM_REASONING_EFFORT must be empty, none, minimal, low, medium, "
+                "high or xhigh"
+            )
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._model = model
         self.timeout_seconds = timeout_seconds
         self.max_output_tokens = max_output_tokens
         self.response_format = response_format
+        self.reasoning_effort = reasoning_effort
 
     @property
     def provider(self) -> str:
@@ -291,6 +304,7 @@ class OpenAICompatibleClient:
             "model": self.model,
             "response_format": self.response_format,
             "max_output_tokens": self.max_output_tokens,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     def complete_json(
@@ -329,6 +343,8 @@ class OpenAICompatibleClient:
             "response_format": response_format,
             "max_completion_tokens": self.max_output_tokens,
         }
+        if self.reasoning_effort:
+            request_body["reasoning_effort"] = self.reasoning_effort
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -343,6 +359,8 @@ class OpenAICompatibleClient:
                 )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if _is_exhausted_quota_response(exc.response):
+                raise LLMUnavailableError("Без LLM") from exc
             detail = exc.response.text[:500]
             raise LLMProviderError(
                 f"LLM provider returned HTTP {exc.response.status_code}: {detail}"
@@ -354,37 +372,74 @@ class OpenAICompatibleClient:
             body = response.json()
             choice = body["choices"][0]
             message = choice["message"]
-            if message.get("refusal"):
-                raise LLMProviderError(
-                    f"The LLM refused process extraction: {message['refusal']}"
-                )
-            content = message["content"]
-            if isinstance(content, list):
-                content = "".join(
-                    str(item.get("text") or "")
-                    for item in content
-                    if isinstance(item, dict)
-                )
-            data = json.loads(_strip_json_fence(str(content)))
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise LLMProviderError(
-                "The LLM response did not contain a valid JSON completion"
+                "The LLM provider returned an unexpected Chat Completions payload"
+            ) from exc
+
+        finish_reason = _normalise(choice.get("finish_reason")) or "unknown"
+        usage = body.get("usage") or {}
+        input_tokens = _optional_int(
+            usage.get("prompt_tokens", usage.get("input_tokens"))
+        )
+        output_tokens = _optional_int(
+            usage.get("completion_tokens", usage.get("output_tokens"))
+        )
+        completion_details = usage.get("completion_tokens_details") or {}
+        reasoning_tokens = _optional_int(completion_details.get("reasoning_tokens"))
+        diagnostics = _completion_diagnostics(
+            finish_reason=finish_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            request_id=response.headers.get("x-request-id") or body.get("id"),
+        )
+
+        if message.get("refusal"):
+            raise LLMProviderError(
+                f"The LLM refused process extraction ({diagnostics})"
+            )
+        if finish_reason == "length":
+            raise LLMProviderError(
+                "The LLM response was truncated before the JSON graph was complete "
+                f"({diagnostics}). Increase LLM_MAX_OUTPUT_TOKENS or lower "
+                "LLM_REASONING_EFFORT."
+            )
+        if finish_reason == "content_filter":
+            raise LLMProviderError(
+                f"The LLM response was interrupted by a content filter ({diagnostics})"
+            )
+
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict)
+            )
+        raw_content = "" if content is None else str(content)
+        if not raw_content.strip():
+            raise LLMProviderError(
+                f"The LLM returned no JSON content ({diagnostics})"
+            )
+        try:
+            data = json.loads(_strip_json_fence(raw_content))
+        except json.JSONDecodeError as exc:
+            raise LLMProviderError(
+                "The LLM returned malformed JSON at "
+                f"line {exc.lineno}, column {exc.colno} ({diagnostics})"
             ) from exc
 
         if not isinstance(data, dict):
             raise LLMProviderError("The LLM completion must be a JSON object")
-        usage = body.get("usage") or {}
         return LLMCompletion(
             data=data,
             request_id=response.headers.get("x-request-id") or body.get("id"),
             model=str(body.get("model") or self.model),
-            finish_reason=choice.get("finish_reason"),
-            input_tokens=_optional_int(
-                usage.get("prompt_tokens", usage.get("input_tokens"))
-            ),
-            output_tokens=_optional_int(
-                usage.get("completion_tokens", usage.get("output_tokens"))
-            ),
+            finish_reason=finish_reason,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
         )
 
 
@@ -397,8 +452,68 @@ def _strip_json_fence(value: str) -> str:
     return value
 
 
+def _is_exhausted_quota_response(response: httpx.Response) -> bool:
+    if response.status_code not in {402, 429}:
+        return False
+
+    error_type = ""
+    error_code = ""
+    error_message = ""
+    try:
+        body = response.json()
+        error = body.get("error", body) if isinstance(body, dict) else {}
+        if isinstance(error, dict):
+            error_type = str(error.get("type") or "").strip().lower()
+            error_code = str(error.get("code") or "").strip().lower()
+            error_message = str(error.get("message") or "").strip().lower()
+    except (TypeError, ValueError):
+        error_message = response.text[:500].strip().lower()
+
+    exhausted_codes = {
+        "billing_hard_limit_reached",
+        "billing_not_active",
+        "credits_exhausted",
+        "insufficient_credits",
+        "insufficient_quota",
+        "usage_limit_reached",
+    }
+    if error_type in exhausted_codes or error_code in exhausted_codes:
+        return True
+
+    exhausted_messages = (
+        "billing hard limit",
+        "credit balance",
+        "credits are exhausted",
+        "exceeded your current quota",
+        "insufficient credits",
+        "no credits remaining",
+        "plan and billing details",
+    )
+    return any(marker in error_message for marker in exhausted_messages)
+
+
 def _optional_int(value: Any) -> int | None:
     return int(value) if isinstance(value, (int, float)) else None
+
+
+def _completion_diagnostics(
+    *,
+    finish_reason: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    reasoning_tokens: int | None,
+    request_id: Any,
+) -> str:
+    values = [f"finish_reason={finish_reason}"]
+    if input_tokens is not None:
+        values.append(f"input_tokens={input_tokens}")
+    if output_tokens is not None:
+        values.append(f"output_tokens={output_tokens}")
+    if reasoning_tokens is not None:
+        values.append(f"reasoning_tokens={reasoning_tokens}")
+    if request_id:
+        values.append(f"request_id={request_id}")
+    return ", ".join(values)
 
 
 def _normalise(value: Any) -> str:
@@ -653,6 +768,7 @@ class LLMProcessModelBuilder:
                 "finish_reason": cached.payload.get("finish_reason"),
                 "input_tokens": cached.input_tokens,
                 "output_tokens": cached.output_tokens,
+                "reasoning_tokens": cached.payload.get("reasoning_tokens"),
                 "extraction_cache_hit": True,
             }
 
@@ -673,6 +789,7 @@ class LLMProcessModelBuilder:
                 "schema_version": "1.0",
                 "request_id": completion.request_id,
                 "finish_reason": completion.finish_reason,
+                "reasoning_tokens": completion.reasoning_tokens,
                 "extraction": extraction,
             },
             input_tokens=completion.input_tokens,
@@ -688,6 +805,7 @@ class LLMProcessModelBuilder:
             "finish_reason": completion.finish_reason,
             "input_tokens": completion.input_tokens,
             "output_tokens": completion.output_tokens,
+            "reasoning_tokens": completion.reasoning_tokens,
             "extraction_cache_hit": False,
         }
 

@@ -118,7 +118,9 @@ form.addEventListener("submit", async (event) => {
     documentationButton.hidden = !documentationGraphUrl;
     processButton.hidden = !body.process_model_available;
     if (!body.process_model_available && body.process_model_unavailable_reason) {
-      statusMessage.textContent += ` Process extraction is unavailable: ${body.process_model_unavailable_reason}`;
+      statusMessage.textContent += body.process_model_unavailable_reason === "Без LLM"
+        ? " Без LLM."
+        : ` Process extraction is unavailable: ${body.process_model_unavailable_reason}`;
     }
   } catch (error) {
     statusMessage.textContent = error.message;
@@ -323,6 +325,11 @@ processButton.addEventListener("click", async () => {
   try {
     const response = await fetch(processModelUrl, { method: "POST" });
     const body = await response.json();
+    if (!response.ok && body.code === "without_llm") {
+      processMessage.textContent = "Без LLM";
+      processButton.hidden = true;
+      return;
+    }
     if (!response.ok) throw new Error(body.detail || "The process hierarchy could not be built.");
     processModel = body.process_model;
     derivationNote.textContent = processModel.derivation.message;

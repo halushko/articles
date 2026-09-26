@@ -16,6 +16,8 @@ from segmentation_web.db_models import LLMExtractionResult, ProcessModelResult
 from segmentation_web.llm_process import (
     LLMCompletion,
     LLMProcessModelBuilder,
+    LLMProviderError,
+    LLMUnavailableError,
     OpenAICompatibleClient,
     ProcessExtractionError,
 )
@@ -303,7 +305,11 @@ def test_openai_compatible_client_requests_strict_structured_output(monkeypatch)
                         "message": {"content": '{"nodes":[],"edges":[]}'},
                     }
                 ],
-                "usage": {"prompt_tokens": 12, "completion_tokens": 7},
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 7,
+                    "completion_tokens_details": {"reasoning_tokens": 2},
+                },
             },
         )
 
@@ -350,7 +356,191 @@ def test_openai_compatible_client_requests_strict_structured_output(monkeypatch)
         },
     }
     assert captured["body"]["max_completion_tokens"] == 500
+    assert captured["body"]["reasoning_effort"] == "low"
     assert completion.data == {"nodes": [], "edges": []}
     assert completion.request_id == "request-123"
     assert completion.input_tokens == 12
     assert completion.output_tokens == 7
+    assert completion.reasoning_tokens == 2
+
+
+def test_openai_compatible_client_reports_truncated_structured_output(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "request-truncated"},
+            json={
+                "id": "completion-truncated",
+                "model": "test-model",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": ""},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 9000,
+                    "completion_tokens": 12000,
+                    "completion_tokens_details": {"reasoning_tokens": 11950},
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=12000,
+        response_format="json_schema",
+        reasoning_effort="low",
+    )
+
+    with pytest.raises(LLMProviderError) as error:
+        client.complete_json(
+            schema_name="process_graph",
+            schema={"type": "object"},
+            system_prompt="Return grounded JSON",
+            user_payload={"documents": []},
+        )
+
+    message = str(error.value)
+    assert "truncated" in message
+    assert "finish_reason=length" in message
+    assert "reasoning_tokens=11950" in message
+    assert "request_id=request-truncated" in message
+
+
+@pytest.mark.parametrize("status_code", [402, 429])
+def test_openai_compatible_client_reports_exhausted_quota(monkeypatch, status_code):
+    def handler(request):
+        return httpx.Response(
+            status_code,
+            request=request,
+            json={
+                "error": {
+                    "message": "You exceeded your current quota. Check your plan and billing details.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_quota",
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=500,
+        response_format="json_schema",
+    )
+
+    with pytest.raises(LLMUnavailableError, match="Без LLM"):
+        client.complete_json(
+            schema_name="process_graph",
+            schema={"type": "object"},
+            system_prompt="Return grounded JSON",
+            user_payload={"documents": []},
+        )
+
+
+def test_openai_compatible_client_keeps_temporary_rate_limit_as_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            429,
+            request=request,
+            json={
+                "error": {
+                    "message": "Rate limit reached. Retry after 20 seconds.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=500,
+        response_format="json_schema",
+    )
+
+    with pytest.raises(LLMProviderError, match="HTTP 429") as error:
+        client.complete_json(
+            schema_name="process_graph",
+            schema={"type": "object"},
+            system_prompt="Return grounded JSON",
+            user_payload={"documents": []},
+        )
+
+    assert not isinstance(error.value, LLMUnavailableError)
+
+
+def test_exhausted_quota_switches_app_to_without_llm_mode():
+    class ExhaustedQuotaBuilder:
+        def __init__(self):
+            self.calls = 0
+
+        def build(self, run_id):
+            self.calls += 1
+            raise LLMUnavailableError("Без LLM")
+
+    sessions = session_factory()
+    builder = ExhaustedQuotaBuilder()
+    settings = Settings(
+        database_url="sqlite://",
+        example_docs_dir=Path("examples/access_recovery_source_docs"),
+        process_model_mode="llm",
+    )
+    app = create_app(
+        settings=settings,
+        session_factory=sessions,
+        process_model_builder=builder,
+    )
+    run = SegmentationPipeline(sessions).process(
+        source_documents(),
+        source_type="upload",
+    )
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as web_client:
+            first = await web_client.post(f"/api/v1/runs/{run.run_id}/process-model")
+            assert first.status_code == 503
+            assert first.json() == {"detail": "Без LLM", "code": "without_llm"}
+
+            status = await web_client.get(f"/api/v1/runs/{run.run_id}")
+            assert status.json()["process_model_available"] is False
+            assert status.json()["process_model_unavailable_reason"] == "Без LLM"
+
+            second = await web_client.post(f"/api/v1/runs/{run.run_id}/process-model")
+            assert second.status_code == 503
+            assert second.json()["code"] == "without_llm"
+            assert builder.calls == 1
+
+    asyncio.run(scenario())

@@ -31,6 +31,10 @@ POSTGRES_PASSWORD=replace-with-a-local-password
 LLM_API_KEY=replace-with-your-api-key
 ```
 
+Якщо потрібні лише сегментація та карта документації, встановіть
+`LLM_ENABLED=false`. Порожній `LLM_API_KEY` також автоматично запускає застосунок
+у режимі `Без LLM`.
+
 Ключ використовується лише сервером і не передається браузеру. Файл `.env`
 виключений з Git. Типово застосунок звертається до OpenAI-сумісного endpoint
 `https://api.openai.com/v1/chat/completions` і використовує модель, зазначену в
@@ -211,18 +215,30 @@ Q(C) = 0.2 × S_txt(C) + 0.4 × S_ctx(C) + 0.4 × S_flow(C)
 
 ```dotenv
 PROCESS_MODEL_MODE=llm
+LLM_ENABLED=true
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-5-mini
 LLM_RESPONSE_FORMAT=json_schema
 LLM_TIMEOUT_SECONDS=180
 LLM_MAX_INPUT_CHARS=120000
 LLM_MAX_OUTPUT_TOKENS=12000
+LLM_REASONING_EFFORT=low
 ```
+
+`LLM_ENABLED=false` явно вимикає LLM-виклики. За відсутності `LLM_API_KEY`
+застосунок переходить у той самий режим і показує `Без LLM`. Якщо провайдер
+підтвердив вичерпання квоти або кредитного балансу, LLM також вимикається до
+перезапуску процесу застосунку. Тимчасовий rate limit і помилка авторизації не
+маскуються цим режимом: вони повертаються як діагностичні помилки провайдера.
 
 `json_schema` є рекомендованим режимом: провайдер має підтримувати OpenAI-style
 Structured Outputs. Для сумісного сервера без цього режиму можна встановити
 `LLM_RESPONSE_FORMAT=json_object`; серверна валідація результату все одно
 залишається обов'язковою.
+
+`LLM_REASONING_EFFORT=low` залишає основну частину completion-бюджету для
+великого структурованого JSON. Якщо провайдер не підтримує цей OpenAI-параметр,
+задайте порожнє значення `LLM_REASONING_EFFORT=`.
 
 Поточна версія робить один LLM-запит на корпус, щоб модель бачила міждокументні
 залежності. Якщо serialized prompt перевищує `LLM_MAX_INPUT_CHARS`, операція
