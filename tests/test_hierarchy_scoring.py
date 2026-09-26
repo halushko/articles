@@ -2,7 +2,7 @@ import pytest
 
 from process_hierarchy.branching import BranchIntegrityValidator, detect_branch_regions
 from process_hierarchy.markdown_graph import MarkdownProcessGraphParser
-from process_hierarchy.models import ScoreWeights
+from process_hierarchy.models import ProcessGraph, ProcessNode, ScoreWeights
 from process_hierarchy.scoring import CandidateScorer
 
 
@@ -27,6 +27,72 @@ def test_control_candidate_components(control_graph):
     assert score.q == pytest.approx(
         0.2 * score.s_txt + 0.4 * score.s_ctx + 0.4 * score.s_flow
     )
+
+
+def test_missing_context_does_not_create_false_similarity():
+    graph = ProcessGraph(
+        nodes={
+            "v1": ProcessNode(
+                id="v1", operation="Review request", role="Unknown", system="Unknown"
+            ),
+            "v2": ProcessNode(
+                id="v2", operation="Approve request", role="Unknown", system="Unknown"
+            ),
+        },
+        edges=(),
+    )
+
+    score = CandidateScorer(graph, ScoreWeights()).score(
+        ("v1", "v2"),
+        ("v1", "v2"),
+        branch_integrity=True,
+    )
+
+    assert score.s_ctx == 0.0
+
+
+def test_partially_known_context_is_weighted_by_coverage():
+    graph = ProcessGraph(
+        nodes={
+            "v1": ProcessNode(
+                id="v1", operation="Review request", role="Analyst", system="CRM"
+            ),
+            "v2": ProcessNode(
+                id="v2", operation="Approve request", role="Unknown", system="Unknown"
+            ),
+        },
+        edges=(),
+    )
+
+    score = CandidateScorer(graph, ScoreWeights()).score(
+        ("v1", "v2"),
+        ("v1", "v2"),
+        branch_integrity=True,
+    )
+
+    assert score.s_ctx == 0.5
+
+
+def test_missing_system_dimension_does_not_count_as_matching_context():
+    graph = ProcessGraph(
+        nodes={
+            "v1": ProcessNode(
+                id="v1", operation="Review request", role="Analyst", system="Unknown"
+            ),
+            "v2": ProcessNode(
+                id="v2", operation="Approve request", role="Analyst", system="Unknown"
+            ),
+        },
+        edges=(),
+    )
+
+    score = CandidateScorer(graph, ScoreWeights()).score(
+        ("v1", "v2"),
+        ("v1", "v2"),
+        branch_integrity=True,
+    )
+
+    assert score.s_ctx == 0.5
 
 
 def test_split_join_region_is_detected(control_graph):

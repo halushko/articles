@@ -63,6 +63,13 @@ If the totals do not match, send the invoice to the procurement analyst.
     ]
 
 
+def access_recovery_documents():
+    return [
+        SourceDocument(path.name, path.read_bytes())
+        for path in sorted(Path("examples/access_recovery_source_docs").glob("D*.md"))
+    ]
+
+
 def test_unrelated_uploaded_corpus_builds_grounded_deterministic_hierarchy():
     sessions = session_factory()
     run = SegmentationPipeline(sessions).process(
@@ -189,6 +196,90 @@ def test_numbered_steps_create_edges_with_source_evidence():
         provenance = model.payload["transition_provenance"][edge["id"]]
         assert provenance["confidence"] == 0.90
         assert len(provenance["evidence"]) == 2
+
+
+def test_access_recovery_corpus_builds_a_split_join_process_and_readable_l2():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        access_recovery_documents(),
+        source_type="example",
+    )
+
+    model = DeterministicProcessModelBuilder(sessions).build(run.run_id)
+    payload = model.payload
+    base = payload["hierarchy"]["base_graph"]
+
+    classifications = {
+        document["path"]: document["classification"]
+        for document in payload["process_structure"]["documents"]
+    }
+    assert classifications["D1_access_recovery_support_policy.md"] == "supporting"
+    assert all(
+        classifications[path] == "procedural"
+        for path in classifications
+        if path.startswith(("D2_", "D3_", "D4_", "D5_"))
+    )
+    assert all(
+        evidence["document_path"] != "D1_access_recovery_support_policy.md"
+        for evidence_items in payload["provenance"].values()
+        for evidence in evidence_items
+    )
+
+    outgoing = {node["id"]: [] for node in base["nodes"]}
+    incoming = {node["id"]: [] for node in base["nodes"]}
+    for edge in base["edges"]:
+        outgoing[edge["source"]].append(edge["target"])
+        incoming[edge["target"]].append(edge["source"])
+    remaining = {node["id"] for node in base["nodes"]}
+    visited = {remaining.pop()}
+    while True:
+        connected = {
+            neighbor
+            for node_id in visited
+            for neighbor in outgoing[node_id] + incoming[node_id]
+            if neighbor not in visited
+        }
+        if not connected:
+            break
+        visited.update(connected)
+        remaining.difference_update(connected)
+    assert not remaining
+    assert any(len(targets) >= 2 for targets in outgoing.values())
+    assert any(len(sources) >= 2 for sources in incoming.values())
+    assert any(
+        edge["edge_type"] == "conditional"
+        and "account or authentication" in (edge["condition"] or "")
+        for edge in base["edges"]
+    )
+    assert any(
+        edge["edge_type"] == "conditional"
+        and "service or application" in (edge["condition"] or "")
+        for edge in base["edges"]
+    )
+
+    assert [item["level"] for item in payload["summary"]] == [0, 1, 2]
+    assert payload["summary"][1]["node_count"] == 5
+    assert payload["summary"][1]["edge_count"] == 5
+    assert payload["summary"][-1]["node_count"] == 3
+    l1 = payload["hierarchy"]["levels"][0]
+    l1_names = [node["operation"] for node in l1["graph"]["nodes"]]
+    assert all(not name.startswith("Stage:") for name in l1_names)
+    assert any("Identity and Authentication" in name for name in l1_names)
+    assert any("Software Platform" in name for name in l1_names)
+    assert all(
+        candidate["selection_basis"] == "explicit_source_structure"
+        for candidate in l1["accepted_candidates"]
+    )
+    l2 = payload["hierarchy"]["levels"][-1]
+    l2_names = [node["operation"] for node in l2["graph"]["nodes"]]
+    assert all(not name.startswith("Stage:") and len(name) <= 90 for name in l2_names)
+    assert any("Identity and Authentication" in name for name in l2_names)
+    assert any("Close the incident" in name for name in l2_names)
+    assert all(
+        candidate["candidate_name"]
+        for level in payload["hierarchy"]["levels"]
+        for candidate in level["accepted_candidates"]
+    )
 
 
 def test_uploaded_unrelated_corpus_works_end_to_end_without_llm():

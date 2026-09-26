@@ -233,9 +233,11 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 
 .process-node {
   position: absolute;
-  width: 230px;
-  min-height: 82px;
+  box-sizing: border-box;
+  width: 250px;
+  height: 118px;
   padding: 12px 14px;
+  overflow: hidden;
   border: 2px solid #506ed2;
   border-radius: 13px;
   background: #eef2ff;
@@ -248,8 +250,8 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 .process-node-action { border-color: #38876d; background: #eff9f5; }
 .process-node-gateway { border-color: #c47c17; background: #fff7e8; transform: rotate(0deg); }
 .process-node-kind { color: #68748a; font-size: 0.68rem; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
-.process-node-label { display: block; margin-top: 6px; padding-right: 24px; font-size: 0.86rem; font-weight: 760; line-height: 1.35; }
-.process-node-members { display: block; margin-top: 6px; color: #6c778b; font-size: 0.72rem; }
+.process-node-label { display: -webkit-box; margin-top: 6px; padding-right: 24px; overflow: hidden; font-size: 0.86rem; font-weight: 760; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.process-node-members { position: absolute; right: 14px; bottom: 10px; left: 14px; display: block; overflow: hidden; color: #6c778b; font-size: 0.72rem; text-overflow: ellipsis; white-space: nowrap; }
 .process-expand, .process-collapse { position: absolute; right: 9px; width: 22px; height: 22px; padding: 0; border-radius: 6px; background: rgba(255,255,255,0.8); color: #3657c8; font-size: 0.9rem; }
 .process-expand:hover, .process-collapse:hover { background: white; color: #2948b5; }
 .process-expand { top: 8px; }

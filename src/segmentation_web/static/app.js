@@ -589,10 +589,10 @@ function processLayout(nodeIds, edges) {
   });
   byLayer.forEach((ids) => ids.sort(processNodeOrder));
 
-  const width = 230;
-  const height = 94;
+  const width = 250;
+  const height = 118;
   const horizontalGap = 150;
-  const verticalGap = 42;
+  const verticalGap = 54;
   const margin = 34;
   const maxRows = Math.max(...[...byLayer.values()].map((ids) => ids.length));
   const positions = new Map();
@@ -926,7 +926,9 @@ function renderAggregationTable() {
       const decision = document.createElement("td");
       decision.className = accepted ? "decision-accepted" : "decision-rejected";
       decision.textContent = accepted
-        ? `aggregated at L${level.target_level}`
+        ? candidate.selection_basis === "explicit_source_structure"
+          ? `aggregated at L${level.target_level}: explicit source structure`
+          : `aggregated at L${level.target_level}: Q ≥ threshold`
         : `rejected: ${(candidate.rejection_reason || "not selected").replaceAll("_", " ")}`;
       row.append(decision);
       aggregationTableBody.append(row);
