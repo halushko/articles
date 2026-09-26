@@ -161,8 +161,10 @@ class CandidateDefinition:
             raise ValueError("Candidate target_level must be at least 1")
         if len(set(self.atomic_node_ids)) < 2:
             raise ValueError(f"Candidate {self.id!r} must contain at least two nodes")
-        if self.purpose not in {"aggregation", "diagnostic"}:
-            raise ValueError("Candidate purpose must be 'aggregation' or 'diagnostic'")
+        if self.purpose not in {"aggregation", "diagnostic", "structural"}:
+            raise ValueError(
+                "Candidate purpose must be 'aggregation', 'diagnostic' or 'structural'"
+            )
 
 
 @dataclass(frozen=True)
@@ -177,6 +179,7 @@ class CandidateScore:
     rejection_reason: str | None = None
     candidate_id: str | None = None
     candidate_name: str | None = None
+    selection_basis: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

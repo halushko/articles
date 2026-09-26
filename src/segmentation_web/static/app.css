@@ -59,9 +59,9 @@ h3 { font-size: 1rem; }
 .source-option span { display: grid; gap: 4px; }
 .source-option small { color: #68748a; line-height: 1.45; }
 
-.upload-field { margin: 18px 0 0; }
-.upload-field label, .field-row label { display: block; margin-bottom: 8px; font-weight: 680; }
-.upload-field input, .field-row select {
+.upload-field, .example-field { margin: 18px 0 0; }
+.upload-field label, .example-field label, .field-row label { display: block; margin-bottom: 8px; font-weight: 680; }
+.upload-field input, .example-field select, .field-row select {
   width: 100%;
   padding: 12px;
   border: 1px solid #d7deeb;
@@ -69,6 +69,7 @@ h3 { font-size: 1rem; }
   background: white;
   font: inherit;
 }
+.example-description { margin: 8px 0 0; color: #68748a; font-size: 0.88rem; line-height: 1.45; }
 .field-row { max-width: 620px; margin: 18px 0; }
 
 button, .download {
@@ -117,7 +118,7 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 .result-tabs { align-items: center; }
 .result-tab.active { background: #3657c8; color: white; }
 
-.context-note, .control-baseline-note {
+.context-note, .derivation-note {
   margin: 14px 0;
   padding: 12px 14px;
   border-radius: 10px;
@@ -126,7 +127,7 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
   font-size: 0.9rem;
   line-height: 1.55;
 }
-.control-baseline-note { border-left: 4px solid #d19222; background: #fff8e8; color: #6d551c; }
+.derivation-note { border-left: 4px solid #d19222; background: #fff8e8; color: #6d551c; }
 .process-warnings { margin: 12px 0; padding: 12px 15px; border-left: 4px solid #b0527b; border-radius: 9px; background: #fdf0f6; color: #71354f; font-size: 0.86rem; line-height: 1.5; }
 .process-warnings ul { margin: 6px 0 0; padding-left: 20px; }
 
@@ -233,9 +234,11 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 
 .process-node {
   position: absolute;
-  width: 230px;
-  min-height: 82px;
+  box-sizing: border-box;
+  width: 250px;
+  height: 118px;
   padding: 12px 14px;
+  overflow: hidden;
   border: 2px solid #506ed2;
   border-radius: 13px;
   background: #eef2ff;
@@ -248,8 +251,8 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 .process-node-action { border-color: #38876d; background: #eff9f5; }
 .process-node-gateway { border-color: #c47c17; background: #fff7e8; transform: rotate(0deg); }
 .process-node-kind { color: #68748a; font-size: 0.68rem; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
-.process-node-label { display: block; margin-top: 6px; padding-right: 24px; font-size: 0.86rem; font-weight: 760; line-height: 1.35; }
-.process-node-members { display: block; margin-top: 6px; color: #6c778b; font-size: 0.72rem; }
+.process-node-label { display: -webkit-box; margin-top: 6px; padding-right: 24px; overflow: hidden; font-size: 0.86rem; font-weight: 760; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.process-node-members { position: absolute; right: 14px; bottom: 10px; left: 14px; display: block; overflow: hidden; color: #6c778b; font-size: 0.72rem; text-overflow: ellipsis; white-space: nowrap; }
 .process-expand, .process-collapse { position: absolute; right: 9px; width: 22px; height: 22px; padding: 0; border-radius: 6px; background: rgba(255,255,255,0.8); color: #3657c8; font-size: 0.9rem; }
 .process-expand:hover, .process-collapse:hover { background: white; color: #2948b5; }
 .process-expand { top: 8px; }

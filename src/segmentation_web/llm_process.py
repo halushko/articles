@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections import defaultdict, deque
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -11,18 +13,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from process_hierarchy.aggregator import HierarchicalAggregator
+from process_hierarchy.branching import detect_branch_regions
 from process_hierarchy.candidates import CandidateGenerationLimitError
 from process_hierarchy.models import (
     AggregationConfig,
     AggregationLevelConfig,
     AggregationRun,
+    CandidateDefinition,
     ProcessEdge,
     ProcessGraph,
     ProcessNode,
     ScoreWeights,
 )
 
-from .control_process import ProcessModelSummary
 from .db_models import (
     LLMExtractionResult,
     ProcessModelResult,
@@ -31,9 +34,10 @@ from .db_models import (
     SegmentationRun,
 )
 from .hashing import sha256_json
+from .process_model import ProcessModelSummary
 
 ANALYZER_VERSION = "0.1.0"
-PROCESS_MODEL_BUILDER_VERSION = "0.2.0"
+PROCESS_MODEL_BUILDER_VERSION = "0.3.0"
 PROMPT_VERSION = "process_graph_v1"
 DERIVATION_MODE = "llm_grounded"
 SPACE_RE = re.compile(r"\s+")
@@ -57,7 +61,9 @@ AGGREGATION_CONFIG = {
             "max_candidates": 10_000,
         },
     ],
-    "candidate_selection": "connected_subgraphs",
+    "candidate_selection": "source_sections_and_control_flow_regions",
+    "l1_selection": "explicit_source_structure",
+    "l2_selection": "q_threshold",
     "branch_integrity": "required",
 }
 
@@ -213,6 +219,7 @@ class PromptFragment:
             "fragment_id": self.fragment_id,
             "fragment_ref": self.ref,
             "fragment_type": self.fragment_type,
+            "hierarchy_path": list(self.hierarchy_path),
             "line_start": self.line_start,
             "line_end": self.line_end,
             "quote": self.text,
@@ -419,9 +426,7 @@ class OpenAICompatibleClient:
             )
         raw_content = "" if content is None else str(content)
         if not raw_content.strip():
-            raise LLMProviderError(
-                f"The LLM returned no JSON content ({diagnostics})"
-            )
+            raise LLMProviderError(f"The LLM returned no JSON content ({diagnostics})")
         try:
             data = json.loads(_strip_json_fence(raw_content))
         except json.JSONDecodeError as exc:
@@ -544,6 +549,187 @@ def _active_leaf_fragments(
     )
 
 
+def _node_sort_key(node_id: str) -> tuple[int, str]:
+    match = re.search(r"(\d+)$", node_id)
+    return (int(match.group(1)) if match else 10**9, node_id)
+
+
+def _compact_label(value: str, width: int = 52) -> str:
+    value = re.sub(r"^Decision:\s*", "", value, flags=re.IGNORECASE).strip(" ?.:")
+    if len(value) <= width:
+        return value
+    prefix = value[: width - 1].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return f"{prefix}…"
+
+
+def _reachable(
+    start: str,
+    adjacency: dict[str, tuple[str, ...]],
+) -> set[str]:
+    result = {start}
+    queue = deque([start])
+    while queue:
+        current = queue.popleft()
+        for neighbor in adjacency[current]:
+            if neighbor not in result:
+                result.add(neighbor)
+                queue.append(neighbor)
+    return result
+
+
+def _hierarchy_candidates_from_evidence(
+    graph: ProcessGraph,
+    provenance: dict[str, list[dict[str, Any]]],
+) -> tuple[tuple[CandidateDefinition, ...], list[dict[str, Any]]]:
+    """Create explainable candidates from source sections and graph regions.
+
+    The LLM extracts only the grounded L0 graph. Candidate boundaries remain
+    deterministic: L1 follows source-document sections, while L2 follows a
+    detected split/join region or, for a linear process, contiguous section
+    ranges. This prevents arbitrary connected-subgraph cards at higher levels.
+    """
+
+    grouped: dict[tuple[str, tuple[str, ...]], list[str]] = defaultdict(list)
+    for node_id in sorted(graph.nodes, key=_node_sort_key):
+        evidence = provenance.get(node_id) or []
+        if not evidence:
+            continue
+        primary = evidence[0]
+        path = str(primary.get("document_path") or "Unknown document")
+        hierarchy_path = tuple(
+            str(value).strip()
+            for value in primary.get("hierarchy_path") or ()
+            if str(value).strip()
+        )
+        if not hierarchy_path:
+            hierarchy_path = (PurePosixPath(path).stem.replace("_", " "),)
+        grouped[(path, hierarchy_path)].append(node_id)
+
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: min(_node_sort_key(node_id) for node_id in item[1]),
+    )
+    definitions: list[CandidateDefinition] = []
+    section_groups: list[tuple[str, tuple[str, ...]]] = []
+    used_names: dict[str, int] = defaultdict(int)
+    for path_and_hierarchy, node_ids in ordered_groups:
+        path, hierarchy_path = path_and_hierarchy
+        name = hierarchy_path[-1]
+        used_names[name] += 1
+        if used_names[name] > 1:
+            name = f"{name} ({PurePosixPath(path).stem})"
+        ids = tuple(sorted(set(node_ids), key=_node_sort_key))
+        section_groups.append((name, ids))
+
+    l1_specs: list[tuple[str, set[str]]] = []
+    phase_specs: list[tuple[str, set[str]]] = []
+    regions = detect_branch_regions(graph)
+    if regions:
+        region = max(
+            regions,
+            key=lambda item: (
+                sum(len(branch) for branch in item.branches),
+                -_node_sort_key(item.split)[0],
+            ),
+        )
+        incoming = graph.incoming()
+        outgoing = graph.outgoing()
+        middle = set().union(*region.branches)
+        before = _reachable(region.split, incoming) - middle - {region.join}
+        after = _reachable(region.join, outgoing) - middle - before
+        starts = sorted(
+            (node_id for node_id in before if not incoming[node_id]),
+            key=_node_sort_key,
+        )
+        ends = sorted(
+            (node_id for node_id in after if not outgoing[node_id]),
+            key=_node_sort_key,
+        )
+        start = starts[0] if starts else min(before, key=_node_sort_key)
+        end = ends[-1] if ends else max(after, key=_node_sort_key)
+        split_label = _compact_label(graph.nodes[region.split].operation)
+        before_name = f"{_compact_label(graph.nodes[start].operation)} → {split_label}"
+        after_name = (
+            f"{_compact_label(graph.nodes[region.join].operation)} → "
+            f"{_compact_label(graph.nodes[end].operation)}"
+        )
+        phase_specs = [
+            (before_name, before),
+            (f"Alternative paths after {split_label}", middle),
+            (after_name, after),
+        ]
+        l1_specs.append((before_name, before))
+        for branch in region.branches:
+            branch_ids = sorted(branch, key=_node_sort_key)
+            l1_specs.append(
+                (
+                    (
+                        f"{_compact_label(graph.nodes[branch_ids[0]].operation)} → "
+                        f"{_compact_label(graph.nodes[branch_ids[-1]].operation)}"
+                    ),
+                    set(branch),
+                )
+            )
+        l1_specs.append((after_name, after))
+    elif len(section_groups) >= 4:
+        l1_specs = [(name, set(node_ids)) for name, node_ids in section_groups]
+        phase_count = 3 if len(section_groups) >= 6 else 2
+        for index in range(phase_count):
+            start = index * len(section_groups) // phase_count
+            end = (index + 1) * len(section_groups) // phase_count
+            chunk = section_groups[start:end]
+            if not chunk:
+                continue
+            name = chunk[0][0] if len(chunk) == 1 else f"{chunk[0][0]} → {chunk[-1][0]}"
+            phase_specs.append(
+                (name, {node_id for _, node_ids in chunk for node_id in node_ids})
+            )
+    else:
+        l1_specs = [(name, set(node_ids)) for name, node_ids in section_groups]
+
+    used_l1_ids: set[str] = set()
+    for index, (name, raw_ids) in enumerate(l1_specs, start=1):
+        ids = tuple(sorted(raw_ids - used_l1_ids, key=_node_sort_key))
+        if len(ids) < 2:
+            continue
+        used_l1_ids.update(ids)
+        definitions.append(
+            CandidateDefinition(
+                id=f"L1_REGION_{index:03d}",
+                name=_compact_label(name, 90),
+                target_level=1,
+                atomic_node_ids=ids,
+                purpose="structural",
+            )
+        )
+
+    phases: list[dict[str, Any]] = []
+    used_atomic_ids: set[str] = set()
+    for index, (name, raw_ids) in enumerate(phase_specs, start=1):
+        ids = tuple(sorted(raw_ids - used_atomic_ids, key=_node_sort_key))
+        if len(ids) < 2:
+            continue
+        used_atomic_ids.update(ids)
+        phase_id = f"L2_PHASE_{index:03d}"
+        phase_name = _compact_label(name, 90)
+        definitions.append(
+            CandidateDefinition(
+                id=phase_id,
+                name=phase_name,
+                target_level=2,
+                atomic_node_ids=ids,
+            )
+        )
+        phases.append(
+            {
+                "id": phase_id,
+                "name": phase_name,
+                "atomic_node_ids": list(ids),
+            }
+        )
+    return tuple(definitions), phases
+
+
 class LLMProcessModelBuilder:
     def __init__(
         self,
@@ -602,7 +788,8 @@ class LLMProcessModelBuilder:
             graph, provenance, node_metadata, transition_provenance = (
                 self._validated_graph(extraction, catalog)
             )
-            aggregation = self._aggregate(graph)
+            candidates, phases = _hierarchy_candidates_from_evidence(graph, provenance)
+            aggregation = self._aggregate(graph, candidates)
             payload = {
                 "schema_version": "1.0",
                 "source_run": {
@@ -617,8 +804,10 @@ class LLMProcessModelBuilder:
                     "message": (
                         "L0 actions and transitions were extracted by an LLM. "
                         "Every accepted node and edge passed deterministic "
-                        "fragment-reference validation. L1/L2 were produced by "
-                        "the deterministic aggregation algorithm."
+                        "fragment-reference validation. L1 candidates follow "
+                        "source sections; L2 candidates follow detected control-"
+                        "flow regions. Both levels are scored and selected by the "
+                        "deterministic aggregation algorithm."
                     ),
                 },
                 "configuration": self.process_config,
@@ -626,6 +815,7 @@ class LLMProcessModelBuilder:
                 "process_title": _normalise(extraction.get("process_title"))
                 or "Documentation-derived process",
                 "warnings": self._warnings(extraction, graph),
+                "process_structure": {"phases": phases},
                 "summary": self._hierarchy_summary(aggregation),
                 "provenance": provenance,
                 "node_metadata": node_metadata,
@@ -993,7 +1183,15 @@ class LLMProcessModelBuilder:
         )
 
     @staticmethod
-    def _aggregate(graph: ProcessGraph) -> AggregationRun:
+    def _aggregate(
+        graph: ProcessGraph,
+        candidate_definitions: tuple[CandidateDefinition, ...],
+    ) -> AggregationRun:
+        target_levels = {
+            definition.target_level for definition in candidate_definitions
+        }
+        if 1 not in target_levels:
+            return AggregationRun(base_graph=graph, levels=())
         levels = tuple(
             AggregationLevelConfig(
                 q_min=item["q_min"],
@@ -1002,6 +1200,7 @@ class LLMProcessModelBuilder:
                 max_candidates=item["max_candidates"],
             )
             for item in AGGREGATION_CONFIG["levels"]
+            if item["target_level"] in target_levels
         )
         try:
             return HierarchicalAggregator(
@@ -1009,7 +1208,7 @@ class LLMProcessModelBuilder:
                     weights=ScoreWeights(**AGGREGATION_CONFIG["weights"]),
                     levels=levels,
                 )
-            ).run(graph)
+            ).run(graph, candidate_definitions)
         except CandidateGenerationLimitError as exc:
             raise ProcessExtractionError(str(exc)) from exc
 
@@ -1040,12 +1239,16 @@ class LLMProcessModelBuilder:
                 "verify whether the corpus describes more than one process or "
                 "whether a documented transition is missing."
             )
-        if graph.edges and not any(not sources for sources in graph.incoming().values()):
+        if graph.edges and not any(
+            not sources for sources in graph.incoming().values()
+        ):
             warnings.append(
                 "The extracted graph has no start node; verify whether it contains "
                 "a cycle or a missing incoming boundary."
             )
-        if graph.edges and not any(not targets for targets in graph.outgoing().values()):
+        if graph.edges and not any(
+            not targets for targets in graph.outgoing().values()
+        ):
             warnings.append(
                 "The extracted graph has no end node; verify whether it contains "
                 "a cycle or a missing outgoing boundary."

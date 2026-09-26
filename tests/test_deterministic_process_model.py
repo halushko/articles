@@ -8,7 +8,11 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from segmentation_web.archive import SourceDocument
+from segmentation_web.archive import (
+    SourceDocument,
+    discover_example_corpora,
+    documents_from_directory,
+)
 from segmentation_web.database import Base
 from segmentation_web.db_models import ProcessModelResult
 from segmentation_web.deterministic_process import DeterministicProcessModelBuilder
@@ -61,6 +65,89 @@ If the totals do not match, send the invoice to the procurement analyst.
 """,
         ),
     ]
+
+
+def access_recovery_documents():
+    return [
+        SourceDocument(path.name, path.read_bytes())
+        for path in sorted(Path("examples/access_recovery_source_docs").glob("D*.md"))
+    ]
+
+
+def home_internet_documents():
+    corpus = next(
+        corpus
+        for corpus in discover_example_corpora(
+            catalog_dir=Path("examples"),
+            fallback_dir=Path("examples/access_recovery_source_docs"),
+            max_documents=20,
+        )
+        if corpus.id == "home-internet-connection"
+    )
+    return documents_from_directory(
+        corpus.directory,
+        max_documents=20,
+        document_paths=corpus.document_paths,
+    )
+
+
+def test_home_internet_corpus_uses_the_generic_deterministic_pipeline():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        home_internet_documents(),
+        source_type="example",
+    )
+
+    result = DeterministicProcessModelBuilder(sessions).build(run.run_id)
+    payload = result.payload
+    graph = payload["hierarchy"]["base_graph"]
+    metadata = payload["node_metadata"]
+    nodes_by_id = {node["id"]: node for node in graph["nodes"]}
+    outgoing = {
+        node_id: [edge for edge in graph["edges"] if edge["source"] == node_id]
+        for node_id in nodes_by_id
+    }
+
+    assert payload["process_title"] == "Home Internet Order Fulfilment Guide"
+    assert payload["derivation"]["mode"] == "deterministic_rules"
+    assert payload["derivation"]["universal_extraction"] is True
+    assert payload["analysis"]["procedural_document_count"] == 7
+    assert payload["analysis"]["supporting_document_count"] == 1
+    assert len(payload["process_structure"]["section_calls"]) == 6
+    assert len(payload["summary"]) == 3
+    assert all(level["node_count"] > 0 for level in payload["summary"])
+    assert all(payload["provenance"].values())
+    assert {
+        evidence["document_path"]
+        for evidence_items in payload["provenance"].values()
+        for evidence in evidence_items
+    } <= {
+        document.relative_path for document in home_internet_documents()
+    }
+
+    gateways = [
+        node
+        for node in graph["nodes"]
+        if metadata[node["id"]]["node_type"] == "gateway"
+    ]
+    assert len(gateways) >= 4
+    assert all(len(outgoing[node["id"]]) >= 2 for node in gateways)
+    assert not any(
+        "fewer than two outgoing" in warning for warning in payload["warnings"]
+    )
+
+    reachable = {graph["nodes"][0]["id"]}
+    while True:
+        expanded = reachable | {
+            endpoint
+            for edge in graph["edges"]
+            if edge["source"] in reachable or edge["target"] in reachable
+            for endpoint in (edge["source"], edge["target"])
+        }
+        if expanded == reachable:
+            break
+        reachable = expanded
+    assert reachable == set(nodes_by_id)
 
 
 def test_unrelated_uploaded_corpus_builds_grounded_deterministic_hierarchy():
@@ -189,6 +276,258 @@ def test_numbered_steps_create_edges_with_source_evidence():
         provenance = model.payload["transition_provenance"][edge["id"]]
         assert provenance["confidence"] == 0.90
         assert len(provenance["evidence"]) == 2
+
+
+def test_named_section_does_not_silently_drop_actions_after_the_fourth():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "onboarding_procedure.md",
+                b"""# Onboarding procedure
+
+## Provision the account
+
+1. Record the approved request.
+2. Create the user account.
+3. Assign the standard role.
+4. Enable multifactor authentication.
+5. Send the activation notice.
+6. Archive the approval evidence.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+
+    assert len(graph["nodes"]) == 6
+    assert len(graph["edges"]) == 5
+    assert graph["nodes"][-1]["operation"] == "Archive the approval evidence"
+
+
+def test_access_recovery_corpus_builds_a_split_join_process_and_readable_l2():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        access_recovery_documents(),
+        source_type="example",
+    )
+
+    model = DeterministicProcessModelBuilder(sessions).build(run.run_id)
+    payload = model.payload
+    base = payload["hierarchy"]["base_graph"]
+
+    classifications = {
+        document["path"]: document["classification"]
+        for document in payload["process_structure"]["documents"]
+    }
+    assert classifications["D1_access_recovery_support_policy.md"] == "supporting"
+    assert all(
+        classifications[path] == "procedural"
+        for path in classifications
+        if path.startswith(("D2_", "D3_", "D4_", "D5_"))
+    )
+    assert all(
+        evidence["document_path"] != "D1_access_recovery_support_policy.md"
+        for evidence_items in payload["provenance"].values()
+        for evidence in evidence_items
+    )
+
+    outgoing = {node["id"]: [] for node in base["nodes"]}
+    incoming = {node["id"]: [] for node in base["nodes"]}
+    for edge in base["edges"]:
+        outgoing[edge["source"]].append(edge["target"])
+        incoming[edge["target"]].append(edge["source"])
+    remaining = {node["id"] for node in base["nodes"]}
+    visited = {remaining.pop()}
+    while True:
+        connected = {
+            neighbor
+            for node_id in visited
+            for neighbor in outgoing[node_id] + incoming[node_id]
+            if neighbor not in visited
+        }
+        if not connected:
+            break
+        visited.update(connected)
+        remaining.difference_update(connected)
+    assert not remaining
+    assert any(len(targets) >= 2 for targets in outgoing.values())
+    assert any(len(sources) >= 2 for sources in incoming.values())
+    assert any(
+        edge["edge_type"] == "conditional"
+        and "account or authentication" in (edge["condition"] or "")
+        for edge in base["edges"]
+    )
+    assert any(
+        edge["edge_type"] == "conditional"
+        and "service or application" in (edge["condition"] or "")
+        for edge in base["edges"]
+    )
+    route_gateway_id = next(
+        edge["source"]
+        for edge in base["edges"]
+        if "account or authentication" in (edge["condition"] or "")
+    )
+    route_edges = [
+        edge for edge in base["edges"] if edge["source"] == route_gateway_id
+    ]
+    called_document_by_condition = {
+        edge["condition"]: payload["provenance"][edge["target"]][0]["document_path"]
+        for edge in route_edges
+    }
+    assert called_document_by_condition[
+        "the evidence points to an account or authentication problem"
+    ] == "D3_identity_and_authentication_recovery_runbook.md"
+    assert called_document_by_condition[
+        "the evidence points to a service or application problem"
+    ] == "D4_software_platform_recovery_runbook.md"
+
+    outcome_gateway = next(
+        node
+        for node in base["nodes"]
+        if node["operation"] == "Decision: Incident outcome?"
+    )
+    outcome_edges = [
+        edge for edge in base["edges"] if edge["source"] == outcome_gateway["id"]
+    ]
+    assert len(outcome_edges) == 2
+    assert {edge["condition"] for edge in outcome_edges} == {
+        "Recovered",
+        "Unresolved",
+    }
+    outcome_targets = {
+        edge["condition"]: next(
+            node for node in base["nodes"] if node["id"] == edge["target"]
+        )["operation"]
+        for edge in outcome_edges
+    }
+    assert outcome_targets["Unresolved"].startswith("Create an escalation")
+    assert outcome_targets["Recovered"].startswith("Tell the user")
+    for edge in outcome_edges:
+        evidence = payload["transition_provenance"][edge["id"]]["evidence"]
+        assert any(
+            f"as {edge['condition'].casefold()} when" in item["quote"].casefold()
+            for item in evidence
+        )
+
+    assert [item["level"] for item in payload["summary"]] == [0, 1, 2]
+    assert payload["summary"][1]["node_count"] == 5
+    assert payload["summary"][1]["edge_count"] == 5
+    assert payload["summary"][-1]["node_count"] == 3
+    l1 = payload["hierarchy"]["levels"][0]
+    l1_names = [node["operation"] for node in l1["graph"]["nodes"]]
+    assert all(not name.startswith("Stage:") for name in l1_names)
+    assert any("Identity and Authentication" in name for name in l1_names)
+    assert any("Software Platform" in name for name in l1_names)
+    assert all(
+        candidate["selection_basis"] == "explicit_source_structure"
+        for candidate in l1["accepted_candidates"]
+    )
+    l2 = payload["hierarchy"]["levels"][-1]
+    l2_names = [node["operation"] for node in l2["graph"]["nodes"]]
+    assert all(not name.startswith("Stage:") and len(name) <= 90 for name in l2_names)
+    assert any("Identity and Authentication" in name for name in l2_names)
+    assert any("Close the incident" in name for name in l2_names)
+    assert all(
+        candidate["candidate_name"]
+        for level in payload["hierarchy"]["levels"]
+        for candidate in level["accepted_candidates"]
+    )
+
+
+def test_if_then_without_else_has_true_and_implicit_false_paths():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "review_procedure.md",
+                b"""# Request review procedure
+
+## Decision
+
+If the request is incomplete, return the request to the submitter.
+
+## Record outcome
+
+Record the review result in the case system.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+    metadata = payload["node_metadata"]
+    gateway = next(
+        node for node in graph["nodes"] if metadata[node["id"]]["node_type"] == "gateway"
+    )
+    outgoing = [edge for edge in graph["edges"] if edge["source"] == gateway["id"]]
+
+    assert len(outgoing) == 2
+    assert {edge["condition"] for edge in outgoing} == {
+        "the request is incomplete",
+        "Otherwise",
+    }
+    assert not any("fewer than two outgoing" in item for item in payload["warnings"])
+
+
+def test_if_then_else_creates_two_explicit_branches_and_a_join():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "review_procedure.md",
+                b"""# Request review procedure
+
+## Decision
+
+If the request is complete then approve the request else return it to the submitter.
+
+## Record outcome
+
+Record the review result in the case system.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+    by_id = {node["id"]: node for node in graph["nodes"]}
+    metadata = payload["node_metadata"]
+    gateway = next(
+        node for node in graph["nodes"] if metadata[node["id"]]["node_type"] == "gateway"
+    )
+    outgoing = [edge for edge in graph["edges"] if edge["source"] == gateway["id"]]
+
+    assert len(outgoing) == 2
+    assert {edge["condition"] for edge in outgoing} == {
+        "the request is complete",
+        "Otherwise",
+    }
+    assert {
+        by_id[edge["target"]]["operation"] for edge in outgoing
+    } == {
+        "approve the request",
+        "return it to the submitter",
+    }
+    continuation = next(
+        node
+        for node in graph["nodes"]
+        if node["operation"].startswith("Record the review result")
+    )
+    incoming = [
+        edge for edge in graph["edges"] if edge["target"] == continuation["id"]
+    ]
+    assert {edge["source"] for edge in incoming} == {
+        edge["target"] for edge in outgoing
+    }
+    assert not any("fewer than two outgoing" in item for item in payload["warnings"])
 
 
 def test_uploaded_unrelated_corpus_works_end_to_end_without_llm():

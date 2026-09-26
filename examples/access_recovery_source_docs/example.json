@@ -1,0 +1,12 @@
+{
+  "id": "access-recovery",
+  "title": "Corporate access recovery",
+  "description": "Five linked policy, service-desk and recovery documents for restoring a user's access to a software product.",
+  "documents": [
+    "D1_access_recovery_support_policy.md",
+    "D2_service_desk_access_incident_guide.md",
+    "D3_identity_and_authentication_recovery_runbook.md",
+    "D4_software_platform_recovery_runbook.md",
+    "D5_recovery_verification_escalation_and_closure.md"
+  ]
+}

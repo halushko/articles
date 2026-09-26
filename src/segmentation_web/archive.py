@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import io
+import json
+import re
 import stat
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 
 class InputValidationError(ValueError):
     pass
+
+
+EXAMPLE_MANIFEST = "example.json"
+EXAMPLE_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
 @dataclass(frozen=True)
@@ -23,6 +30,19 @@ class SourceDocument:
             raise InputValidationError(
                 f"{self.relative_path}: Markdown files must use UTF-8 encoding"
             ) from exc
+
+
+@dataclass(frozen=True)
+class ExampleCorpus:
+    id: str
+    title: str
+    description: str
+    directory: Path
+    document_paths: tuple[str, ...]
+
+    @property
+    def document_count(self) -> int:
+        return len(self.document_paths)
 
 
 def _validate_relative_path(name: str) -> str:
@@ -115,24 +135,158 @@ def documents_from_zip(
     return sorted(documents, key=lambda document: document.relative_path)
 
 
-def documents_from_directory(path: Path, *, max_documents: int) -> list[SourceDocument]:
+def _markdown_paths(path: Path) -> tuple[str, ...]:
+    return tuple(
+        file.relative_to(path).as_posix()
+        for file in sorted(path.rglob("*.md"))
+        if file.is_file() and file.name.casefold() != "readme.md"
+    )
+
+
+def documents_from_directory(
+    path: Path,
+    *,
+    max_documents: int,
+    document_paths: tuple[str, ...] | None = None,
+) -> list[SourceDocument]:
     if not path.is_dir():
         raise InputValidationError(
             f"Example documentation directory does not exist: {path}"
         )
 
-    files = sorted(file for file in path.glob("D*.md") if file.is_file())
-    if not files:
-        raise InputValidationError(f"No D*.md example documents found in {path}")
-    if len(files) > max_documents:
+    relative_paths = document_paths or _markdown_paths(path)
+    if not relative_paths:
+        raise InputValidationError(f"No Markdown example documents found in {path}")
+    if len(relative_paths) > max_documents:
         raise InputValidationError(
             f"The example set contains more than {max_documents} Markdown documents"
         )
 
-    documents = [
-        SourceDocument(relative_path=file.name, content=file.read_bytes())
-        for file in files
-    ]
+    documents: list[SourceDocument] = []
+    seen: set[str] = set()
+    for raw_path in relative_paths:
+        relative_path = _validate_relative_path(raw_path)
+        if not relative_path or PurePosixPath(relative_path).suffix.lower() != ".md":
+            raise InputValidationError(
+                f"Example document must be a safe .md path: {raw_path}"
+            )
+        key = relative_path.casefold()
+        if key in seen:
+            raise InputValidationError(
+                f"Duplicate example document path: {relative_path}"
+            )
+        seen.add(key)
+
+        file = path.joinpath(*PurePosixPath(relative_path).parts)
+        if file.is_symlink():
+            raise InputValidationError(
+                f"Example document must be a regular file: {relative_path}"
+            )
+        try:
+            resolved = file.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise InputValidationError(
+                f"Example document does not exist: {relative_path}"
+            ) from exc
+        try:
+            resolved.relative_to(path.resolve())
+        except ValueError as exc:
+            raise InputValidationError(
+                f"Example document escapes its directory: {relative_path}"
+            ) from exc
+        if not resolved.is_file():
+            raise InputValidationError(
+                f"Example document must be a regular file: {relative_path}"
+            )
+        documents.append(
+            SourceDocument(relative_path=relative_path, content=resolved.read_bytes())
+        )
+
     for document in documents:
         document.text()
     return documents
+
+
+def _manifest_string(payload: dict[str, Any], key: str, manifest: Path) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise InputValidationError(f"{manifest}: '{key}' must be a non-empty string")
+    return value.strip()
+
+
+def _read_example_manifest(
+    manifest: Path,
+    *,
+    max_documents: int,
+) -> ExampleCorpus:
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InputValidationError(f"Invalid example manifest: {manifest}") from exc
+    if not isinstance(payload, dict):
+        raise InputValidationError(f"{manifest}: root value must be an object")
+
+    example_id = _manifest_string(payload, "id", manifest)
+    if not EXAMPLE_ID_RE.fullmatch(example_id):
+        raise InputValidationError(
+            f"{manifest}: 'id' must contain lowercase letters, numbers or hyphens"
+        )
+    title = _manifest_string(payload, "title", manifest)
+    description = _manifest_string(payload, "description", manifest)
+    raw_documents = payload.get("documents")
+    if not isinstance(raw_documents, list) or not raw_documents:
+        raise InputValidationError(f"{manifest}: 'documents' must be a non-empty array")
+    if not all(isinstance(value, str) for value in raw_documents):
+        raise InputValidationError(f"{manifest}: every document path must be a string")
+    document_paths = tuple(str(value) for value in raw_documents)
+    # Reading the corpus here validates paths, UTF-8 and configured limits at startup.
+    documents_from_directory(
+        manifest.parent,
+        max_documents=max_documents,
+        document_paths=document_paths,
+    )
+    return ExampleCorpus(
+        id=example_id,
+        title=title,
+        description=description,
+        directory=manifest.parent,
+        document_paths=document_paths,
+    )
+
+
+def discover_example_corpora(
+    *,
+    catalog_dir: Path | None,
+    fallback_dir: Path,
+    max_documents: int,
+) -> tuple[ExampleCorpus, ...]:
+    corpora: list[ExampleCorpus] = []
+    if catalog_dir is not None and catalog_dir.is_dir():
+        corpora.extend(
+            _read_example_manifest(manifest, max_documents=max_documents)
+            for manifest in sorted(catalog_dir.glob(f"*/{EXAMPLE_MANIFEST}"))
+        )
+
+    if not corpora:
+        document_paths = _markdown_paths(fallback_dir)
+        documents_from_directory(
+            fallback_dir,
+            max_documents=max_documents,
+            document_paths=document_paths,
+        )
+        corpora.append(
+            ExampleCorpus(
+                id="default",
+                title="Built-in example",
+                description="Process the configured Markdown example documents.",
+                directory=fallback_dir,
+                document_paths=document_paths,
+            )
+        )
+
+    seen: set[str] = set()
+    for corpus in corpora:
+        if corpus.id in seen:
+            raise InputValidationError(f"Duplicate example corpus id: {corpus.id}")
+        seen.add(corpus.id)
+    return tuple(corpora)

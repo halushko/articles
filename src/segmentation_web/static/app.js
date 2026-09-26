@@ -1,4 +1,6 @@
 const form = document.querySelector("#run-form");
+const exampleField = document.querySelector("#example-field");
+const exampleSelect = document.querySelector("#example-id");
 const uploadField = document.querySelector("#upload-field");
 const archiveInput = document.querySelector("#archive");
 const runButton = document.querySelector("#run-button");
@@ -44,10 +46,18 @@ function selectedSource() {
 
 function updateSourceUI() {
   const source = selectedSource();
+  exampleField.hidden = source !== "example";
+  exampleSelect.disabled = source !== "example";
   uploadField.hidden = source !== "upload";
   archiveInput.required = source === "upload";
   document.querySelectorAll("[data-source-card]").forEach((card) => {
     card.classList.toggle("selected", card.querySelector("input").checked);
+  });
+}
+
+function updateExampleDescription() {
+  document.querySelectorAll("[data-example-description]").forEach((description) => {
+    description.hidden = description.dataset.exampleDescription !== exampleSelect.value;
   });
 }
 
@@ -72,6 +82,7 @@ function emptyState(message) {
 form.querySelectorAll('input[name="source"]').forEach((input) => {
   input.addEventListener("change", updateSourceUI);
 });
+exampleSelect.addEventListener("change", updateExampleDescription);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -83,6 +94,7 @@ form.addEventListener("submit", async (event) => {
 
   const payload = new FormData();
   payload.append("source", source);
+  if (source === "example") payload.append("example_id", exampleSelect.value);
   if (source === "upload") payload.append("archive", archiveInput.files[0]);
 
   statusPanel.hidden = false;
@@ -589,10 +601,10 @@ function processLayout(nodeIds, edges) {
   });
   byLayer.forEach((ids) => ids.sort(processNodeOrder));
 
-  const width = 230;
-  const height = 94;
+  const width = 250;
+  const height = 118;
   const horizontalGap = 150;
-  const verticalGap = 42;
+  const verticalGap = 54;
   const margin = 34;
   const maxRows = Math.max(...[...byLayer.values()].map((ids) => ids.length));
   const positions = new Map();
@@ -610,10 +622,50 @@ function processLayout(nodeIds, edges) {
     });
   });
   const maxLayer = Math.max(...layers.values());
+  const contentBottom = Math.max(
+    ...[...positions.values()].map((position) => position.y + position.height),
+  );
+  const routeLanes = [];
+  const edgeRoutes = new Map();
+  edges
+    .filter((edge) => {
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      return source && target && target.x - source.x > width + horizontalGap + 20;
+    })
+    .sort((left, right) => {
+      const leftSource = positions.get(left.source);
+      const rightSource = positions.get(right.source);
+      const leftTarget = positions.get(left.target);
+      const rightTarget = positions.get(right.target);
+      return leftSource.x - rightSource.x || leftTarget.x - rightTarget.x;
+    })
+    .forEach((edge) => {
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      let lane = routeLanes.findIndex((endX) => endX + 24 < source.x);
+      if (lane === -1) {
+        lane = routeLanes.length;
+        routeLanes.push(target.x + target.width);
+      } else {
+        routeLanes[lane] = target.x + target.width;
+      }
+      edgeRoutes.set(edge.id, {
+        y: contentBottom + 44 + lane * 34,
+      });
+    });
+  const routingBottom = edgeRoutes.size
+    ? contentBottom + 44 + Math.max(0, routeLanes.length - 1) * 34 + 24
+    : 0;
   return {
     positions,
+    edgeRoutes,
     width: Math.max(820, margin * 2 + (maxLayer + 1) * width + maxLayer * horizontalGap),
-    height: Math.max(360, margin * 2 + maxRows * height + Math.max(0, maxRows - 1) * verticalGap),
+    height: Math.max(
+      360,
+      margin * 2 + maxRows * height + Math.max(0, maxRows - 1) * verticalGap,
+      routingBottom + margin,
+    ),
   };
 }
 
@@ -650,13 +702,21 @@ function renderProcessEdge(edge, layout) {
   const targetX = target.x;
   const targetY = target.y + target.height / 2;
   const middleX = sourceX + (targetX - sourceX) / 2;
+  const route = layout.edgeRoutes.get(edge.id);
   const isConditional = edge.edgeType !== "sequence";
   const confidenceClass = edge.confidence === null || edge.confidence >= 0.8
     ? "process-edge-confirmed"
     : edge.confidence >= 0.5
       ? "process-edge-inferred"
       : "process-edge-very-low";
-  const pathDefinition = `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
+  const pathDefinition = route
+    ? [
+      `M ${sourceX} ${sourceY}`,
+      `C ${sourceX + 34} ${sourceY}, ${sourceX + 34} ${route.y}, ${sourceX + 68} ${route.y}`,
+      `L ${targetX - 68} ${route.y}`,
+      `C ${targetX - 34} ${route.y}, ${targetX - 34} ${targetY}, ${targetX} ${targetY}`,
+    ].join(" ")
+    : `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
   const selectTransition = (event) => {
     event.stopPropagation();
     showTransitionDetails(edge);
@@ -684,7 +744,7 @@ function renderProcessEdge(edge, layout) {
 
   if (edge.condition) {
     const labelX = middleX;
-    const labelY = (sourceY + targetY) / 2;
+    const labelY = route ? route.y : (sourceY + targetY) / 2;
     const visibleLabel = edge.condition.length > 30
       ? `${edge.condition.slice(0, 29)}…`
       : edge.condition;
@@ -926,7 +986,9 @@ function renderAggregationTable() {
       const decision = document.createElement("td");
       decision.className = accepted ? "decision-accepted" : "decision-rejected";
       decision.textContent = accepted
-        ? `aggregated at L${level.target_level}`
+        ? candidate.selection_basis === "explicit_source_structure"
+          ? `aggregated at L${level.target_level}: explicit source structure`
+          : `aggregated at L${level.target_level}: Q ≥ threshold`
         : `rejected: ${(candidate.rejection_reason || "not selected").replaceAll("_", " ")}`;
       row.append(decision);
       aggregationTableBody.append(row);
@@ -935,3 +997,4 @@ function renderAggregationTable() {
 }
 
 updateSourceUI();
+updateExampleDescription();

@@ -11,6 +11,7 @@ from process_hierarchy.markdown_graph import MarkdownProcessGraphParser
 from process_hierarchy.models import (
     AggregationConfig,
     AggregationLevelConfig,
+    CandidateDefinition,
     ProcessEdge,
     ProcessGraph,
     ProcessNode,
@@ -106,3 +107,34 @@ def test_candidate_generation_stops_at_configured_safety_limit():
             radius=3,
             max_candidates=5,
         )
+
+
+def test_explicit_structural_region_is_kept_but_still_receives_a_score():
+    graph = ProcessGraph(
+        nodes={
+            "v1": ProcessNode(
+                id="v1", operation="Review request", role="Unknown", system="Unknown"
+            ),
+            "v2": ProcessNode(
+                id="v2", operation="Record outcome", role="Unknown", system="Unknown"
+            ),
+        },
+        edges=(ProcessEdge(id="e1", source="v1", target="v2"),),
+    )
+    config = AggregationConfig(
+        weights=ScoreWeights(),
+        levels=(AggregationLevelConfig(q_min=0.99),),
+    )
+    definition = CandidateDefinition(
+        id="S1",
+        name="Documented stage",
+        target_level=1,
+        atomic_node_ids=("v1", "v2"),
+        purpose="structural",
+    )
+
+    level = HierarchicalAggregator(config).run(graph, (definition,)).levels[0]
+
+    assert len(level.accepted_candidates) == 1
+    assert level.accepted_candidates[0].q < 0.99
+    assert level.accepted_candidates[0].selection_basis == ("explicit_source_structure")
