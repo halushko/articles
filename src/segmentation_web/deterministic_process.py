@@ -23,7 +23,6 @@ from process_hierarchy.models import (
     ScoreWeights,
 )
 
-from .control_process import ProcessModelSummary
 from .db_models import (
     ProcessModelResult,
     RunDocument,
@@ -32,8 +31,9 @@ from .db_models import (
 )
 from .hashing import sha256_json
 from .llm_process import ProcessExtractionError
+from .process_model import ProcessModelSummary
 
-BUILDER_VERSION = "0.6.0"
+BUILDER_VERSION = "0.7.0"
 DERIVATION_MODE = "deterministic_rules"
 SPACE_RE = re.compile(r"\s+")
 MARKDOWN_RE = re.compile(r"[*_`]+")
@@ -96,9 +96,9 @@ MODAL_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# This is a domain-independent language vocabulary, not a corpus topology or a
-# list of D1-D5 operations. It is intentionally conservative: unknown verbs are
-# left for the LLM path or for future language adapters.
+# This is a domain-independent language vocabulary, not a topology or a list of
+# operations copied from a built-in example. It is intentionally conservative:
+# unknown verbs are left for the LLM path or for future language adapters.
 ACTION_ROOTS = {
     "acknowledge",
     "add",
@@ -113,6 +113,7 @@ ACTION_ROOTS = {
     "assess",
     "attach",
     "authorize",
+    "bind",
     "calculate",
     "cancel",
     "capture",
@@ -125,6 +126,7 @@ ACTION_ROOTS = {
     "communicate",
     "complete",
     "confirm",
+    "connect",
     "contact",
     "continue",
     "correlate",
@@ -142,30 +144,37 @@ ACTION_ROOTS = {
     "escalate",
     "evaluate",
     "execute",
+    "explain",
     "export",
     "forward",
     "generate",
+    "give",
     "identify",
     "import",
     "include",
     "increase",
     "inform",
     "inspect",
+    "install",
     "investigate",
     "invoke",
     "issue",
+    "keep",
     "link",
+    "locate",
     "log",
     "mark",
     "maintain",
     "monitor",
     "notify",
     "open",
+    "offer",
     "pack",
     "perform",
     "prepare",
     "preserve",
     "process",
+    "provision",
     "publish",
     "receive",
     "read",
@@ -176,6 +185,7 @@ ACTION_ROOTS = {
     "remove",
     "reproduce",
     "request",
+    "reserve",
     "reset",
     "restart",
     "retest",
@@ -183,13 +193,16 @@ ACTION_ROOTS = {
     "restore",
     "retain",
     "return",
+    "reverse",
     "review",
     "route",
+    "run",
     "save",
     "schedule",
     "search",
     "select",
     "send",
+    "set",
     "sign",
     "start",
     "stop",
@@ -299,11 +312,13 @@ DECISION_SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 OPTIONAL_BRANCH_RE = re.compile(
-    r"\b(?:error|escalat|fail|failure|missing|reject|unresolved|unsuccessful)\w*\b",
+    r"\b(?:block|error|escalat|fail|failure|missing|pending|reject|remediat|"
+    r"unresolved|unserviceable|unsuccessful)\w*\b",
     re.IGNORECASE,
 )
 NEGATIVE_OUTCOME_RE = re.compile(
-    r"\b(?:error|fail|failed|failure|missing|rejected|unresolved|unsuccessful)\w*\b",
+    r"\b(?:block|error|fail|failed|failure|missing|pending|rejected|remediat|"
+    r"unresolved|unserviceable|unsuccessful)\w*\b",
     re.IGNORECASE,
 )
 DECISION_OUTCOME_RE = re.compile(
@@ -945,6 +960,8 @@ def _opposite_condition(value: str) -> str:
         ("failed", "successful"),
         ("rejected", "accepted"),
         ("missing", "available"),
+        ("blocked", "clear"),
+        ("pending", "completed"),
         ("error", "no error"),
     )
     for source, target in replacements:
@@ -963,7 +980,7 @@ def _phase_range_name(sections: list[ProcessSection]) -> str:
 
 def _short_document_label(title: str) -> str:
     words = WORD_RE.findall(title)
-    removable = PROCEDURAL_DOCUMENT_CUES | {"recovery"}
+    removable = PROCEDURAL_DOCUMENT_CUES
     compact = [word for word in words if word.casefold() not in removable]
     if not compact:
         compact = words

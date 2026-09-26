@@ -26,7 +26,6 @@ from process_hierarchy.models import (
     ScoreWeights,
 )
 
-from .control_process import ProcessModelSummary
 from .db_models import (
     LLMExtractionResult,
     ProcessModelResult,
@@ -35,6 +34,7 @@ from .db_models import (
     SegmentationRun,
 )
 from .hashing import sha256_json
+from .process_model import ProcessModelSummary
 
 ANALYZER_VERSION = "0.1.0"
 PROCESS_MODEL_BUILDER_VERSION = "0.3.0"

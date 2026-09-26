@@ -8,7 +8,11 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from segmentation_web.archive import SourceDocument
+from segmentation_web.archive import (
+    SourceDocument,
+    discover_example_corpora,
+    documents_from_directory,
+)
 from segmentation_web.database import Base
 from segmentation_web.db_models import ProcessModelResult
 from segmentation_web.deterministic_process import DeterministicProcessModelBuilder
@@ -68,6 +72,82 @@ def access_recovery_documents():
         SourceDocument(path.name, path.read_bytes())
         for path in sorted(Path("examples/access_recovery_source_docs").glob("D*.md"))
     ]
+
+
+def home_internet_documents():
+    corpus = next(
+        corpus
+        for corpus in discover_example_corpora(
+            catalog_dir=Path("examples"),
+            fallback_dir=Path("examples/access_recovery_source_docs"),
+            max_documents=20,
+        )
+        if corpus.id == "home-internet-connection"
+    )
+    return documents_from_directory(
+        corpus.directory,
+        max_documents=20,
+        document_paths=corpus.document_paths,
+    )
+
+
+def test_home_internet_corpus_uses_the_generic_deterministic_pipeline():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        home_internet_documents(),
+        source_type="example",
+    )
+
+    result = DeterministicProcessModelBuilder(sessions).build(run.run_id)
+    payload = result.payload
+    graph = payload["hierarchy"]["base_graph"]
+    metadata = payload["node_metadata"]
+    nodes_by_id = {node["id"]: node for node in graph["nodes"]}
+    outgoing = {
+        node_id: [edge for edge in graph["edges"] if edge["source"] == node_id]
+        for node_id in nodes_by_id
+    }
+
+    assert payload["process_title"] == "Home Internet Order Fulfilment Guide"
+    assert payload["derivation"]["mode"] == "deterministic_rules"
+    assert payload["derivation"]["universal_extraction"] is True
+    assert payload["analysis"]["procedural_document_count"] == 7
+    assert payload["analysis"]["supporting_document_count"] == 1
+    assert len(payload["process_structure"]["section_calls"]) == 6
+    assert len(payload["summary"]) == 3
+    assert all(level["node_count"] > 0 for level in payload["summary"])
+    assert all(payload["provenance"].values())
+    assert {
+        evidence["document_path"]
+        for evidence_items in payload["provenance"].values()
+        for evidence in evidence_items
+    } <= {
+        document.relative_path for document in home_internet_documents()
+    }
+
+    gateways = [
+        node
+        for node in graph["nodes"]
+        if metadata[node["id"]]["node_type"] == "gateway"
+    ]
+    assert len(gateways) >= 4
+    assert all(len(outgoing[node["id"]]) >= 2 for node in gateways)
+    assert not any(
+        "fewer than two outgoing" in warning for warning in payload["warnings"]
+    )
+
+    reachable = {graph["nodes"][0]["id"]}
+    while True:
+        expanded = reachable | {
+            endpoint
+            for edge in graph["edges"]
+            if edge["source"] in reachable or edge["target"] in reachable
+            for endpoint in (edge["source"], edge["target"])
+        }
+        if expanded == reachable:
+            break
+        reachable = expanded
+    assert reachable == set(nodes_by_id)
 
 
 def test_unrelated_uploaded_corpus_builds_grounded_deterministic_hierarchy():

@@ -1,4 +1,6 @@
 const form = document.querySelector("#run-form");
+const exampleField = document.querySelector("#example-field");
+const exampleSelect = document.querySelector("#example-id");
 const uploadField = document.querySelector("#upload-field");
 const archiveInput = document.querySelector("#archive");
 const runButton = document.querySelector("#run-button");
@@ -44,10 +46,18 @@ function selectedSource() {
 
 function updateSourceUI() {
   const source = selectedSource();
+  exampleField.hidden = source !== "example";
+  exampleSelect.disabled = source !== "example";
   uploadField.hidden = source !== "upload";
   archiveInput.required = source === "upload";
   document.querySelectorAll("[data-source-card]").forEach((card) => {
     card.classList.toggle("selected", card.querySelector("input").checked);
+  });
+}
+
+function updateExampleDescription() {
+  document.querySelectorAll("[data-example-description]").forEach((description) => {
+    description.hidden = description.dataset.exampleDescription !== exampleSelect.value;
   });
 }
 
@@ -72,6 +82,7 @@ function emptyState(message) {
 form.querySelectorAll('input[name="source"]').forEach((input) => {
   input.addEventListener("change", updateSourceUI);
 });
+exampleSelect.addEventListener("change", updateExampleDescription);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -83,6 +94,7 @@ form.addEventListener("submit", async (event) => {
 
   const payload = new FormData();
   payload.append("source", source);
+  if (source === "example") payload.append("example_id", exampleSelect.value);
   if (source === "upload") payload.append("archive", archiveInput.files[0]);
 
   statusPanel.hidden = false;
@@ -985,3 +997,4 @@ function renderAggregationTable() {
 }
 
 updateSourceUI();
+updateExampleDescription();

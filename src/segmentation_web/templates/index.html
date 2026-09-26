@@ -24,10 +24,26 @@
           <label class="source-option selected" data-source-card>
             <input type="radio" name="source" value="example" checked>
             <span>
-              <strong>Built-in example</strong>
-              <small>Use the {{ example_count }} realistic access-recovery documents.</small>
+              <strong>Built-in examples</strong>
+              <small>Run a curated documentation corpus through the same generic pipeline used for uploads.</small>
             </span>
           </label>
+
+          <div id="example-field" class="example-field">
+            <label for="example-id">Example corpus</label>
+            <select id="example-id" name="example_id">
+              {% for example in examples %}
+                <option value="{{ example.id }}">
+                  {{ example.title }} — {{ example.document_count }} documents
+                </option>
+              {% endfor %}
+            </select>
+            {% for example in examples %}
+              <p class="example-description" data-example-description="{{ example.id }}"{% if not loop.first %} hidden{% endif %}>
+                {{ example.description }}
+              </p>
+            {% endfor %}
+          </div>
 
           <label class="source-option" data-source-card>
             <input type="radio" name="source" value="upload">
@@ -123,7 +139,7 @@
           </dl>
         </div>
 
-        <p id="derivation-note" class="control-baseline-note"></p>
+        <p id="derivation-note" class="derivation-note"></p>
         <div id="process-warnings" class="process-warnings" hidden></div>
 
         <div id="level-summary" class="level-summary" aria-label="Hierarchy levels"></div>

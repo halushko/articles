@@ -22,7 +22,7 @@ def _env_bool(name: str, default: bool) -> bool:
 class Settings:
     database_url: str
     example_docs_dir: Path
-    control_process_path: Path = Path("examples/access_recovery_process.md")
+    example_catalog_dir: Path | None = None
     process_model_mode: str = "auto"
     llm_enabled: bool = True
     llm_base_url: str = "https://api.openai.com/v1"
@@ -44,15 +44,8 @@ class Settings:
                 "DATABASE_URL",
                 "postgresql+psycopg://segmenter:segmenter@localhost:5432/segmenter",
             ),
-            example_docs_dir=Path(
-                os.getenv("EXAMPLE_DOCS_DIR", "examples/access_recovery_source_docs")
-            ),
-            control_process_path=Path(
-                os.getenv(
-                    "CONTROL_PROCESS_PATH",
-                    "examples/access_recovery_process.md",
-                )
-            ),
+            example_docs_dir=Path(os.getenv("EXAMPLE_DOCS_DIR", "examples")),
+            example_catalog_dir=Path(os.getenv("EXAMPLE_CATALOG_DIR", "examples")),
             process_model_mode=os.getenv("PROCESS_MODEL_MODE", "auto").strip(),
             llm_enabled=_env_bool("LLM_ENABLED", True),
             llm_base_url=os.getenv(

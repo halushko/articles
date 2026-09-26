@@ -1,0 +1,15 @@
+{
+  "id": "home-internet-connection",
+  "title": "Home internet connection",
+  "description": "Eight realistic order, serviceability, contracting, installation, activation and closure documents for connecting a household to fixed broadband.",
+  "documents": [
+    "home_internet_order_fulfilment_guide.md",
+    "premises_serviceability_and_building_access_procedure.md",
+    "customer_identity_and_service_agreement_procedure.md",
+    "installation_appointment_procedure.md",
+    "residential_field_installation_runbook.md",
+    "service_activation_and_line_test_runbook.md",
+    "service_acceptance_billing_and_order_closure_standard.md",
+    "residential_broadband_fulfilment_policy.md"
+  ]
+}
