@@ -15,9 +15,7 @@ def _env_bool(name: str, default: bool) -> bool:
         return True
     if value in {"0", "false", "no", "off"}:
         return False
-    raise ValueError(
-        f"{name} must be one of: true, false, 1, 0, yes, no, on, off"
-    )
+    raise ValueError(f"{name} must be one of: true, false, 1, 0, yes, no, on, off")
 
 
 @dataclass(frozen=True)
@@ -25,7 +23,7 @@ class Settings:
     database_url: str
     example_docs_dir: Path
     control_process_path: Path = Path("examples/access_recovery_process.md")
-    process_model_mode: str = "llm"
+    process_model_mode: str = "auto"
     llm_enabled: bool = True
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = field(default="", repr=False)
@@ -55,7 +53,7 @@ class Settings:
                     "examples/access_recovery_process.md",
                 )
             ),
-            process_model_mode=os.getenv("PROCESS_MODEL_MODE", "llm").strip(),
+            process_model_mode=os.getenv("PROCESS_MODEL_MODE", "auto").strip(),
             llm_enabled=_env_bool("LLM_ENABLED", True),
             llm_base_url=os.getenv(
                 "LLM_BASE_URL",

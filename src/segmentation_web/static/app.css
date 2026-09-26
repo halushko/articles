@@ -114,6 +114,8 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 }
 .view-tab:hover { background: #f3f6ff; color: #2948b5; }
 .view-tab.active { border-color: #dbe2ef #dbe2ef white; background: white; color: #2948b5; }
+.result-tabs { align-items: center; }
+.result-tab.active { background: #3657c8; color: white; }
 
 .context-note, .control-baseline-note {
   margin: 14px 0;
@@ -202,6 +204,7 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 .process-legend span { display: inline-flex; align-items: center; gap: 7px; }
 .legend-line { position: relative; display: inline-block; width: 30px; height: 0; border-top: 2px solid #8491a7; }
 .legend-line::after { position: absolute; top: -5px; right: -1px; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 7px solid #8491a7; content: ""; }
+.legend-line.inferred { border-top-style: dashed; opacity: 0.75; }
 .legend-line.conditional { border-color: #c47c17; }
 .legend-line.conditional::after { border-left-color: #c47c17; }
 .legend-node { display: inline-block; width: 20px; height: 13px; border: 2px solid #506ed2; border-radius: 4px; background: #eef2ff; }
@@ -223,6 +226,8 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 .process-edge { fill: none; stroke: #8491a7; stroke-width: 2; marker-end: url(#arrow-sequence); pointer-events: stroke; cursor: help; }
 .process-edge-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
 .process-edge-conditional { stroke: #c47c17; marker-end: url(#arrow-conditional); }
+.process-edge-inferred { stroke-dasharray: 9 6; opacity: 0.82; }
+.process-edge-very-low { stroke-dasharray: 2 7; opacity: 0.68; }
 .process-edge-label-bg { fill: rgba(255, 255, 255, 0.94); stroke: #e0e5ef; }
 .process-edge-label { fill: #5a6578; font-size: 11px; text-anchor: middle; dominant-baseline: middle; }
 

@@ -91,6 +91,10 @@ form.addEventListener("submit", async (event) => {
   downloadLink.hidden = true;
   documentationButton.hidden = true;
   processButton.hidden = true;
+  documentationButton.textContent = "Documentation";
+  processButton.textContent = "Process model";
+  documentationButton.classList.remove("active");
+  processButton.classList.remove("active");
   documentationPanel.hidden = true;
   processPanel.hidden = true;
   documentationGraphUrl = null;
@@ -116,11 +120,16 @@ form.addEventListener("submit", async (event) => {
     documentationGraphUrl = body.documentation_graph_url;
     processModelUrl = body.process_model_url;
     documentationButton.hidden = !documentationGraphUrl;
-    processButton.hidden = !body.process_model_available;
+    processButton.hidden = !processModelUrl;
+    processButton.disabled = !body.process_model_available;
+    processButton.textContent = body.llm_status === "Без LLM"
+      ? "Process model · Без LLM"
+      : "Process model";
+    if (body.llm_status === "Без LLM") {
+      statusMessage.textContent += " Без LLM: process extraction will use deterministic evidence rules.";
+    }
     if (!body.process_model_available && body.process_model_unavailable_reason) {
-      statusMessage.textContent += body.process_model_unavailable_reason === "Без LLM"
-        ? " Без LLM."
-        : ` Process extraction is unavailable: ${body.process_model_unavailable_reason}`;
+      statusMessage.textContent += ` Process extraction is unavailable: ${body.process_model_unavailable_reason}`;
     }
   } catch (error) {
     statusMessage.textContent = error.message;
@@ -132,6 +141,11 @@ form.addEventListener("submit", async (event) => {
 documentationButton.addEventListener("click", async () => {
   if (!documentationGraphUrl) return;
   documentationPanel.hidden = false;
+  processPanel.hidden = true;
+  documentationButton.classList.add("active");
+  documentationButton.setAttribute("aria-selected", "true");
+  processButton.classList.remove("active");
+  processButton.setAttribute("aria-selected", "false");
   documentationMessage.textContent = "Reading document structure and explicit references…";
   documentationMetrics.hidden = true;
   documentationButton.disabled = true;
@@ -141,7 +155,7 @@ documentationButton.addEventListener("click", async () => {
     if (!response.ok) throw new Error(body.detail || "The documentation view could not be built.");
     documentationGraph = body.graph;
     renderDocumentationExplorer();
-    documentationButton.textContent = "Reopen documentation";
+    documentationButton.textContent = "Documentation";
     documentationPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     documentationMessage.textContent = error.message;
@@ -319,31 +333,23 @@ function renderDocumentTree(documentId) {
 processButton.addEventListener("click", async () => {
   if (!processModelUrl) return;
   processPanel.hidden = false;
-  processMessage.textContent = "Extracting a grounded process graph and building its hierarchy…";
+  documentationPanel.hidden = true;
+  processButton.classList.add("active");
+  processButton.setAttribute("aria-selected", "true");
+  documentationButton.classList.remove("active");
+  documentationButton.setAttribute("aria-selected", "false");
+  processMessage.textContent = "Loading or building a grounded process hierarchy…";
   processMetrics.hidden = true;
   processButton.disabled = true;
   try {
-    const response = await fetch(processModelUrl, { method: "POST" });
-    const body = await response.json();
-    if (!response.ok && body.code === "without_llm") {
-      processMessage.textContent = "Без LLM";
-      processButton.hidden = true;
-      return;
+    let response = await fetch(processModelUrl);
+    let body = await response.json();
+    if (response.status === 404) {
+      response = await fetch(processModelUrl, { method: "POST" });
+      body = await response.json();
     }
     if (!response.ok) throw new Error(body.detail || "The process hierarchy could not be built.");
-    processModel = body.process_model;
-    derivationNote.textContent = processModel.derivation.message;
-    setText(
-      "#process-title",
-      processModel.process_title || "Hierarchical process model",
-    );
-    processMessage.textContent = "Choose a level, expand stages, or select an arrow to inspect why the transition exists.";
-    renderProcessWarnings();
-    renderLevelControls();
-    const availableLevels = [...processGraphs().keys()];
-    setExactProcessLevel(Math.max(...availableLevels));
-    renderAggregationTable();
-    processButton.textContent = "Reopen process hierarchy";
+    showProcessModel(body);
     processPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     processMessage.textContent = error.message;
@@ -351,6 +357,26 @@ processButton.addEventListener("click", async () => {
     processButton.disabled = false;
   }
 });
+
+function showProcessModel(body) {
+  processModel = body.process_model;
+  derivationNote.textContent = processModel.derivation.message;
+  setText(
+    "#process-title",
+    processModel.process_title || "Hierarchical process model",
+  );
+  processMessage.textContent = body.llm_status === "Без LLM"
+    ? "Без LLM · deterministic model. Inspect warnings and source evidence before accepting inferred stages."
+    : "Choose a level, expand stages, or select an arrow to inspect why the transition exists.";
+  renderProcessWarnings();
+  renderLevelControls();
+  const availableLevels = [...processGraphs().keys()];
+  setExactProcessLevel(Math.max(...availableLevels));
+  renderAggregationTable();
+  processButton.textContent = body.llm_status === "Без LLM"
+    ? "Process model · Без LLM"
+    : "Process model";
+}
 
 function processGraphs() {
   const graphs = new Map([[0, processModel.hierarchy.base_graph]]);
@@ -512,14 +538,21 @@ function visibleProcessEdges() {
     if (edge.condition) group.conditions.add(edge.condition);
     group.originalIds.push(...edge.original_edge_ids);
   });
-  return [...groups.values()].map((group, index) => ({
-    id: `visible-edge-${index + 1}`,
-    source: group.source,
-    target: group.target,
-    edgeType: group.types.size === 1 ? [...group.types][0] : "mixed",
-    condition: [...group.conditions].join(" | "),
-    originalIds: [...new Set(group.originalIds)],
-  }));
+  return [...groups.values()].map((group, index) => {
+    const originalIds = [...new Set(group.originalIds)];
+    const confidences = originalIds
+      .map((edgeId) => processModel.transition_provenance?.[edgeId]?.confidence)
+      .filter((value) => typeof value === "number");
+    return {
+      id: `visible-edge-${index + 1}`,
+      source: group.source,
+      target: group.target,
+      edgeType: group.types.size === 1 ? [...group.types][0] : "mixed",
+      condition: [...group.conditions].join(" | "),
+      originalIds,
+      confidence: confidences.length ? Math.min(...confidences) : null,
+    };
+  });
 }
 
 function processLayout(nodeIds, edges) {
@@ -618,6 +651,11 @@ function renderProcessEdge(edge, layout) {
   const targetY = target.y + target.height / 2;
   const middleX = sourceX + (targetX - sourceX) / 2;
   const isConditional = edge.edgeType !== "sequence";
+  const confidenceClass = edge.confidence === null || edge.confidence >= 0.8
+    ? "process-edge-confirmed"
+    : edge.confidence >= 0.5
+      ? "process-edge-inferred"
+      : "process-edge-very-low";
   const pathDefinition = `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
   const selectTransition = (event) => {
     event.stopPropagation();
@@ -628,18 +666,18 @@ function renderProcessEdge(edge, layout) {
     d: pathDefinition,
     tabindex: "0",
     role: "button",
-    "aria-label": `Inspect transition ${edge.source} to ${edge.target}`,
+    "aria-label": `Inspect transition ${edge.source} to ${edge.target}; confidence ${edge.confidence ?? "not recorded"}`,
   });
   hitPath.addEventListener("click", selectTransition);
   hitPath.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") selectTransition(event);
   });
   const path = svgElement("path", {
-    class: `process-edge${isConditional ? " process-edge-conditional" : ""}`,
+    class: `process-edge ${confidenceClass}${isConditional ? " process-edge-conditional" : ""}`,
     d: pathDefinition,
   });
   const title = svgElement("title");
-  title.textContent = `${edge.source} → ${edge.target}; ${edge.edgeType}; ${edge.condition || "no condition"}; source transitions: ${edge.originalIds.join(", ")}`;
+  title.textContent = `${edge.source} → ${edge.target}; ${edge.edgeType}; confidence ${edge.confidence?.toFixed(2) ?? "not recorded"}; ${edge.condition || "no condition"}; source transitions: ${edge.originalIds.join(", ")}`;
   path.append(title);
   path.addEventListener("click", selectTransition);
   processEdges.append(hitPath, path);

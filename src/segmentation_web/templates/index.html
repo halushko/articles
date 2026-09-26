@@ -54,13 +54,13 @@
           <div><dt>Fragments</dt><dd id="fragment-count">—</dd></div>
           <div><dt>Cache hits</dt><dd id="cache-hits">—</dd></div>
         </dl>
-        <div class="actions">
+        <div class="actions result-tabs" role="tablist" aria-label="Run result views">
           <a id="download-link" class="download" href="#" hidden>Download result ZIP</a>
-          <button id="documentation-button" class="secondary" type="button" hidden>
-            Explore documentation
+          <button id="documentation-button" class="secondary result-tab" type="button" role="tab" hidden>
+            Documentation
           </button>
-          <button id="process-button" class="secondary" type="button" hidden>
-            Build process hierarchy with LLM
+          <button id="process-button" class="secondary result-tab" type="button" role="tab" hidden>
+            Process model
           </button>
         </div>
       </section>
@@ -113,7 +113,7 @@
       <section id="process-panel" class="panel explorer-panel" aria-live="polite" hidden>
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">L0 → L1 → L2</p>
+            <p class="eyebrow">L0 actions → hierarchical stages</p>
             <h2 id="process-title">Hierarchical process model</h2>
             <p id="process-message" class="panel-message"></p>
           </div>
@@ -139,8 +139,9 @@
           its parent stage. Arrows are directed process transitions; labels show conditions.
         </p>
         <div class="process-legend" aria-label="Process graph legend">
-          <span><i class="legend-line sequence"></i>Sequence transition</span>
-          <span><i class="legend-line conditional"></i>Conditional transition</span>
+          <span><i class="legend-line sequence"></i>Explicit transition</span>
+          <span><i class="legend-line inferred"></i>Inferred hypothesis</span>
+          <span><i class="legend-line conditional"></i>Condition</span>
           <span><i class="legend-node stage"></i>Aggregated stage</span>
           <span><i class="legend-node action"></i>Atomic action</span>
         </div>
