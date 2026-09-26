@@ -610,10 +610,50 @@ function processLayout(nodeIds, edges) {
     });
   });
   const maxLayer = Math.max(...layers.values());
+  const contentBottom = Math.max(
+    ...[...positions.values()].map((position) => position.y + position.height),
+  );
+  const routeLanes = [];
+  const edgeRoutes = new Map();
+  edges
+    .filter((edge) => {
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      return source && target && target.x - source.x > width + horizontalGap + 20;
+    })
+    .sort((left, right) => {
+      const leftSource = positions.get(left.source);
+      const rightSource = positions.get(right.source);
+      const leftTarget = positions.get(left.target);
+      const rightTarget = positions.get(right.target);
+      return leftSource.x - rightSource.x || leftTarget.x - rightTarget.x;
+    })
+    .forEach((edge) => {
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      let lane = routeLanes.findIndex((endX) => endX + 24 < source.x);
+      if (lane === -1) {
+        lane = routeLanes.length;
+        routeLanes.push(target.x + target.width);
+      } else {
+        routeLanes[lane] = target.x + target.width;
+      }
+      edgeRoutes.set(edge.id, {
+        y: contentBottom + 44 + lane * 34,
+      });
+    });
+  const routingBottom = edgeRoutes.size
+    ? contentBottom + 44 + Math.max(0, routeLanes.length - 1) * 34 + 24
+    : 0;
   return {
     positions,
+    edgeRoutes,
     width: Math.max(820, margin * 2 + (maxLayer + 1) * width + maxLayer * horizontalGap),
-    height: Math.max(360, margin * 2 + maxRows * height + Math.max(0, maxRows - 1) * verticalGap),
+    height: Math.max(
+      360,
+      margin * 2 + maxRows * height + Math.max(0, maxRows - 1) * verticalGap,
+      routingBottom + margin,
+    ),
   };
 }
 
@@ -650,13 +690,21 @@ function renderProcessEdge(edge, layout) {
   const targetX = target.x;
   const targetY = target.y + target.height / 2;
   const middleX = sourceX + (targetX - sourceX) / 2;
+  const route = layout.edgeRoutes.get(edge.id);
   const isConditional = edge.edgeType !== "sequence";
   const confidenceClass = edge.confidence === null || edge.confidence >= 0.8
     ? "process-edge-confirmed"
     : edge.confidence >= 0.5
       ? "process-edge-inferred"
       : "process-edge-very-low";
-  const pathDefinition = `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
+  const pathDefinition = route
+    ? [
+      `M ${sourceX} ${sourceY}`,
+      `C ${sourceX + 34} ${sourceY}, ${sourceX + 34} ${route.y}, ${sourceX + 68} ${route.y}`,
+      `L ${targetX - 68} ${route.y}`,
+      `C ${targetX - 34} ${route.y}, ${targetX - 34} ${targetY}, ${targetX} ${targetY}`,
+    ].join(" ")
+    : `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
   const selectTransition = (event) => {
     event.stopPropagation();
     showTransitionDetails(edge);
@@ -684,7 +732,7 @@ function renderProcessEdge(edge, layout) {
 
   if (edge.condition) {
     const labelX = middleX;
-    const labelY = (sourceY + targetY) / 2;
+    const labelY = route ? route.y : (sourceY + targetY) / 2;
     const visibleLabel = edge.condition.length > 30
       ? `${edge.condition.slice(0, 29)}…`
       : edge.condition;

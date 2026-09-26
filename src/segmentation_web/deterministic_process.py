@@ -33,7 +33,7 @@ from .db_models import (
 from .hashing import sha256_json
 from .llm_process import ProcessExtractionError
 
-BUILDER_VERSION = "0.5.0"
+BUILDER_VERSION = "0.6.0"
 DERIVATION_MODE = "deterministic_rules"
 SPACE_RE = re.compile(r"\s+")
 MARKDOWN_RE = re.compile(r"[*_`]+")
@@ -295,11 +295,22 @@ PASSIVE_RULE_RE = re.compile(
     re.IGNORECASE,
 )
 DECISION_SECTION_RE = re.compile(
-    r"\b(?:choose|classify|decide|determine|outcome|route|select)\b",
+    r"\b(?:choose|classify|decide|decision|determine|outcome|route|select)\b",
     re.IGNORECASE,
 )
 OPTIONAL_BRANCH_RE = re.compile(
     r"\b(?:error|escalat|fail|failure|missing|reject|unresolved|unsuccessful)\w*\b",
+    re.IGNORECASE,
+)
+NEGATIVE_OUTCOME_RE = re.compile(
+    r"\b(?:error|fail|failed|failure|missing|rejected|unresolved|unsuccessful)\w*\b",
+    re.IGNORECASE,
+)
+DECISION_OUTCOME_RE = re.compile(
+    r"^(?:treat|classify|mark|consider|regard)\s+"
+    r"(?P<subject>.+?)\s+as\s+"
+    r"(?P<state>[A-Za-z][A-Za-z0-9 /_-]{0,60}?)\s+"
+    r"(?:when|if)\s+(?P<condition>.+?)[.!?]?$",
     re.IGNORECASE,
 )
 
@@ -311,9 +322,11 @@ CONFIG: dict[str, Any] = {
     "edge_rules": [
         "actions_within_named_procedural_section",
         "ordered_procedural_sections",
+        "explicit_if_then_else",
+        "implicit_else_to_continuation",
         "explicit_document_subprocess_call",
         "subprocess_return_to_continuation",
-        "decision_branch_to_optional_section",
+        "decision_outcome_to_named_branch",
     ],
     "candidate_generation": "named_process_regions",
     "l1_selection": "explicit_source_structure",
@@ -410,6 +423,14 @@ class ProcessSection:
     @property
     def key(self) -> tuple[str, str]:
         return self.document_path, self.title
+
+
+@dataclass(frozen=True)
+class DecisionOutcome:
+    subject: str
+    state: str
+    condition: str
+    fragment: SourceFragment
 
 
 @dataclass(frozen=True)
@@ -734,7 +755,90 @@ def _is_action_candidate(fragment: SourceFragment) -> bool:
 
 
 def _condition_label(text: str) -> str:
-    return CONDITION_PREFIX_RE.sub("", text).strip().rstrip("?.,;:")
+    cleaned = text.strip().rstrip("?.,;:")
+    match = CONDITION_PREFIX_RE.match(cleaned)
+    if not match:
+        return cleaned
+    body = cleaned[match.end() :].strip()
+    if match.group(1).casefold() == "unless":
+        return f"Not ({body})"
+    return body
+
+
+def _decision_outcomes(section: ProcessSection) -> tuple[DecisionOutcome, ...]:
+    outcomes: list[DecisionOutcome] = []
+    for fragment in section.fragments:
+        match = DECISION_OUTCOME_RE.match(_clean(fragment.text))
+        if not match:
+            continue
+        outcomes.append(
+            DecisionOutcome(
+                subject=match.group("subject").strip(),
+                state=match.group("state").strip(),
+                condition=match.group("condition").strip().rstrip(".?!"),
+                fragment=fragment,
+            )
+        )
+    return tuple(outcomes)
+
+
+def _decision_gateway_operation(
+    section: ProcessSection,
+    outcomes: tuple[DecisionOutcome, ...],
+) -> str:
+    subjects = {item.subject.casefold() for item in outcomes}
+    if len(outcomes) >= 2 and len(subjects) == 1:
+        subject = re.sub(
+            r"^(?:the|an?)\s+",
+            "",
+            outcomes[0].subject,
+            flags=re.IGNORECASE,
+        ).strip()
+        if subject:
+            return _clip_operation(
+                f"Decision: {subject[:1].upper() + subject[1:]} outcome?",
+                110,
+            )
+    return _clip_operation(f"Decision: {section.title.rstrip('?')}?", 110)
+
+
+def _decision_outcome_routes(
+    section: ProcessSection,
+    exceptional_title: str,
+) -> tuple[DecisionOutcome, DecisionOutcome] | None:
+    outcomes = _decision_outcomes(section)
+    if len(outcomes) < 2:
+        return None
+    folded_title = exceptional_title.casefold()
+    exceptional = next(
+        (
+            item
+            for item in outcomes
+            if item.state.casefold() in folded_title
+        ),
+        None,
+    )
+    if exceptional is None and OPTIONAL_BRANCH_RE.search(exceptional_title):
+        exceptional = next(
+            (item for item in outcomes if NEGATIVE_OUTCOME_RE.search(item.state)),
+            None,
+        )
+    if exceptional is None:
+        return None
+    normal = next(
+        (
+            item
+            for item in outcomes
+            if item is not exceptional and not NEGATIVE_OUTCOME_RE.search(item.state)
+        ),
+        next((item for item in outcomes if item is not exceptional), None),
+    )
+    return None if normal is None else (exceptional, normal)
+
+
+def _outcome_label(outcome: DecisionOutcome) -> str:
+    state = outcome.state.strip()
+    return state[:1].upper() + state[1:]
 
 
 def _metadata_values(fragments: list[SourceFragment]) -> dict[str, str]:
@@ -867,11 +971,17 @@ def _short_document_label(title: str) -> str:
 
 
 def _optional_branch_condition(title: str) -> str:
-    match = OPTIONAL_BRANCH_RE.search(title)
+    match = NEGATIVE_OUTCOME_RE.search(title)
     if match:
         value = match.group(0).strip().rstrip(".,;:")
         return value[:1].upper() + value[1:]
-    return _clip_operation(title, 80)
+    without_action = re.sub(
+        r"^(?:escalate|handle|process|resolve|review)\s+(?:the|an?)?\s*",
+        "",
+        title.strip(),
+        flags=re.IGNORECASE,
+    )
+    return _clip_operation(without_action or title, 80)
 
 
 class DeterministicProcessModelBuilder:
@@ -1261,12 +1371,25 @@ class DeterministicProcessModelBuilder:
 
         for profile in sorted(profiles, key=lambda item: (item.position, item.path)):
             for section in profile.sections:
-                folded_title = section.title.casefold().strip()
                 target_count = len(references.get(section.key, ()))
-                is_gateway = target_count > 1 or bool(
-                    re.match(r"^(?:decide|determine)\b", folded_title)
-                    or folded_title in {"decision", "outcome"}
-                    or " outcome" in folded_title
+                conditional_groups: dict[str, list[SourceFragment]] = defaultdict(
+                    list
+                )
+                for fragment in section.fragments:
+                    if fragment.parent_fragment_id and fragment.fragment_type in {
+                        "condition_clause",
+                        "conditional_scope",
+                    }:
+                        conditional_groups[fragment.parent_fragment_id].append(fragment)
+                outcomes = _decision_outcomes(section)
+                # A heading such as "Decision" is not enough to create a gateway:
+                # the documentation must also expose at least one condition, two
+                # named outcomes, or multiple referenced subprocesses.
+                title_declares_decision = bool(DECISION_SECTION_RE.search(section.title))
+                is_gateway = (
+                    target_count > 1
+                    or len(outcomes) >= 2
+                    or (bool(conditional_groups) and title_declares_decision)
                 )
                 core_fragments = [
                     fragment
@@ -1278,7 +1401,7 @@ class DeterministicProcessModelBuilder:
                     referenced_titles = {
                         profile.path: profile.title for profile in profiles
                     }
-                    evidence = next(
+                    referenced_evidence = next(
                         (
                             fragment
                             for fragment in section.fragments
@@ -1288,41 +1411,69 @@ class DeterministicProcessModelBuilder:
                                 for path in references.get(section.key, ())
                             )
                         ),
-                        core_fragments[0] if core_fragments else section.fragments[0],
+                        None,
                     )
+                    condition_evidence = next(
+                        (
+                            item
+                            for group in conditional_groups.values()
+                            for item in group
+                            if item.fragment_type == "condition_clause"
+                        ),
+                        None,
+                    )
+                    evidence = (
+                        outcomes[0].fragment
+                        if len(outcomes) >= 2
+                        else referenced_evidence
+                        or condition_evidence
+                        or (core_fragments[0] if core_fragments else section.fragments[0])
+                    )
+                    if len(outcomes) >= 2:
+                        operation = _decision_gateway_operation(section, outcomes)
+                        extraction_rule = "documented_outcomes"
+                        confidence = 0.94
+                    elif target_count > 1:
+                        operation = _clip_operation(
+                            f"Decision: {section.title.rstrip('?')}?", 110
+                        )
+                        extraction_rule = "multi_document_route"
+                        confidence = 0.88
+                    elif condition_evidence is not None:
+                        operation = _operation(condition_evidence, condition=True)
+                        extraction_rule = "explicit_condition"
+                        confidence = 0.92
+                    else:
+                        operation = _clip_operation(
+                            f"Decision: {section.title.rstrip('?')}?", 110
+                        )
+                        extraction_rule = "decision_section"
+                        confidence = 0.82
                     node_id = f"v{len(nodes) + 1}"
                     nodes.append(
                         ExtractedNode(
                             id=node_id,
                             fragment=evidence,
-                            operation=_clip_operation(
-                                f"Decision: {section.title.rstrip('?')}?", 110
-                            ),
+                            operation=operation,
                             role=profile.role,
                             system=profile.system,
                             node_type="gateway",
-                            confidence=0.88 if target_count > 1 else 0.82,
-                            extraction_rule=(
-                                "multi_document_route"
-                                if target_count > 1
-                                else "decision_section"
-                            ),
+                            confidence=confidence,
+                            extraction_rule=extraction_rule,
                         )
                     )
                     section_nodes[section.key].append(node_id)
                     used_fragment_keys.add(evidence.key)
-                    conditional_groups: dict[str, list[SourceFragment]] = defaultdict(
-                        list
+                    used_fragment_keys.update(item.fragment.key for item in outcomes)
+                    # When a gateway routes to multiple named documents, the
+                    # referenced procedures are the branches. Creating another
+                    # action node for the wording around each reference would add
+                    # an artificial split inside the caller and break its explicit
+                    # process-region boundary.
+                    branch_groups = (
+                        () if target_count > 1 else conditional_groups.values()
                     )
-                    for fragment in section.fragments:
-                        if fragment.parent_fragment_id and fragment.fragment_type in {
-                            "condition_clause",
-                            "conditional_scope",
-                        }:
-                            conditional_groups[fragment.parent_fragment_id].append(
-                                fragment
-                            )
-                    for group in conditional_groups.values():
+                    for group in branch_groups:
                         condition = next(
                             (
                                 item
@@ -1331,42 +1482,41 @@ class DeterministicProcessModelBuilder:
                             ),
                             None,
                         )
-                        scope = next(
-                            (
-                                item
-                                for item in group
-                                if item.fragment_type == "conditional_scope"
-                            ),
-                            None,
-                        )
-                        if (
-                            not condition
-                            or not scope
-                            or not _contains_explicit_action(scope)
-                        ):
+                        scopes = [
+                            item
+                            for item in group
+                            if item.fragment_type == "conditional_scope"
+                            and _contains_explicit_action(item)
+                        ]
+                        if not condition or not scopes:
                             continue
-                        for operation in _operation_parts(scope)[:1]:
-                            branch_id = f"v{len(nodes) + 1}"
-                            role = _extract_role(scope, scope.text)
-                            system = _extract_system(scope, scope.text)
-                            nodes.append(
-                                ExtractedNode(
-                                    id=branch_id,
-                                    fragment=scope,
-                                    operation=_clip_operation(operation, 118),
-                                    role=profile.role if role == "Unknown" else role,
-                                    system=(
-                                        profile.system
-                                        if system == "Unknown"
-                                        else system
-                                    ),
-                                    node_type="action",
-                                    confidence=_candidate_confidence(scope, scope.text),
-                                    extraction_rule="conditional_branch",
+                        for scope in scopes:
+                            for operation in _operation_parts(scope)[:1]:
+                                branch_id = f"v{len(nodes) + 1}"
+                                role = _extract_role(scope, scope.text)
+                                system = _extract_system(scope, scope.text)
+                                nodes.append(
+                                    ExtractedNode(
+                                        id=branch_id,
+                                        fragment=scope,
+                                        operation=_clip_operation(operation, 118),
+                                        role=(
+                                            profile.role if role == "Unknown" else role
+                                        ),
+                                        system=(
+                                            profile.system
+                                            if system == "Unknown"
+                                            else system
+                                        ),
+                                        node_type="action",
+                                        confidence=_candidate_confidence(
+                                            scope, scope.text
+                                        ),
+                                        extraction_rule="conditional_branch",
+                                    )
                                 )
-                            )
-                            section_nodes[section.key].append(branch_id)
-                            used_fragment_keys.update({condition.key, scope.key})
+                                section_nodes[section.key].append(branch_id)
+                                used_fragment_keys.update({condition.key, scope.key})
                     continue
 
                 for fragment in core_fragments:
@@ -1388,8 +1538,6 @@ class DeterministicProcessModelBuilder:
                                 for operation in operations
                             ]
                     for operation in operations:
-                        if len(section_nodes[section.key]) >= 4:
-                            break
                         operation = _clip_operation(operation, 118)
                         if not operation or any(
                             node.operation.casefold() == operation.casefold()
@@ -1420,8 +1568,6 @@ class DeterministicProcessModelBuilder:
                         )
                         section_nodes[section.key].append(node_id)
                         used_fragment_keys.add(fragment.key)
-                    if len(section_nodes[section.key]) >= 4:
-                        break
 
                 if not section_nodes[section.key] and _starts_with_action(
                     section.title
@@ -1532,9 +1678,16 @@ class DeterministicProcessModelBuilder:
                             None,
                         )
                         condition = (
-                            _condition_label(condition_fragment.text)
-                            if condition_fragment
-                            else "Documented condition"
+                            "Otherwise"
+                            if branch_fragment.structural_fields.get(
+                                "condition_branch"
+                            )
+                            == "else"
+                            else (
+                                _condition_label(condition_fragment.text)
+                                if condition_fragment
+                                else "Documented condition"
+                            )
                         )
                         add(
                             gateway,
@@ -1615,11 +1768,12 @@ class DeterministicProcessModelBuilder:
                 next_section = populated[index + 1]
                 following = populated[index + 2]
                 is_decision = (
-                    nodes_by_id[section_nodes[section.key][-1]].node_type == "gateway"
+                    nodes_by_id[section_nodes[section.key][0]].node_type == "gateway"
                 )
                 if (
                     is_decision
                     and OPTIONAL_BRANCH_RE.search(next_section.title)
+                    and not conditional_branches(section)
                     and not references.get(section.key)
                 ):
                     optional_splits[section.key] = (next_section, following)
@@ -1630,20 +1784,58 @@ class DeterministicProcessModelBuilder:
                 split = optional_splits.get(section.key)
                 if split:
                     exceptional, normal = split
-                    branch_condition = _optional_branch_condition(exceptional.title)
+                    outcome_routes = _decision_outcome_routes(
+                        section,
+                        exceptional.title,
+                    )
+                    if outcome_routes:
+                        exceptional_outcome, normal_outcome = outcome_routes
+                        branch_condition = _outcome_label(exceptional_outcome)
+                        normal_condition = _outcome_label(normal_outcome)
+                        exceptional_reason = (
+                            f'The source defines the "{exceptional_outcome.state}" '
+                            f"outcome when {exceptional_outcome.condition}; the next "
+                            "named section handles that outcome."
+                        )
+                        normal_reason = (
+                            f'The source defines the "{normal_outcome.state}" outcome '
+                            f"when {normal_outcome.condition}; this path bypasses the "
+                            "exceptional section and continues with the normal flow."
+                        )
+                    else:
+                        exceptional_outcome = normal_outcome = None
+                        branch_condition = _optional_branch_condition(
+                            exceptional.title
+                        )
+                        normal_condition = _opposite_condition(branch_condition)
+                        exceptional_reason = (
+                            "The decision section is followed by a named exceptional "
+                            "branch in the same procedure."
+                        )
+                        normal_reason = (
+                            "The documented process continues with the normal path "
+                            "when the exceptional branch condition is false."
+                        )
                     for source_exit in section_exits(section):
+                        exceptional_fragment = (
+                            exceptional_outcome.fragment
+                            if exceptional_outcome
+                            else nodes_by_id[source_exit].fragment
+                        )
+                        normal_fragment = (
+                            normal_outcome.fragment
+                            if normal_outcome
+                            else nodes_by_id[source_exit].fragment
+                        )
                         add(
                             source_exit,
                             section_nodes[exceptional.key][0],
                             edge_type="conditional",
                             condition=branch_condition,
-                            reason=(
-                                "The decision section is followed by a named exceptional "
-                                "branch in the same procedure."
-                            ),
-                            confidence=0.86,
+                            reason=exceptional_reason,
+                            confidence=0.94 if outcome_routes else 0.86,
                             evidence=(
-                                nodes_by_id[source_exit].fragment,
+                                exceptional_fragment,
                                 nodes_by_id[section_nodes[exceptional.key][0]].fragment,
                             ),
                         )
@@ -1651,18 +1843,50 @@ class DeterministicProcessModelBuilder:
                             source_exit,
                             section_nodes[normal.key][0],
                             edge_type="conditional",
-                            condition=_opposite_condition(branch_condition),
-                            reason=(
-                                "The documented process continues with the normal path "
-                                "when the exceptional branch condition is false."
-                            ),
-                            confidence=0.78,
+                            condition=normal_condition,
+                            reason=normal_reason,
+                            confidence=0.94 if outcome_routes else 0.78,
                             evidence=(
-                                nodes_by_id[source_exit].fragment,
+                                normal_fragment,
                                 nodes_by_id[section_nodes[normal.key][0]].fragment,
                             ),
                         )
                     continue
+
+                branches = conditional_branches(section)
+                if len(branches) == 1:
+                    gateway = section_nodes[section.key][0]
+                    branch_fragment = nodes_by_id[branches[0]].fragment
+                    condition_fragment = next(
+                        (
+                            item
+                            for item in section.fragments
+                            if item.parent_fragment_id
+                            == branch_fragment.parent_fragment_id
+                            and item.fragment_type == "condition_clause"
+                        ),
+                        None,
+                    )
+                    add(
+                        gateway,
+                        section_nodes[next_section.key][0],
+                        edge_type="conditional",
+                        condition="Otherwise",
+                        reason=(
+                            "The source states one conditional action. When its "
+                            "condition is false, that action is skipped and the "
+                            "documented process continues with the next section."
+                        ),
+                        confidence=0.84,
+                        evidence=tuple(
+                            item
+                            for item in (
+                                condition_fragment,
+                                nodes_by_id[section_nodes[next_section.key][0]].fragment,
+                            )
+                            if item is not None
+                        ),
+                    )
                 for source_exit in section_exits(section):
                     add(
                         source_exit,
@@ -1709,6 +1933,7 @@ class DeterministicProcessModelBuilder:
                 for section in source_profile.sections
                 if section.key == source_key
             )
+            source_branches = conditional_branches(source_section)
 
             for target_path in target_paths:
                 target_profile = profiles_by_path[target_path]
@@ -1727,16 +1952,47 @@ class DeterministicProcessModelBuilder:
                     ),
                     source_section.fragments[0],
                 )
+                reference_condition = next(
+                    (
+                        fragment
+                        for fragment in source_section.fragments
+                        if reference_fragment.parent_fragment_id
+                        and fragment.parent_fragment_id
+                        == reference_fragment.parent_fragment_id
+                        and fragment.fragment_type == "condition_clause"
+                    ),
+                    None,
+                )
+                matching_branch = next(
+                    (
+                        branch_id
+                        for branch_id in source_branches
+                        if target_profile.title.casefold()
+                        in nodes_by_id[branch_id].fragment.text.casefold()
+                    ),
+                    None,
+                )
+                source_call = matching_branch or source_ids[-1]
+                call_fragment = (
+                    nodes_by_id[matching_branch].fragment
+                    if matching_branch
+                    else reference_fragment
+                )
                 target_entry = section_nodes[target_sections[0].key][0]
                 condition = (
-                    _condition_from_reference(
-                        reference_fragment.text, target_profile.title
+                    (
+                        _condition_label(reference_condition.text)
+                        if reference_condition
+                        else _condition_from_reference(
+                            reference_fragment.text,
+                            target_profile.title,
+                        )
                     )
-                    if len(target_paths) > 1
+                    if len(target_paths) > 1 and matching_branch is None
                     else None
                 )
                 add(
-                    source_ids[-1],
+                    source_call,
                     target_entry,
                     edge_type="conditional" if condition else "sequence",
                     condition=condition,
@@ -1745,7 +2001,15 @@ class DeterministicProcessModelBuilder:
                         "its procedure is invoked as a subprocess."
                     ),
                     confidence=0.93,
-                    evidence=(reference_fragment, nodes_by_id[target_entry].fragment),
+                    evidence=tuple(
+                        item
+                        for item in (
+                            reference_condition,
+                            call_fragment,
+                            nodes_by_id[target_entry].fragment,
+                        )
+                        if item is not None
+                    ),
                 )
                 if continuation:
                     continuation_entry = section_nodes[continuation.key][0]
@@ -2539,6 +2803,19 @@ class DeterministicProcessModelBuilder:
         if unknown_systems:
             warnings.append(
                 f"System is not explicit for {unknown_systems} of {len(nodes)} nodes."
+            )
+        outgoing_counts: dict[str, int] = defaultdict(int)
+        for edge in graph.edges:
+            outgoing_counts[edge.source] += 1
+        incomplete_gateways = [
+            node.id
+            for node in nodes
+            if node.node_type == "gateway" and outgoing_counts[node.id] < 2
+        ]
+        if incomplete_gateways:
+            warnings.append(
+                "Decision gateway(s) with fewer than two outgoing paths require "
+                f"review: {', '.join(incomplete_gateways)}."
             )
         neighbors = graph.undirected_neighbors()
         remaining = set(graph.nodes)

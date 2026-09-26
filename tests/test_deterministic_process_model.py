@@ -198,6 +198,36 @@ def test_numbered_steps_create_edges_with_source_evidence():
         assert len(provenance["evidence"]) == 2
 
 
+def test_named_section_does_not_silently_drop_actions_after_the_fourth():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "onboarding_procedure.md",
+                b"""# Onboarding procedure
+
+## Provision the account
+
+1. Record the approved request.
+2. Create the user account.
+3. Assign the standard role.
+4. Enable multifactor authentication.
+5. Send the activation notice.
+6. Archive the approval evidence.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+
+    assert len(graph["nodes"]) == 6
+    assert len(graph["edges"]) == 5
+    assert graph["nodes"][-1]["operation"] == "Archive the approval evidence"
+
+
 def test_access_recovery_corpus_builds_a_split_join_process_and_readable_l2():
     sessions = session_factory()
     run = SegmentationPipeline(sessions).process(
@@ -256,6 +286,52 @@ def test_access_recovery_corpus_builds_a_split_join_process_and_readable_l2():
         and "service or application" in (edge["condition"] or "")
         for edge in base["edges"]
     )
+    route_gateway_id = next(
+        edge["source"]
+        for edge in base["edges"]
+        if "account or authentication" in (edge["condition"] or "")
+    )
+    route_edges = [
+        edge for edge in base["edges"] if edge["source"] == route_gateway_id
+    ]
+    called_document_by_condition = {
+        edge["condition"]: payload["provenance"][edge["target"]][0]["document_path"]
+        for edge in route_edges
+    }
+    assert called_document_by_condition[
+        "the evidence points to an account or authentication problem"
+    ] == "D3_identity_and_authentication_recovery_runbook.md"
+    assert called_document_by_condition[
+        "the evidence points to a service or application problem"
+    ] == "D4_software_platform_recovery_runbook.md"
+
+    outcome_gateway = next(
+        node
+        for node in base["nodes"]
+        if node["operation"] == "Decision: Incident outcome?"
+    )
+    outcome_edges = [
+        edge for edge in base["edges"] if edge["source"] == outcome_gateway["id"]
+    ]
+    assert len(outcome_edges) == 2
+    assert {edge["condition"] for edge in outcome_edges} == {
+        "Recovered",
+        "Unresolved",
+    }
+    outcome_targets = {
+        edge["condition"]: next(
+            node for node in base["nodes"] if node["id"] == edge["target"]
+        )["operation"]
+        for edge in outcome_edges
+    }
+    assert outcome_targets["Unresolved"].startswith("Create an escalation")
+    assert outcome_targets["Recovered"].startswith("Tell the user")
+    for edge in outcome_edges:
+        evidence = payload["transition_provenance"][edge["id"]]["evidence"]
+        assert any(
+            f"as {edge['condition'].casefold()} when" in item["quote"].casefold()
+            for item in evidence
+        )
 
     assert [item["level"] for item in payload["summary"]] == [0, 1, 2]
     assert payload["summary"][1]["node_count"] == 5
@@ -280,6 +356,98 @@ def test_access_recovery_corpus_builds_a_split_join_process_and_readable_l2():
         for level in payload["hierarchy"]["levels"]
         for candidate in level["accepted_candidates"]
     )
+
+
+def test_if_then_without_else_has_true_and_implicit_false_paths():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "review_procedure.md",
+                b"""# Request review procedure
+
+## Decision
+
+If the request is incomplete, return the request to the submitter.
+
+## Record outcome
+
+Record the review result in the case system.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+    metadata = payload["node_metadata"]
+    gateway = next(
+        node for node in graph["nodes"] if metadata[node["id"]]["node_type"] == "gateway"
+    )
+    outgoing = [edge for edge in graph["edges"] if edge["source"] == gateway["id"]]
+
+    assert len(outgoing) == 2
+    assert {edge["condition"] for edge in outgoing} == {
+        "the request is incomplete",
+        "Otherwise",
+    }
+    assert not any("fewer than two outgoing" in item for item in payload["warnings"])
+
+
+def test_if_then_else_creates_two_explicit_branches_and_a_join():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "review_procedure.md",
+                b"""# Request review procedure
+
+## Decision
+
+If the request is complete then approve the request else return it to the submitter.
+
+## Record outcome
+
+Record the review result in the case system.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+    by_id = {node["id"]: node for node in graph["nodes"]}
+    metadata = payload["node_metadata"]
+    gateway = next(
+        node for node in graph["nodes"] if metadata[node["id"]]["node_type"] == "gateway"
+    )
+    outgoing = [edge for edge in graph["edges"] if edge["source"] == gateway["id"]]
+
+    assert len(outgoing) == 2
+    assert {edge["condition"] for edge in outgoing} == {
+        "the request is complete",
+        "Otherwise",
+    }
+    assert {
+        by_id[edge["target"]]["operation"] for edge in outgoing
+    } == {
+        "approve the request",
+        "return it to the submitter",
+    }
+    continuation = next(
+        node
+        for node in graph["nodes"]
+        if node["operation"].startswith("Record the review result")
+    )
+    incoming = [
+        edge for edge in graph["edges"] if edge["target"] == continuation["id"]
+    ]
+    assert {edge["source"] for edge in incoming} == {
+        edge["target"] for edge in outgoing
+    }
+    assert not any("fewer than two outgoing" in item for item in payload["warnings"])
 
 
 def test_uploaded_unrelated_corpus_works_end_to_end_without_llm():

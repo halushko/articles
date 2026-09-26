@@ -29,3 +29,41 @@ def test_soft_process_split():
     assert result["trigger"] == "if"
     assert result["condition_clause"] == "if payment fails"
     assert result["conditional_scope"] == "the system shows an error message."
+
+
+def test_soft_process_split_preserves_if_then_as_one_condition():
+    result = soft_process_split(
+        "If payment fails then the system shows an error message."
+    )
+
+    assert result == {
+        "trigger": "if",
+        "condition_clause": "if payment fails",
+        "conditional_scope": "the system shows an error message.",
+    }
+
+
+def test_soft_process_split_extracts_explicit_else_branch():
+    result = soft_process_split(
+        "If payment fails, show an error; otherwise, continue to confirmation."
+    )
+
+    assert result == {
+        "trigger": "if",
+        "condition_clause": "if payment fails",
+        "conditional_scope": "show an error",
+        "else_scope": "continue to confirmation.",
+    }
+
+
+def test_soft_process_split_extracts_unpunctuated_then_else():
+    result = soft_process_split(
+        "If payment fails then show an error else continue to confirmation."
+    )
+
+    assert result == {
+        "trigger": "if",
+        "condition_clause": "if payment fails",
+        "conditional_scope": "show an error",
+        "else_scope": "continue to confirmation.",
+    }
