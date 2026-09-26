@@ -499,7 +499,7 @@ def test_openai_compatible_client_keeps_temporary_rate_limit_as_error(monkeypatc
     assert not isinstance(error.value, LLMUnavailableError)
 
 
-def test_exhausted_quota_switches_app_to_without_llm_mode():
+def test_exhausted_quota_switches_app_to_deterministic_fallback():
     class ExhaustedQuotaBuilder:
         def __init__(self):
             self.calls = 0
@@ -531,16 +531,21 @@ def test_exhausted_quota_switches_app_to_without_llm_mode():
             base_url="http://testserver",
         ) as web_client:
             first = await web_client.post(f"/api/v1/runs/{run.run_id}/process-model")
-            assert first.status_code == 503
-            assert first.json() == {"detail": "Без LLM", "code": "without_llm"}
+            assert first.status_code == 201
+            assert first.json()["llm_status"] == "Без LLM"
+            assert first.json()["process_model"]["derivation"]["mode"] == (
+                "deterministic_rules"
+            )
 
             status = await web_client.get(f"/api/v1/runs/{run.run_id}")
-            assert status.json()["process_model_available"] is False
-            assert status.json()["process_model_unavailable_reason"] == "Без LLM"
+            assert status.json()["process_model_available"] is True
+            assert status.json()["process_model_unavailable_reason"] is None
+            assert status.json()["llm_status"] == "Без LLM"
 
             second = await web_client.post(f"/api/v1/runs/{run.run_id}/process-model")
-            assert second.status_code == 503
-            assert second.json()["code"] == "without_llm"
+            assert second.status_code == 200
+            assert second.json()["llm_status"] == "Без LLM"
+            assert second.json()["cache_hit"] is True
             assert builder.calls == 1
 
     asyncio.run(scenario())

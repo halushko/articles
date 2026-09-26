@@ -55,15 +55,17 @@ def test_builtin_example_run_and_result_download(tmp_path):
             assert body["status"] == "completed"
             assert body["document_count"] == 2
             assert body["fragment_count"] > 0
-            assert body["process_model_available"] is False
-            assert body["process_model_unavailable_reason"] == "Без LLM"
+            assert body["process_model_available"] is True
+            assert body["process_model_unavailable_reason"] is None
+            assert body["process_model_strategy"] == "deterministic_rules"
+            assert body["llm_status"] == "Без LLM"
 
-            unavailable_process = await client.post(body["process_model_url"])
-            assert unavailable_process.status_code == 503
-            assert unavailable_process.json() == {
-                "detail": "Без LLM",
-                "code": "without_llm",
-            }
+            process = await client.post(body["process_model_url"])
+            assert process.status_code == 201
+            assert process.json()["llm_status"] == "Без LLM"
+            assert process.json()["process_model"]["derivation"]["mode"] == (
+                "deterministic_rules"
+            )
 
             status = await client.get(f"/api/v1/runs/{body['run_id']}")
             assert status.status_code == 200
@@ -73,9 +75,7 @@ def test_builtin_example_run_and_result_download(tmp_path):
             assert graph.status_code == 201
             graph_body = graph.json()
             assert graph_body["node_count"] > body["document_count"]
-            assert graph_body["graph"]["semantic_analysis"]["status"] == (
-                "not_started"
-            )
+            assert graph_body["graph"]["semantic_analysis"]["status"] == ("not_started")
 
             cached_graph = await client.post(body["documentation_graph_url"])
             assert cached_graph.status_code == 200
@@ -87,6 +87,8 @@ def test_builtin_example_run_and_result_download(tmp_path):
             with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
                 assert "manifest.json" in archive.namelist()
                 assert "documentation_graph.json" in archive.namelist()
+                assert "process_model_l0.json" in archive.namelist()
+                assert "provenance.json" in archive.namelist()
 
     asyncio.run(scenario())
 
@@ -177,11 +179,15 @@ def test_llm_flag_disables_an_injected_builder(tmp_path):
             response = await client.post("/api/v1/runs", data={"source": "example"})
             assert response.status_code == 201
             body = response.json()
-            assert body["process_model_available"] is False
-            assert body["process_model_unavailable_reason"] == "Без LLM"
+            assert body["process_model_available"] is True
+            assert body["process_model_unavailable_reason"] is None
+            assert body["llm_status"] == "Без LLM"
 
             process = await client.post(body["process_model_url"])
-            assert process.status_code == 503
-            assert process.json()["code"] == "without_llm"
+            assert process.status_code == 201
+            assert process.json()["llm_status"] == "Без LLM"
+            assert process.json()["process_model"]["derivation"]["mode"] == (
+                "deterministic_rules"
+            )
 
     asyncio.run(scenario())

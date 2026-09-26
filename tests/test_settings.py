@@ -3,6 +3,12 @@ import pytest
 from segmentation_web.settings import Settings
 
 
+def test_default_process_mode_is_auto(monkeypatch):
+    monkeypatch.delenv("PROCESS_MODEL_MODE", raising=False)
+
+    assert Settings.from_env().process_model_mode == "auto"
+
+
 @pytest.mark.parametrize("value", ["false", "0", "no", "off", " FALSE "])
 def test_llm_enabled_false_values(monkeypatch, value):
     monkeypatch.setenv("LLM_ENABLED", value)

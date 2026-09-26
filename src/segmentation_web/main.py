@@ -20,6 +20,7 @@ from .control_process import (
     ProcessModelUnavailableError,
 )
 from .database import create_database_engine, create_session_factory
+from .deterministic_process import DeterministicProcessModelBuilder
 from .documentation_graph import (
     DocumentationGraphBuilder,
     DocumentationGraphSummary,
@@ -51,8 +52,12 @@ def _graph_response(summary: DocumentationGraphSummary) -> dict[str, object]:
     }
 
 
-def _process_model_response(summary: ProcessModelSummary) -> dict[str, object]:
-    return {
+def _process_model_response(
+    summary: ProcessModelSummary,
+    *,
+    llm_status: str | None = None,
+) -> dict[str, object]:
+    response: dict[str, object] = {
         "process_model_id": summary.id,
         "run_id": summary.run_id,
         "level_count": summary.level_count,
@@ -60,6 +65,9 @@ def _process_model_response(summary: ProcessModelSummary) -> dict[str, object]:
         "cache_hit": summary.cache_hit,
         "process_model": summary.payload,
     }
+    if llm_status:
+        response["llm_status"] = llm_status
+    return response
 
 
 def create_app(
@@ -74,14 +82,18 @@ def create_app(
         engine = create_database_engine(app_settings.database_url)
         session_factory = create_session_factory(engine)
 
+    deterministic_builder = DeterministicProcessModelBuilder(session_factory)
+    llm_builder: Any | None = None
     if process_model_builder is None:
         if app_settings.process_model_mode == "control":
             process_model_builder = ControlProcessModelBuilder(
                 session_factory,
                 app_settings.control_process_path,
             )
-        elif app_settings.process_model_mode == "llm" and app_settings.llm_configured:
-            process_model_builder = LLMProcessModelBuilder(
+        elif app_settings.process_model_mode in {"auto", "llm"} and (
+            app_settings.llm_configured
+        ):
+            llm_builder = LLMProcessModelBuilder(
                 session_factory,
                 OpenAICompatibleClient(
                     base_url=app_settings.llm_base_url,
@@ -94,44 +106,54 @@ def create_app(
                 ),
                 max_input_chars=app_settings.llm_max_input_chars,
             )
-        elif app_settings.process_model_mode not in {"control", "llm"}:
-            raise ValueError("PROCESS_MODEL_MODE must be 'llm' or 'control'")
+            process_model_builder = llm_builder
+        elif app_settings.process_model_mode in {"auto", "llm", "deterministic"}:
+            process_model_builder = deterministic_builder
+        else:
+            raise ValueError(
+                "PROCESS_MODEL_MODE must be 'auto', 'llm', 'deterministic' or 'control'"
+            )
+    elif app_settings.process_model_mode in {"auto", "llm"}:
+        llm_builder = process_model_builder
 
     app = FastAPI(
         title="Documentation to Process Hierarchy",
-        version="0.3.0",
+        version="0.4.0",
         description=(
             "Segment Markdown documentation, inspect its source structure, "
-            "and build a traceable LLM-grounded hierarchical process model."
+            "and build a traceable hierarchical process model with or without an LLM."
         ),
     )
     app.state.settings = app_settings
     app.state.session_factory = session_factory
     app.state.process_model_builder = process_model_builder
+    app.state.deterministic_process_model_builder = deterministic_builder
+    app.state.llm_process_model_builder = llm_builder
     app.state.llm_disabled_reason = (
         WITHOUT_LLM_MESSAGE
-        if app_settings.process_model_mode == "llm"
+        if app_settings.process_model_mode in {"auto", "llm", "deterministic"}
         and (
-            not app_settings.llm_enabled
+            app_settings.process_model_mode == "deterministic"
+            or not app_settings.llm_enabled
             or (not builder_was_injected and not app_settings.llm_configured)
         )
         else None
     )
 
     def process_model_capability(source_type: str) -> tuple[bool, str | None]:
-        if (
-            app_settings.process_model_mode == "llm"
-            and app.state.llm_disabled_reason is not None
-        ):
-            return False, WITHOUT_LLM_MESSAGE
-        if process_model_builder is None:
-            return False, WITHOUT_LLM_MESSAGE
         if app_settings.process_model_mode == "control" and source_type != "example":
             return (
                 False,
                 "Control mode supports only the built-in D1-D5 corpus.",
             )
         return True, None
+
+    def process_model_strategy() -> str:
+        if app_settings.process_model_mode == "control":
+            return "control_baseline"
+        if llm_builder is not None:
+            return "llm_with_deterministic_fallback"
+        return "deterministic_rules"
 
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
@@ -204,6 +226,8 @@ def create_app(
                 ),
                 "process_model_available": process_available,
                 "process_model_unavailable_reason": process_reason,
+                "process_model_strategy": process_model_strategy(),
+                "llm_status": app.state.llm_disabled_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             },
             status_code=201,
@@ -233,6 +257,8 @@ def create_app(
                 ),
                 "process_model_available": process_available,
                 "process_model_unavailable_reason": process_reason,
+                "process_model_strategy": process_model_strategy(),
+                "llm_status": app.state.llm_disabled_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             }
         )
@@ -269,14 +295,41 @@ def create_app(
 
     @app.post("/api/v1/runs/{run_id}/process-model")
     async def build_process_model(run_id: str) -> JSONResponse:
-        process_available, _ = process_model_capability("example")
-        if not process_available:
-            return JSONResponse(
-                {"detail": WITHOUT_LLM_MESSAGE, "code": "without_llm"},
-                status_code=503,
-            )
+        llm_status = app.state.llm_disabled_reason
         try:
-            summary = await run_in_threadpool(process_model_builder.build, run_id)
+            use_llm = (
+                llm_builder is not None
+                and process_model_builder is llm_builder
+                and app.state.llm_disabled_reason is None
+            )
+            if use_llm:
+                try:
+                    summary = await run_in_threadpool(llm_builder.build, run_id)
+                except LLMUnavailableError:
+                    app.state.llm_disabled_reason = WITHOUT_LLM_MESSAGE
+                    llm_status = WITHOUT_LLM_MESSAGE
+                    summary = await run_in_threadpool(
+                        deterministic_builder.build,
+                        run_id,
+                    )
+                except (
+                    LLMConfigurationError,
+                    LLMProviderError,
+                    ProcessExtractionError,
+                ):
+                    llm_status = WITHOUT_LLM_MESSAGE
+                    summary = await run_in_threadpool(
+                        deterministic_builder.build,
+                        run_id,
+                    )
+            else:
+                active_builder = (
+                    deterministic_builder
+                    if llm_builder is not None
+                    and app.state.llm_disabled_reason is not None
+                    else process_model_builder
+                )
+                summary = await run_in_threadpool(active_builder.build, run_id)
         except KeyError as exc:
             raise HTTPException(
                 status_code=404, detail="Segmentation run not found"
@@ -285,32 +338,21 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except LLMConfigurationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except LLMUnavailableError:
-            app.state.llm_disabled_reason = WITHOUT_LLM_MESSAGE
-            return JSONResponse(
-                {"detail": WITHOUT_LLM_MESSAGE, "code": "without_llm"},
-                status_code=503,
-            )
         except LLMProviderError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ProcessExtractionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         return JSONResponse(
-            _process_model_response(summary),
+            _process_model_response(summary, llm_status=llm_status),
             status_code=200 if summary.cache_hit else 201,
         )
 
     @app.get("/api/v1/runs/{run_id}/process-model")
     async def get_process_model(run_id: str) -> JSONResponse:
-        process_available, _ = process_model_capability("example")
-        if not process_available:
-            return JSONResponse(
-                {"detail": WITHOUT_LLM_MESSAGE, "code": "without_llm"},
-                status_code=503,
-            )
         summary = await run_in_threadpool(
-            process_model_builder.get,
+            DeterministicProcessModelBuilder.latest,
+            session_factory,
             run_id,
         )
         if summary is None:
@@ -318,7 +360,12 @@ def create_app(
                 status_code=404,
                 detail="Process model has not been built for this run",
             )
-        return JSONResponse(_process_model_response(summary))
+        return JSONResponse(
+            _process_model_response(
+                summary,
+                llm_status=app.state.llm_disabled_reason,
+            )
+        )
 
     @app.get("/api/v1/runs/{run_id}/result")
     async def download_result(run_id: str) -> StreamingResponse:
