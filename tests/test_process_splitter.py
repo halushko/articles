@@ -92,3 +92,17 @@ def test_soft_process_split_extracts_unpunctuated_then_else():
         "conditional_scope": "show an error",
         "else_scope": "continue to confirmation.",
     }
+
+
+def test_soft_process_split_extracts_postfix_condition_with_otherwise():
+    result = soft_process_split(
+        "Update the existing request when it belongs to the customer; "
+        "otherwise create a new request."
+    )
+
+    assert result == {
+        "trigger": "when",
+        "condition_clause": "when it belongs to the customer",
+        "conditional_scope": "Update the existing request",
+        "else_scope": "create a new request.",
+    }

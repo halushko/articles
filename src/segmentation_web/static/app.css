@@ -210,6 +210,8 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 .legend-line.conditional::after { border-left-color: #c47c17; }
 .legend-node { display: inline-block; width: 20px; height: 13px; border: 2px solid #506ed2; border-radius: 4px; background: #eef2ff; }
 .legend-node.action { border-color: #38876d; background: #eff9f5; }
+.legend-node.gateway { border-color: #c47c17; background: #fff7e8; }
+.legend-node.join { border-color: #7c62b8; background: #f6f1ff; }
 
 .process-workspace {
   overflow: auto;
@@ -250,6 +252,7 @@ dd { margin: 5px 0 0; font-size: 1.25rem; font-weight: 750; }
 .process-node-stage { border-color: #506ed2; background: #eef2ff; }
 .process-node-action { border-color: #38876d; background: #eff9f5; }
 .process-node-gateway { border-color: #c47c17; background: #fff7e8; transform: rotate(0deg); }
+.process-node-join { border-color: #7c62b8; background: #f6f1ff; }
 .process-node-kind { color: #68748a; font-size: 0.68rem; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
 .process-node-label { display: -webkit-box; margin-top: 6px; padding-right: 24px; overflow: hidden; font-size: 0.86rem; font-weight: 760; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .process-node-members { position: absolute; right: 14px; bottom: 10px; left: 14px; display: block; overflow: hidden; color: #6c778b; font-size: 0.72rem; text-overflow: ellipsis; white-space: nowrap; }

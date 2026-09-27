@@ -33,16 +33,18 @@ from .hashing import sha256_json
 from .llm_process import ProcessExtractionError
 from .process_model import ProcessModelSummary
 
-BUILDER_VERSION = "0.8.0"
+BUILDER_VERSION = "0.9.0"
 DERIVATION_MODE = "deterministic_rules"
 SPACE_RE = re.compile(r"\s+")
 MARKDOWN_RE = re.compile(r"[*_`]+")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'_-]*")
 NUMBERED_MARKER_RE = re.compile(r"^(\d+)\.$")
 TRANSITION_PREFIX_RE = re.compile(
-    r"^(?:then|next|after\s+that|afterwards|subsequently|finally)\b[,:]?\s*",
+    r"^(?:then|next|after\s+that|afterwards|subsequently|finally|otherwise)"
+    r"\b[,:]?\s*",
     re.IGNORECASE,
 )
+ELSE_PREFIX_RE = re.compile(r"^(?:else|otherwise)\b[,:]?\s*", re.IGNORECASE)
 MODAL_ROLE_RE = re.compile(
     r"^(?:then\s+)?(?:the\s+)?(?P<role>[A-Za-z][A-Za-z0-9 /&_-]{1,60}?)\s+"
     r"(?:must|shall|should|will|can|may|needs?\s+to|is\s+required\s+to)\s+",
@@ -328,7 +330,6 @@ DECISION_OUTCOME_RE = re.compile(
     r"(?:when|if)\s+(?P<condition>.+?)[.!?]?$",
     re.IGNORECASE,
 )
-
 CONFIG: dict[str, Any] = {
     "schema_version": "1.0",
     "derivation_mode": DERIVATION_MODE,
@@ -338,7 +339,10 @@ CONFIG: dict[str, Any] = {
         "actions_within_named_procedural_section",
         "ordered_procedural_sections",
         "explicit_if_then_else",
+        "postfix_condition_with_else",
+        "adjacent_complementary_conditions",
         "implicit_else_to_continuation",
+        "conditional_branch_merge",
         "explicit_document_subprocess_call",
         "subprocess_return_to_continuation",
         "decision_outcome_to_named_branch",
@@ -457,6 +461,20 @@ class DocumentProfile:
     system: str
     procedural: bool
     sections: tuple[ProcessSection, ...]
+
+
+@dataclass(frozen=True)
+class ConditionalBranch:
+    condition: SourceFragment
+    scope: SourceFragment
+    label: str
+
+
+@dataclass(frozen=True)
+class ConditionalRegion:
+    parent_ids: tuple[str, ...]
+    branches: tuple[ConditionalBranch, ...]
+    ordinal: int
 
 
 def _clean(value: Any) -> str:
@@ -782,6 +800,203 @@ def _condition_label(text: str) -> str:
     if match.group(1).casefold() == "unless":
         return f"Not ({body})"
     return body
+
+
+def _condition_subject_state(text: str) -> tuple[str, str] | None:
+    body = _condition_label(text).casefold()
+    match = re.match(
+        r"^(?P<subject>.+?)\s+"
+        r"(?:is|are|was|were|becomes?|remains?)\s+"
+        r"(?P<state>.+)$",
+        body,
+    )
+    if not match:
+        return None
+    subject = SPACE_RE.sub(" ", match.group("subject")).strip()
+    state = SPACE_RE.sub(" ", match.group("state")).strip()
+    return (subject, state) if subject and state else None
+
+
+def _conditions_are_alternatives(
+    left: SourceFragment,
+    right: SourceFragment,
+) -> bool:
+    """Conservatively detect adjacent, mutually exclusive conditions.
+
+    The conditions must originate from the same source span.  Negated copies
+    (``matches`` / ``does not match``) are alternatives. Adjacent copular
+    conditions from one source paragraph (``X is A`` / ``X is B``) are treated
+    as an enumeration of alternative states when the subject is identical and
+    the state values differ. No document title or domain value is consulted.
+    """
+
+    if (
+        left.document_path != right.document_path
+        or left.hierarchy_path != right.hierarchy_path
+        or left.line_start is None
+        or right.line_start is None
+        or (left.line_start, left.line_end) != (right.line_start, right.line_end)
+    ):
+        return False
+
+    left_body = _condition_label(left.text).casefold()
+    right_body = _condition_label(right.text).casefold()
+    left_negative = bool(re.search(r"\b(?:no|not|never)\b", left_body))
+    right_negative = bool(re.search(r"\b(?:no|not|never)\b", right_body))
+    def without_negation(value: str) -> str:
+        return SPACE_RE.sub(
+            " ", re.sub(r"\b(?:no|not|never)\b", "", value)
+        ).strip()
+    if (
+        left_negative != right_negative
+        and without_negation(left_body) == without_negation(right_body)
+    ):
+        return True
+
+    left_parts = _condition_subject_state(left.text)
+    right_parts = _condition_subject_state(right.text)
+    if not left_parts or not right_parts or left_parts[0] != right_parts[0]:
+        return False
+    return left_parts[1] != right_parts[1]
+
+
+def _conditional_regions(
+    groups: dict[str, list[SourceFragment]],
+    section_fragments: tuple[SourceFragment, ...],
+) -> tuple[ConditionalRegion, ...]:
+    prepared: list[
+        tuple[str, SourceFragment, tuple[SourceFragment, ...]]
+    ] = []
+    for parent_id, fragments in groups.items():
+        condition = next(
+            (
+                item
+                for item in fragments
+                if item.fragment_type == "condition_clause"
+            ),
+            None,
+        )
+        scopes = tuple(
+            item
+            for item in fragments
+            if item.fragment_type == "conditional_scope"
+            and _contains_explicit_action(item)
+        )
+        if condition and scopes and not any(
+            scope.structural_fields.get("condition_branch") == "else"
+            for scope in scopes
+        ):
+            last_ordinal = max(scope.ordinal for scope in scopes)
+            next_fragment = next(
+                (
+                    item
+                    for item in sorted(
+                        section_fragments,
+                        key=lambda candidate: candidate.ordinal,
+                    )
+                    if item.ordinal > last_ordinal
+                    and item.fragment_type
+                    not in {"condition_clause", "conditional_scope"}
+                ),
+                None,
+            )
+            if (
+                next_fragment
+                and condition.line_start is not None
+                and (next_fragment.line_start, next_fragment.line_end)
+                == (condition.line_start, condition.line_end)
+                and ELSE_PREFIX_RE.match(next_fragment.text)
+            ):
+                scopes = (
+                    *scopes,
+                    replace(
+                        next_fragment,
+                        parent_fragment_id=condition.parent_fragment_id,
+                        fragment_type="conditional_scope",
+                        structural_fields={
+                            **next_fragment.structural_fields,
+                            "condition_trigger": condition.structural_fields.get(
+                                "condition_trigger", "if"
+                            ),
+                            "condition_branch": "else",
+                        },
+                    ),
+                )
+        if condition and scopes:
+            prepared.append((parent_id, condition, scopes))
+    prepared.sort(key=lambda item: item[1].ordinal)
+
+    regions: list[ConditionalRegion] = []
+    index = 0
+    while index < len(prepared):
+        current = prepared[index]
+        cluster = [current]
+        current_has_else = any(
+            scope.structural_fields.get("condition_branch") == "else"
+            for scope in current[2]
+        )
+        if not current_has_else:
+            while index + 1 < len(prepared):
+                following = prepared[index + 1]
+                following_has_else = any(
+                    scope.structural_fields.get("condition_branch") == "else"
+                    for scope in following[2]
+                )
+                if following_has_else or not _conditions_are_alternatives(
+                    cluster[-1][1], following[1]
+                ):
+                    break
+                cluster.append(following)
+                index += 1
+
+        branches: list[ConditionalBranch] = []
+        for _, condition, scopes in cluster:
+            for scope in scopes:
+                label = (
+                    "Otherwise"
+                    if scope.structural_fields.get("condition_branch") == "else"
+                    else _condition_label(condition.text)
+                )
+                branches.append(
+                    ConditionalBranch(
+                        condition=condition,
+                        scope=scope,
+                        label=label,
+                    )
+                )
+        regions.append(
+            ConditionalRegion(
+                parent_ids=tuple(item[0] for item in cluster),
+                branches=tuple(branches),
+                ordinal=min(item[1].ordinal for item in cluster),
+            )
+        )
+        index += 1
+    return tuple(regions)
+
+
+def _conditional_gateway_operation(region: ConditionalRegion) -> str:
+    conditions = [
+        branch.condition
+        for branch in region.branches
+        if branch.label != "Otherwise"
+    ]
+    subjects = [
+        parts[0]
+        for condition in conditions
+        if (parts := _condition_subject_state(condition.text)) is not None
+    ]
+    if (
+        len(conditions) >= 2
+        and len(subjects) == len(conditions)
+        and len(set(subjects)) == 1
+    ):
+        subject = subjects[0]
+        return _clip_operation(
+            f"Decision: {subject[:1].upper() + subject[1:]}?",
+            110,
+        )
+    return _operation(conditions[0], condition=True)
 
 
 def _decision_outcomes(section: ProcessSection) -> tuple[DecisionOutcome, ...]:
@@ -1403,15 +1618,11 @@ class DeterministicProcessModelBuilder:
                     }:
                         conditional_groups[fragment.parent_fragment_id].append(fragment)
                 outcomes = _decision_outcomes(section)
-                # A heading such as "Decision" is not enough to create a gateway:
-                # the documentation must also expose at least one condition, two
-                # named outcomes, or multiple referenced subprocesses.
-                title_declares_decision = bool(DECISION_SECTION_RE.search(section.title))
-                is_gateway = (
-                    target_count > 1
-                    or len(outcomes) >= 2
-                    or (bool(conditional_groups) and title_declares_decision)
-                )
+                # Named outcomes and multi-document routes define a section-wide
+                # decision. Explicit IF/WHEN/UNLESS fragments are handled in
+                # source order below so actions before and after a condition are
+                # not lost.
+                is_gateway = target_count > 1 or len(outcomes) >= 2
                 core_fragments = [
                     fragment
                     for fragment in section.fragments
@@ -1540,55 +1751,159 @@ class DeterministicProcessModelBuilder:
                                 used_fragment_keys.update({condition.key, scope.key})
                     continue
 
-                for fragment in core_fragments:
-                    operations = _operation_parts(fragment)
-                    if fragment.fragment_type == "conditional_scope":
-                        condition = next(
-                            (
-                                item
-                                for item in section.fragments
-                                if item.parent_fragment_id
-                                == fragment.parent_fragment_id
-                                and item.fragment_type == "condition_clause"
-                            ),
-                            None,
-                        )
-                        if condition:
-                            operations = [
-                                f"If {_condition_label(condition.text)}: {operation}"
-                                for operation in operations
-                            ]
-                    for operation in operations:
-                        operation = _clip_operation(operation, 118)
-                        if not operation or any(
+                def append_action(
+                    fragment: SourceFragment,
+                    operation: str,
+                    *,
+                    extraction_rule: str,
+                    deduplicate: bool = True,
+                    section_key: tuple[str, str] = section.key,
+                    profile_role: str = profile.role,
+                    profile_system: str = profile.system,
+                ) -> str | None:
+                    operation = _clip_operation(operation, 118)
+                    if not operation or (
+                        deduplicate
+                        and any(
                             node.operation.casefold() == operation.casefold()
                             for node in nodes
-                            if node.id in section_nodes[section.key]
-                        ):
+                            if node.id in section_nodes[section_key]
+                        )
+                    ):
+                        return None
+                    role = _extract_role(fragment, fragment.text)
+                    system = _extract_system(fragment, fragment.text)
+                    node_id = f"v{len(nodes) + 1}"
+                    nodes.append(
+                        ExtractedNode(
+                            id=node_id,
+                            fragment=fragment,
+                            operation=operation,
+                            role=profile_role if role == "Unknown" else role,
+                            system=(
+                                profile_system if system == "Unknown" else system
+                            ),
+                            node_type="action",
+                            confidence=_candidate_confidence(fragment, fragment.text),
+                            extraction_rule=extraction_rule,
+                        )
+                    )
+                    section_nodes[section_key].append(node_id)
+                    used_fragment_keys.add(fragment.key)
+                    return node_id
+
+                regions = _conditional_regions(
+                    conditional_groups,
+                    section.fragments,
+                )
+                region_by_parent = {
+                    parent_id: region
+                    for region in regions
+                    for parent_id in region.parent_ids
+                }
+                emitted_regions: set[int] = set()
+                conditional_scope_keys = {
+                    branch.scope.key
+                    for region in regions
+                    for branch in region.branches
+                }
+                for fragment in sorted(
+                    section.fragments,
+                    key=lambda item: item.ordinal,
+                ):
+                    if (
+                        fragment.key in conditional_scope_keys
+                        and fragment.fragment_type
+                        not in {"condition_clause", "conditional_scope"}
+                    ):
+                        continue
+                    if fragment.fragment_type in {
+                        "condition_clause",
+                        "conditional_scope",
+                    }:
+                        parent_id = fragment.parent_fragment_id or ""
+                        region = region_by_parent.get(parent_id)
+                        if not region or region.ordinal in emitted_regions:
                             continue
-                        role = _extract_role(fragment, fragment.text)
-                        system = _extract_system(fragment, fragment.text)
-                        node_id = f"v{len(nodes) + 1}"
+                        emitted_regions.add(region.ordinal)
+                        evidence = region.branches[0].condition
+                        gateway_id = f"v{len(nodes) + 1}"
+                        branch_scope = region.branches[0].scope
+                        role = _extract_role(branch_scope, branch_scope.text)
+                        system = _extract_system(branch_scope, branch_scope.text)
                         nodes.append(
                             ExtractedNode(
-                                id=node_id,
-                                fragment=fragment,
-                                operation=operation,
-                                role=profile.role if role == "Unknown" else role,
-                                system=profile.system
-                                if system == "Unknown"
-                                else system,
-                                node_type="action",
-                                confidence=_candidate_confidence(
-                                    fragment, fragment.text
+                                id=gateway_id,
+                                fragment=evidence,
+                                operation=_conditional_gateway_operation(region),
+                                role=(
+                                    profile.role if role == "Unknown" else role
                                 ),
-                                extraction_rule=(
-                                    f"named_section:{fragment.fragment_type}"
+                                system=(
+                                    profile.system
+                                    if system == "Unknown"
+                                    else system
                                 ),
+                                node_type="gateway",
+                                confidence=0.92,
+                                extraction_rule="explicit_condition",
                             )
                         )
-                        section_nodes[section.key].append(node_id)
-                        used_fragment_keys.add(fragment.key)
+                        section_nodes[section.key].append(gateway_id)
+                        used_fragment_keys.add(evidence.key)
+
+                        for branch_index, branch in enumerate(
+                            region.branches,
+                            start=1,
+                        ):
+                            used_fragment_keys.update(
+                                {branch.condition.key, branch.scope.key}
+                            )
+                            for step_index, operation in enumerate(
+                                _operation_parts(branch.scope),
+                                start=1,
+                            ):
+                                append_action(
+                                    branch.scope,
+                                    operation,
+                                    extraction_rule=(
+                                        "conditional_branch:"
+                                        f"{gateway_id}:{branch_index}:{step_index}"
+                                    ),
+                                    deduplicate=False,
+                                )
+                        join_id = f"v{len(nodes) + 1}"
+                        nodes.append(
+                            ExtractedNode(
+                                id=join_id,
+                                fragment=evidence,
+                                operation="Merge conditional paths",
+                                role=(
+                                    profile.role if role == "Unknown" else role
+                                ),
+                                system=(
+                                    profile.system
+                                    if system == "Unknown"
+                                    else system
+                                ),
+                                node_type="join",
+                                confidence=0.90,
+                                extraction_rule=f"conditional_join:{gateway_id}",
+                            )
+                        )
+                        section_nodes[section.key].append(join_id)
+                        continue
+
+                    if not _is_core_action_fragment(fragment):
+                        continue
+                    for operation in _operation_parts(fragment):
+                        append_action(
+                            fragment,
+                            operation,
+                            extraction_rule=(
+                                f"named_section:{fragment.fragment_type}"
+                            ),
+                        )
 
                 if not section_nodes[section.key] and _starts_with_action(
                     section.title
@@ -1664,25 +1979,257 @@ class DeterministicProcessModelBuilder:
                 )
             )
 
+        def encoded_controls(
+            section: ProcessSection,
+        ) -> dict[str, dict[int, list[tuple[int, str]]]]:
+            controls: dict[str, dict[int, list[tuple[int, str]]]] = defaultdict(
+                lambda: defaultdict(list)
+            )
+            for node_id in section_nodes.get(section.key, ()):
+                match = re.fullmatch(
+                    r"conditional_branch:(v\d+):(\d+):(\d+)",
+                    nodes_by_id[node_id].extraction_rule,
+                )
+                if match:
+                    controls[match.group(1)][int(match.group(2))].append(
+                        (int(match.group(3)), node_id)
+                    )
+            return {
+                gateway: {
+                    branch: sorted(items)
+                    for branch, items in branches.items()
+                }
+                for gateway, branches in controls.items()
+            }
+
+        def condition_for_branch(
+            section: ProcessSection,
+            node_id: str,
+        ) -> tuple[str, SourceFragment | None]:
+            scope = nodes_by_id[node_id].fragment
+            condition = next(
+                (
+                    item
+                    for item in section.fragments
+                    if item.parent_fragment_id == scope.parent_fragment_id
+                    and item.fragment_type == "condition_clause"
+                ),
+                None,
+            )
+            label = (
+                "Otherwise"
+                if scope.structural_fields.get("condition_branch") == "else"
+                else (
+                    _condition_label(condition.text)
+                    if condition
+                    else "Documented condition"
+                )
+            )
+            return label, condition
+
         def conditional_branches(section: ProcessSection) -> list[str]:
-            return [
+            result: list[str] = []
+            for branches in encoded_controls(section).values():
+                result.extend(items[0][1] for items in branches.values())
+            result.extend(
                 node_id
                 for node_id in section_nodes.get(section.key, ())
                 if nodes_by_id[node_id].extraction_rule == "conditional_branch"
+            )
+            return result
+
+        def trailing_control(
+            section: ProcessSection,
+        ) -> tuple[str, list[list[str]], list[str]] | None:
+            ids = list(section_nodes.get(section.key, ()))
+            controls = encoded_controls(section)
+            for gateway, branches in controls.items():
+                branch_ids = {
+                    node_id
+                    for items in branches.values()
+                    for _, node_id in items
+                }
+                gateway_index = ids.index(gateway)
+                if set(ids[gateway_index + 1 :]) == branch_ids:
+                    ordered = [
+                        [node_id for _, node_id in branches[index]]
+                        for index in sorted(branches)
+                    ]
+                    labels = [
+                        condition_for_branch(section, nodes[0])[0]
+                        for nodes in ordered
+                    ]
+                    return gateway, ordered, labels
+
+            legacy = [
+                node_id
+                for node_id in ids
+                if nodes_by_id[node_id].extraction_rule == "conditional_branch"
             ]
+            if legacy and ids and ids[0] not in legacy:
+                return ids[0], [[node_id] for node_id in legacy], [
+                    condition_for_branch(section, node_id)[0]
+                    for node_id in legacy
+                ]
+            return None
 
         def section_exits(section: ProcessSection) -> list[str]:
-            branches = conditional_branches(section)
-            if branches:
-                return branches
+            control = trailing_control(section)
+            if control:
+                return [branch[-1] for branch in control[1]]
             ids = section_nodes.get(section.key, ())
             return [ids[-1]] if ids else []
+
+        def add_sequence(source: str, target: str) -> None:
+            left = nodes_by_id[source].fragment
+            right = nodes_by_id[target].fragment
+            left_marker = str(left.structural_fields.get("list_marker") or "")
+            right_marker = str(right.structural_fields.get("list_marker") or "")
+            left_number = NUMBERED_MARKER_RE.match(left_marker)
+            right_number = NUMBERED_MARKER_RE.match(right_marker)
+            if (
+                left_number
+                and right_number
+                and int(right_number.group(1)) == int(left_number.group(1)) + 1
+            ):
+                reason = (
+                    "Consecutive numbers in the same named section explicitly "
+                    "define action order."
+                )
+                confidence = 0.90
+            elif left.key == right.key:
+                reason = (
+                    "The same source statement lists these coordinated actions "
+                    "in this order."
+                )
+                confidence = 0.84
+            elif (
+                left.parent_fragment_id
+                and left.parent_fragment_id == right.parent_fragment_id
+            ):
+                reason = (
+                    "Low-confidence hypothesis: two action sentences occur "
+                    "in this order in the same source paragraph."
+                )
+                confidence = 0.35
+            else:
+                reason = (
+                    "Low-confidence hypothesis: action statements occur in this "
+                    "order inside the same named procedural section."
+                )
+                confidence = 0.55
+            add(
+                source,
+                target,
+                reason=reason,
+                confidence=confidence,
+                evidence=(left,) if left.key == right.key else (left, right),
+            )
 
         # The order of explicit actions inside one named section is retained,
         # but its confidence reflects the strength of the source notation.
         for profile in profiles:
             for section in profile.sections:
                 ids = section_nodes.get(section.key, [])
+                controls = encoded_controls(section)
+                if controls:
+                    branch_node_ids = {
+                        node_id
+                        for branches in controls.values()
+                        for items in branches.values()
+                        for _, node_id in items
+                    }
+                    blocks: list[
+                        tuple[str, list[str], str | None, int, bool]
+                    ] = []
+                    for node_id in ids:
+                        if node_id in branch_node_ids:
+                            continue
+                        if node_id not in controls:
+                            blocks.append((node_id, [node_id], None, 0, False))
+                            continue
+                        branches = controls[node_id]
+                        exits: list[str] = []
+                        labels: list[str] = []
+                        for branch_index in sorted(branches):
+                            branch_nodes = [
+                                item_id for _, item_id in branches[branch_index]
+                            ]
+                            first = branch_nodes[0]
+                            label, condition_fragment = condition_for_branch(
+                                section,
+                                first,
+                            )
+                            labels.append(label)
+                            add(
+                                node_id,
+                                first,
+                                edge_type="conditional",
+                                condition=label,
+                                reason=(
+                                    "The source documentation explicitly states "
+                                    "this condition and its action."
+                                ),
+                                confidence=0.92,
+                                evidence=tuple(
+                                    item
+                                    for item in (
+                                        condition_fragment,
+                                        nodes_by_id[first].fragment,
+                                    )
+                                    if item is not None
+                                ),
+                            )
+                            for source, target in pairwise(branch_nodes):
+                                add_sequence(source, target)
+                            exits.append(branch_nodes[-1])
+                        blocks.append(
+                            (
+                                node_id,
+                                exits,
+                                node_id,
+                                len(branches),
+                                "Otherwise" in labels,
+                            )
+                        )
+
+                    for left, right in pairwise(blocks):
+                        right_entry = right[0]
+                        for left_exit in left[1]:
+                            if left[2] is None:
+                                add_sequence(left_exit, right_entry)
+                            else:
+                                add(
+                                    left_exit,
+                                    right_entry,
+                                    reason=(
+                                        "The documented conditional branch rejoins "
+                                        "the next action in the same section."
+                                    ),
+                                    confidence=0.88,
+                                    evidence=(
+                                        nodes_by_id[left_exit].fragment,
+                                        nodes_by_id[right_entry].fragment,
+                                    ),
+                                )
+                        if left[2] and left[3] == 1 and not left[4]:
+                            add(
+                                left[2],
+                                right_entry,
+                                edge_type="conditional",
+                                condition="Otherwise",
+                                reason=(
+                                    "When the stated condition is false, its action "
+                                    "is skipped and the documented flow continues."
+                                ),
+                                confidence=0.84,
+                                evidence=(
+                                    nodes_by_id[left[2]].fragment,
+                                    nodes_by_id[right_entry].fragment,
+                                ),
+                            )
+                    continue
+
                 branches = conditional_branches(section)
                 if branches and ids:
                     gateway = ids[0]
@@ -1728,50 +2275,7 @@ class DeterministicProcessModelBuilder:
                         )
                     continue
                 for source, target in pairwise(ids):
-                    left = nodes_by_id[source].fragment
-                    right = nodes_by_id[target].fragment
-                    left_marker = str(left.structural_fields.get("list_marker") or "")
-                    right_marker = str(right.structural_fields.get("list_marker") or "")
-                    left_number = NUMBERED_MARKER_RE.match(left_marker)
-                    right_number = NUMBERED_MARKER_RE.match(right_marker)
-                    if (
-                        left_number
-                        and right_number
-                        and int(right_number.group(1)) == int(left_number.group(1)) + 1
-                    ):
-                        reason = (
-                            "Consecutive numbers in the same named section explicitly "
-                            "define action order."
-                        )
-                        confidence = 0.90
-                    elif left.key == right.key:
-                        reason = (
-                            "The same source statement lists these coordinated actions "
-                            "in this order."
-                        )
-                        confidence = 0.84
-                    elif (
-                        left.parent_fragment_id
-                        and left.parent_fragment_id == right.parent_fragment_id
-                    ):
-                        reason = (
-                            "Low-confidence hypothesis: two action sentences occur "
-                            "in this order in the same source paragraph."
-                        )
-                        confidence = 0.35
-                    else:
-                        reason = (
-                            "Low-confidence hypothesis: action statements occur in this "
-                            "order inside the same named procedural section."
-                        )
-                        confidence = 0.55
-                    add(
-                        source,
-                        target,
-                        reason=reason,
-                        confidence=confidence,
-                        evidence=(left,) if left.key == right.key else (left, right),
-                    )
+                    add_sequence(source, target)
 
         # Preserve the order of named sections inside a procedure. A section that
         # explicitly calls another document is connected through that subprocess
@@ -1788,8 +2292,9 @@ class DeterministicProcessModelBuilder:
             for index, section in enumerate(populated[:-2]):
                 next_section = populated[index + 1]
                 following = populated[index + 2]
-                is_decision = (
-                    nodes_by_id[section_nodes[section.key][0]].node_type == "gateway"
+                is_decision = any(
+                    nodes_by_id[node_id].node_type == "gateway"
+                    for node_id in section_nodes[section.key]
                 )
                 if (
                     is_decision
@@ -1874,20 +2379,12 @@ class DeterministicProcessModelBuilder:
                         )
                     continue
 
-                branches = conditional_branches(section)
-                if len(branches) == 1:
-                    gateway = section_nodes[section.key][0]
-                    branch_fragment = nodes_by_id[branches[0]].fragment
-                    condition_fragment = next(
-                        (
-                            item
-                            for item in section.fragments
-                            if item.parent_fragment_id
-                            == branch_fragment.parent_fragment_id
-                            and item.fragment_type == "condition_clause"
-                        ),
-                        None,
-                    )
+                control = trailing_control(section)
+                if control and len(control[1]) == 1 and control[2] != ["Otherwise"]:
+                    gateway = control[0]
+                    branch = control[1][0][0]
+                    branch_fragment = nodes_by_id[branch].fragment
+                    _, condition_fragment = condition_for_branch(section, branch)
                     add(
                         gateway,
                         section_nodes[next_section.key][0],
@@ -2034,7 +2531,8 @@ class DeterministicProcessModelBuilder:
                 )
                 if continuation:
                     continuation_entry = section_nodes[continuation.key][0]
-                    for target_exit in section_exits(target_sections[-1]):
+                    target_last_section = target_sections[-1]
+                    for target_exit in section_exits(target_last_section):
                         add(
                             target_exit,
                             continuation_entry,
@@ -2045,6 +2543,28 @@ class DeterministicProcessModelBuilder:
                             confidence=0.84,
                             evidence=(
                                 nodes_by_id[target_exit].fragment,
+                                nodes_by_id[continuation_entry].fragment,
+                            ),
+                        )
+                    target_control = trailing_control(target_last_section)
+                    if (
+                        target_control
+                        and len(target_control[1]) == 1
+                        and "Otherwise" not in target_control[2]
+                    ):
+                        add(
+                            target_control[0],
+                            continuation_entry,
+                            edge_type="conditional",
+                            condition="Otherwise",
+                            reason=(
+                                "When the subprocess condition is false, its "
+                                "conditional action is skipped and control returns "
+                                "to the caller."
+                            ),
+                            confidence=0.84,
+                            evidence=(
+                                nodes_by_id[target_control[0]].fragment,
                                 nodes_by_id[continuation_entry].fragment,
                             ),
                         )

@@ -22,6 +22,15 @@ PLAIN_ELSE_RE = re.compile(
     r"\s+(?:else|otherwise)\s*[:,]?\s+",
     re.IGNORECASE,
 )
+POSTFIX_CONDITION_RE = re.compile(
+    r"^\s*(?P<scope>.+?)\s+"
+    r"(?P<trigger>if|when|unless)\s+"
+    r"(?P<condition>.+?)"
+    r"\s*(?:[;,]|\.\s+)\s*"
+    r"(?:else|otherwise)\s*[:,]?\s*"
+    r"(?P<else_scope>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _is_hard_sequence_marker(match: re.Match[str], text: str) -> bool:
@@ -91,9 +100,23 @@ def hard_process_split(
 
 
 def soft_process_split(text: str) -> dict[str, str] | None:
-    match = SOFT_CONDITION_RE.match(text.strip())
+    cleaned = text.strip()
+    match = SOFT_CONDITION_RE.match(cleaned)
     if not match:
-        return None
+        # Operational prose also places the condition after the action:
+        # ``update the draft when it belongs to the customer; otherwise create
+        # an order``.  Requiring an explicit ELSE/OTHERWISE keeps this rule
+        # conservative and avoids reinterpreting ordinary temporal clauses.
+        postfix = POSTFIX_CONDITION_RE.match(cleaned)
+        if not postfix:
+            return None
+        trigger = postfix.group("trigger").lower()
+        return {
+            "trigger": trigger,
+            "condition_clause": f"{trigger} {postfix.group('condition').strip()}",
+            "conditional_scope": postfix.group("scope").strip(),
+            "else_scope": postfix.group("else_scope").strip(),
+        }
 
     trigger = match.group("trigger").lower()
     condition_body = match.group("condition").strip()

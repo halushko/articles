@@ -473,9 +473,10 @@ function processIndex() {
 
 function processNodeKind(nodeId, children) {
   if (children.length) return "stage";
-  return processModel.node_metadata?.[nodeId]?.node_type === "gateway"
-    ? "gateway"
-    : "action";
+  const nodeType = processModel.node_metadata?.[nodeId]?.node_type;
+  if (nodeType === "gateway") return "gateway";
+  if (nodeType === "join") return "join";
+  return "action";
 }
 
 document.querySelectorAll("[data-process-level]").forEach((button) => {
@@ -808,7 +809,13 @@ function renderProcessGraph() {
     label.textContent = node.operation;
     const members = document.createElement("span");
     members.className = "process-node-members";
-    members.textContent = node.member_ids.length === 1 ? "1 atomic action" : `${node.member_ids.length} atomic actions`;
+    members.textContent = kind === "gateway"
+      ? "branch decision"
+      : (kind === "join"
+        ? "branch merge"
+        : (node.member_ids.length === 1
+          ? "1 atomic action"
+          : `${node.member_ids.length} atomic actions`));
     box.append(type, label, members);
 
     if (children.length) {
@@ -868,7 +875,9 @@ function showProcessDetails(nodeId) {
   const kind = processNodeKind(nodeId, children);
   const type = kind === "stage"
     ? "Aggregated stage"
-    : (kind === "gateway" ? "Decision gateway" : "Atomic action");
+    : (kind === "gateway"
+      ? "Decision gateway"
+      : (kind === "join" ? "Merge gateway" : "Atomic action"));
   setText("#process-detail-type", `${type} · ${nodeId}`);
   setText("#process-detail-label", node.operation);
   setText("#process-detail-role", node.role);

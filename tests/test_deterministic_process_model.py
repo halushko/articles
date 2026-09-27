@@ -566,10 +566,144 @@ Record the review result in the case system.
     incoming = [
         edge for edge in graph["edges"] if edge["target"] == continuation["id"]
     ]
-    assert {edge["source"] for edge in incoming} == {
+    join = next(
+        node for node in graph["nodes"] if metadata[node["id"]]["node_type"] == "join"
+    )
+    join_incoming = [
+        edge for edge in graph["edges"] if edge["target"] == join["id"]
+    ]
+    assert {edge["source"] for edge in join_incoming} == {
         edge["target"] for edge in outgoing
     }
+    assert {edge["source"] for edge in incoming} == {join["id"]}
     assert not any("fewer than two outgoing" in item for item in payload["warnings"])
+
+
+def test_plain_operational_conditions_create_branches_instead_of_a_sequence():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "request_procedure.md",
+                b"""# Request procedure
+
+## Select the request
+
+Search for an existing request.
+Update the request when it belongs to the customer; otherwise create a new request and notify the customer.
+
+## Check capacity
+
+Review the available resources. When capacity is available, reserve a resource. When capacity is exhausted, create a capacity request and notify the planner.
+
+## Finish
+
+Record the result.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+    metadata = payload["node_metadata"]
+    by_id = {node["id"]: node for node in graph["nodes"]}
+
+    gateways = {
+        node["operation"]: node["id"]
+        for node in graph["nodes"]
+        if metadata[node["id"]]["node_type"] == "gateway"
+    }
+    assert set(gateways) == {
+        "Decision: it belongs to the customer?",
+        "Decision: Capacity?",
+    }
+
+    postfix_edges = [
+        edge
+        for edge in graph["edges"]
+        if edge["source"] == gateways["Decision: it belongs to the customer?"]
+    ]
+    assert {
+        (edge["condition"], by_id[edge["target"]]["operation"])
+        for edge in postfix_edges
+    } == {
+        ("it belongs to the customer", "Update the request"),
+        ("Otherwise", "create a new request"),
+    }
+
+    capacity_edges = [
+        edge
+        for edge in graph["edges"]
+        if edge["source"] == gateways["Decision: Capacity?"]
+    ]
+    assert {
+        (edge["condition"], by_id[edge["target"]]["operation"])
+        for edge in capacity_edges
+    } == {
+        ("capacity is available", "reserve a resource"),
+        ("capacity is exhausted", "create a capacity request"),
+    }
+    assert not any(
+        by_id[edge["source"]]["operation"] == "reserve a resource"
+        and by_id[edge["target"]]["operation"] == "create a capacity request"
+        for edge in graph["edges"]
+    )
+    joins = [
+        node
+        for node in graph["nodes"]
+        if metadata[node["id"]]["node_type"] == "join"
+    ]
+    assert len(joins) == 2
+    assert all(
+        len([edge for edge in graph["edges"] if edge["target"] == node["id"]]) >= 2
+        for node in joins
+    )
+
+
+def test_otherwise_in_the_following_sentence_is_an_explicit_else_branch():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        [
+            SourceDocument(
+                "appointment_procedure.md",
+                b"""# Appointment procedure
+
+## Reconfirm the appointment
+
+Send a reminder. If the customer cancels, release the slot. Otherwise keep the confirmed visit and notify the technician.
+
+## Finish
+
+Record the appointment status.
+""",
+            )
+        ],
+        source_type="upload",
+    )
+
+    payload = DeterministicProcessModelBuilder(sessions).build(run.run_id).payload
+    graph = payload["hierarchy"]["base_graph"]
+    metadata = payload["node_metadata"]
+    by_id = {node["id"]: node for node in graph["nodes"]}
+    gateway = next(
+        node for node in graph["nodes"] if metadata[node["id"]]["node_type"] == "gateway"
+    )
+    outgoing = [
+        edge for edge in graph["edges"] if edge["source"] == gateway["id"]
+    ]
+
+    assert {
+        (edge["condition"], by_id[edge["target"]]["operation"])
+        for edge in outgoing
+    } == {
+        ("the customer cancels", "release the slot"),
+        ("Otherwise", "keep the confirmed visit"),
+    }
+    assert any(
+        node["operation"] == "notify the technician" for node in graph["nodes"]
+    )
 
 
 def test_uploaded_unrelated_corpus_works_end_to_end_without_llm():
