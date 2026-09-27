@@ -52,3 +52,33 @@ def test_segmenter_preserves_each_markdown_table_row_as_one_fragment():
     assert rows[0].segmentation_trigger == "table_header"
     assert rows[1].segmentation_trigger == "table_row"
     assert not any("---" in row.text for row in rows)
+
+
+def test_segmenter_keeps_if_then_else_branches_under_one_condition():
+    fragments = Segmenter(artifact_format="markdown").segment(
+        "decision_doc",
+        """# Review procedure
+
+## Decision
+
+If the request is complete then approve the request else return it to the submitter.
+""",
+    )
+
+    condition = next(
+        item for item in fragments if item.fragment_type == "condition_clause"
+    )
+    scopes = [
+        item for item in fragments if item.fragment_type == "conditional_scope"
+    ]
+
+    assert condition.text == "if the request is complete"
+    assert [item.text for item in scopes] == [
+        "approve the request",
+        "return it to the submitter.",
+    ]
+    assert [item.structural_fields["condition_branch"] for item in scopes] == [
+        "then",
+        "else",
+    ]
+    assert len({item.parent_fragment_id for item in scopes}) == 1

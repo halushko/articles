@@ -18,12 +18,28 @@ from .models import (
 )
 from .scoring import CandidateScorer
 
+MISSING_CONTEXT_VALUES = {
+    "",
+    "n/a",
+    "none",
+    "not recorded",
+    "unknown",
+    "unspecified",
+}
+
 
 def _dominant_or_mixed(values: list[str]) -> str:
-    distinct = sorted(set(values))
+    known = [
+        value
+        for value in values
+        if value.strip().casefold() not in MISSING_CONTEXT_VALUES
+    ]
+    if not known:
+        return "Unknown"
+    distinct = sorted(set(known))
     if len(distinct) == 1:
         return distinct[0]
-    dominant, _ = Counter(values).most_common(1)[0]
+    dominant, _ = Counter(known).most_common(1)[0]
     return f"mixed (dominant: {dominant})"
 
 
@@ -107,6 +123,11 @@ class HierarchicalAggregator:
                 rejection_reason=integrity_reason,
                 candidate_id=definition.id if definition else None,
                 candidate_name=definition.name if definition else None,
+                selection_basis=(
+                    "explicit_source_structure"
+                    if definition and definition.purpose == "structural"
+                    else "score"
+                ),
             )
             if definition and definition.purpose == "diagnostic":
                 rejected.append(
@@ -122,7 +143,9 @@ class HierarchicalAggregator:
                 )
             elif not integrity_ok:
                 rejected.append(score)
-            elif score.q < level_config.q_min:
+            elif (
+                not definition or definition.purpose != "structural"
+            ) and score.q < level_config.q_min:
                 rejected.append(replace(score, rejection_reason="below_q_min"))
             else:
                 eligible.append(score)
@@ -315,7 +338,4 @@ class HierarchicalAggregator:
     def _automatic_aggregate_name(operations: list[str]) -> str:
         if len(operations) == 2:
             return f"Stage: {operations[0]} → {operations[1]}"
-        return (
-            f"Stage: {operations[0]} → {operations[-1]} "
-            f"({len(operations)} actions)"
-        )
+        return f"Stage: {operations[0]} → {operations[-1]} ({len(operations)} actions)"

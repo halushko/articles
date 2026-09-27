@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
-
 
 HARD_SPLIT_RE = re.compile(
     r"\b(and then|after that|next|then)\b",
@@ -10,23 +8,68 @@ HARD_SPLIT_RE = re.compile(
 )
 
 SOFT_CONDITION_RE = re.compile(
-    r"\b(if|when|unless)\b\s+(.+?)(?:,\s+|\s+then\s+)(.+)$",
+    r"^\s*(?P<trigger>if|when|unless)\s+"
+    r"(?P<condition>.+?)"
+    r"(?P<separator>,\s*(?:then\s+)?|\s+then\s+|:\s+)"
+    r"(?P<scope>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+PUNCTUATED_ELSE_RE = re.compile(
+    r"\s*(?:[;,]|\.\s+)\s*(?:else|otherwise)\s*[:,]?\s*",
     re.IGNORECASE,
 )
+PLAIN_ELSE_RE = re.compile(
+    r"\s+(?:else|otherwise)\s*[:,]?\s+",
+    re.IGNORECASE,
+)
+POSTFIX_CONDITION_RE = re.compile(
+    r"^\s*(?P<scope>.+?)\s+"
+    r"(?P<trigger>if|when|unless)\s+"
+    r"(?P<condition>.+?)"
+    r"\s*(?:[;,]|\.\s+)\s*"
+    r"(?:else|otherwise)\s*[:,]?\s*"
+    r"(?P<else_scope>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_hard_sequence_marker(match: re.Match[str], text: str) -> bool:
+    """Return whether a matched word actually separates two process steps.
+
+    ``next`` is also an ordinary adjective (``the next visit`` or ``next
+    review time``).  Treat it as a transition only at the start of a statement,
+    after punctuation, or when ``next`` itself is followed by punctuation; the
+    other markers are unambiguous enough for the existing splitter.
+    """
+
+    if match.group(1).casefold() != "next":
+        return True
+    prefix = text[: match.start()]
+    if not prefix.strip():
+        return True
+    if re.search(r"[.;:,]\s*$", prefix):
+        return True
+    # ``and next, verify ...`` is an explicit transition, while ``and next
+    # responsible team`` is a coordinated noun phrase.
+    suffix = text[match.end() :]
+    return bool(re.match(r"\s*[,;:]", suffix))
 
 
 def hard_process_split(
     text: str,
     *,
     ignore_initial_then: bool = False,
-) -> Optional[dict[str, object]]:
+) -> dict[str, object] | None:
     cleaned = text.strip()
 
-    matches = list(HARD_SPLIT_RE.finditer(cleaned))
+    matches = [
+        match
+        for match in HARD_SPLIT_RE.finditer(cleaned)
+        if _is_hard_sequence_marker(match, cleaned)
+    ]
     if ignore_initial_then:
         matches = [
-            m for m in matches
-            if not (m.group(1).lower() == "then" and m.start() == 0)
+            m for m in matches if not (m.group(1).lower() == "then" and m.start() == 0)
         ]
 
     if not matches:
@@ -37,7 +80,7 @@ def hard_process_split(
     last = 0
 
     for match in matches:
-        before = cleaned[last:match.start()].strip(" ,.;")
+        before = cleaned[last : match.start()].strip(" ,.;")
         if before:
             parts.append(before)
         triggers.append(match.group(1).lower())
@@ -56,17 +99,47 @@ def hard_process_split(
     }
 
 
-def soft_process_split(text: str) -> Optional[dict[str, str]]:
-    match = SOFT_CONDITION_RE.search(text.strip())
+def soft_process_split(text: str) -> dict[str, str] | None:
+    cleaned = text.strip()
+    match = SOFT_CONDITION_RE.match(cleaned)
     if not match:
+        # Operational prose also places the condition after the action:
+        # ``update the draft when it belongs to the customer; otherwise create
+        # an order``.  Requiring an explicit ELSE/OTHERWISE keeps this rule
+        # conservative and avoids reinterpreting ordinary temporal clauses.
+        postfix = POSTFIX_CONDITION_RE.match(cleaned)
+        if not postfix:
+            return None
+        trigger = postfix.group("trigger").lower()
+        return {
+            "trigger": trigger,
+            "condition_clause": f"{trigger} {postfix.group('condition').strip()}",
+            "conditional_scope": postfix.group("scope").strip(),
+            "else_scope": postfix.group("else_scope").strip(),
+        }
+
+    trigger = match.group("trigger").lower()
+    condition_body = match.group("condition").strip()
+    separator = match.group("separator")
+    remaining_body = match.group("scope").strip()
+
+    # Prefer an explicitly punctuated ELSE. A plain ``... then A else B`` form
+    # is accepted only when THEN was the condition/action separator; this avoids
+    # treating ordinary phrases such as "notify someone else" as a branch.
+    branch_parts = PUNCTUATED_ELSE_RE.split(remaining_body, maxsplit=1)
+    if len(branch_parts) == 1 and "then" in separator.casefold():
+        branch_parts = PLAIN_ELSE_RE.split(remaining_body, maxsplit=1)
+
+    true_scope = branch_parts[0].strip()
+    false_scope = branch_parts[1].strip() if len(branch_parts) == 2 else ""
+    if not true_scope:
         return None
 
-    trigger = match.group(1).lower()
-    condition_body = match.group(2).strip()
-    remaining_body = match.group(3).strip()
-
-    return {
+    result = {
         "trigger": trigger,
         "condition_clause": f"{trigger} {condition_body}",
-        "conditional_scope": remaining_body,
+        "conditional_scope": true_scope,
     }
+    if false_scope:
+        result["else_scope"] = false_scope
+    return result

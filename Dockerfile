@@ -12,8 +12,7 @@ RUN pip install .
 
 COPY alembic.ini ./
 COPY migrations ./migrations
-COPY examples/access_recovery_source_docs ./examples/access_recovery_source_docs
-COPY examples/access_recovery_process.md ./examples/access_recovery_process.md
+COPY examples ./examples
 
 RUN useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /app

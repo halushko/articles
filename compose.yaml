@@ -21,8 +21,8 @@ services:
       context: .
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-segmenter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-segmenter}
-      EXAMPLE_DOCS_DIR: /app/examples/access_recovery_source_docs
-      CONTROL_PROCESS_PATH: /app/examples/access_recovery_process.md
+      EXAMPLE_DOCS_DIR: /app/examples
+      EXAMPLE_CATALOG_DIR: ${EXAMPLE_CATALOG_DIR:-/app/examples}
       PROCESS_MODEL_MODE: ${PROCESS_MODEL_MODE:-auto}
       LLM_ENABLED: ${LLM_ENABLED:-true}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}

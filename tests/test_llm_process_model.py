@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from process_hierarchy.models import ProcessEdge, ProcessGraph, ProcessNode
 from segmentation_web.archive import SourceDocument
 from segmentation_web.database import Base
 from segmentation_web.db_models import LLMExtractionResult, ProcessModelResult
@@ -20,6 +21,7 @@ from segmentation_web.llm_process import (
     LLMUnavailableError,
     OpenAICompatibleClient,
     ProcessExtractionError,
+    _hierarchy_candidates_from_evidence,
 )
 from segmentation_web.main import create_app
 from segmentation_web.pipeline import SegmentationPipeline
@@ -182,7 +184,20 @@ def test_llm_builder_creates_grounded_graph_and_reuses_corpus_cache():
     assert len(first.payload["hierarchy"]["base_graph"]["edges"]) == 5
     assert all(first.payload["provenance"].values())
     assert all(
+        evidence["hierarchy_path"]
+        for evidence_items in first.payload["provenance"].values()
+        for evidence in evidence_items
+    )
+    assert all(
         item["evidence"] for item in first.payload["transition_provenance"].values()
+    )
+    assert first.payload["configuration"]["aggregation"]["candidate_selection"] == (
+        "source_sections_and_control_flow_regions"
+    )
+    assert all(
+        not node["operation"].startswith("Stage:")
+        for level in first.payload["hierarchy"]["levels"]
+        for node in level["graph"]["nodes"]
     )
 
     second_run = pipeline.process(source_documents(), source_type="upload")
@@ -222,6 +237,74 @@ def test_llm_builder_rejects_unknown_fragment_references():
             session.scalar(select(func.count()).select_from(LLMExtractionResult)) == 0
         )
         assert session.scalar(select(func.count()).select_from(ProcessModelResult)) == 0
+
+
+def test_llm_hierarchy_planner_uses_split_join_regions_for_l2():
+    graph = ProcessGraph(
+        nodes={
+            f"v{index}": ProcessNode(
+                id=f"v{index}",
+                operation=operation,
+                role="Operator",
+                system="System",
+            )
+            for index, operation in enumerate(
+                (
+                    "Receive request",
+                    "Decision: Select route?",
+                    "Run identity recovery",
+                    "Run platform recovery",
+                    "Review specialist result",
+                    "Verify outcome",
+                    "Close case",
+                ),
+                start=1,
+            )
+        },
+        edges=tuple(
+            ProcessEdge(id=f"e{index}", source=source, target=target)
+            for index, (source, target) in enumerate(
+                (
+                    ("v1", "v2"),
+                    ("v2", "v3"),
+                    ("v2", "v4"),
+                    ("v3", "v5"),
+                    ("v4", "v5"),
+                    ("v5", "v6"),
+                    ("v6", "v7"),
+                ),
+                start=1,
+            )
+        ),
+    )
+    section_names = {
+        "v1": "Intake",
+        "v2": "Routing",
+        "v3": "Identity branch",
+        "v4": "Platform branch",
+        "v5": "Verification and closure",
+        "v6": "Verification and closure",
+        "v7": "Verification and closure",
+    }
+    provenance = {
+        node_id: [
+            {
+                "document_path": "guide.md",
+                "hierarchy_path": ["Guide", section],
+            }
+        ]
+        for node_id, section in section_names.items()
+    }
+
+    definitions, phases = _hierarchy_candidates_from_evidence(graph, provenance)
+    l2 = [item for item in definitions if item.target_level == 2]
+
+    assert len(l2) == 3
+    assert {node_id for item in l2 for node_id in item.atomic_node_ids} == set(
+        graph.nodes
+    )
+    assert any("Alternative paths" in item.name for item in l2)
+    assert len(phases) == 3
 
 
 def test_uploaded_zip_can_build_llm_process_model_via_api():

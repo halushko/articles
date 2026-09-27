@@ -14,10 +14,29 @@ def normalize_operation_name(value: str) -> str:
     return value.strip()
 
 
+MISSING_CONTEXT_VALUES = {
+    "",
+    "n/a",
+    "none",
+    "not recorded",
+    "unknown",
+    "unspecified",
+}
+
+
 def _dominant_share(values: list[str]) -> float:
     if not values:
         return 0.0
-    count = Counter(values).most_common(1)[0][1]
+    known = [
+        value
+        for value in values
+        if normalize_operation_name(value) not in MISSING_CONTEXT_VALUES
+    ]
+    if not known:
+        return 0.0
+    count = Counter(known).most_common(1)[0][1]
+    # Missing values do not form a shared context and still reduce coverage.
+    # One known role among five actions therefore contributes 1/5, not 1.0.
     return count / len(values)
 
 
@@ -54,6 +73,7 @@ class CandidateScorer:
         rejection_reason: str | None = None,
         candidate_id: str | None = None,
         candidate_name: str | None = None,
+        selection_basis: str = "score",
     ) -> CandidateScore:
         atomic_node_ids = tuple(sorted(set(atomic_node_ids)))
         if len(atomic_node_ids) < 2:
@@ -79,6 +99,7 @@ class CandidateScorer:
             rejection_reason=rejection_reason,
             candidate_id=candidate_id,
             candidate_name=candidate_name,
+            selection_basis=selection_basis,
         )
 
     def _text_similarity(self, atomic_node_ids: tuple[str, ...]) -> float:

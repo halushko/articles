@@ -13,11 +13,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
-from .archive import InputValidationError, documents_from_directory, documents_from_zip
-from .control_process import (
-    ControlProcessModelBuilder,
-    ProcessModelSummary,
-    ProcessModelUnavailableError,
+from .archive import (
+    InputValidationError,
+    discover_example_corpora,
+    documents_from_directory,
+    documents_from_zip,
 )
 from .database import create_database_engine, create_session_factory
 from .deterministic_process import DeterministicProcessModelBuilder
@@ -35,6 +35,7 @@ from .llm_process import (
     ProcessExtractionError,
 )
 from .pipeline import SegmentationPipeline, get_run_summary
+from .process_model import ProcessModelSummary
 from .settings import Settings
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -82,15 +83,17 @@ def create_app(
         engine = create_database_engine(app_settings.database_url)
         session_factory = create_session_factory(engine)
 
+    example_corpora = discover_example_corpora(
+        catalog_dir=app_settings.example_catalog_dir,
+        fallback_dir=app_settings.example_docs_dir,
+        max_documents=app_settings.max_documents,
+    )
+    examples_by_id = {corpus.id: corpus for corpus in example_corpora}
+
     deterministic_builder = DeterministicProcessModelBuilder(session_factory)
     llm_builder: Any | None = None
     if process_model_builder is None:
-        if app_settings.process_model_mode == "control":
-            process_model_builder = ControlProcessModelBuilder(
-                session_factory,
-                app_settings.control_process_path,
-            )
-        elif app_settings.process_model_mode in {"auto", "llm"} and (
+        if app_settings.process_model_mode in {"auto", "llm"} and (
             app_settings.llm_configured
         ):
             llm_builder = LLMProcessModelBuilder(
@@ -111,7 +114,7 @@ def create_app(
             process_model_builder = deterministic_builder
         else:
             raise ValueError(
-                "PROCESS_MODEL_MODE must be 'auto', 'llm', 'deterministic' or 'control'"
+                "PROCESS_MODEL_MODE must be 'auto', 'llm' or 'deterministic'"
             )
     elif app_settings.process_model_mode in {"auto", "llm"}:
         llm_builder = process_model_builder
@@ -140,17 +143,7 @@ def create_app(
         else None
     )
 
-    def process_model_capability(source_type: str) -> tuple[bool, str | None]:
-        if app_settings.process_model_mode == "control" and source_type != "example":
-            return (
-                False,
-                "Control mode supports only the built-in D1-D5 corpus.",
-            )
-        return True, None
-
     def process_model_strategy() -> str:
-        if app_settings.process_model_mode == "control":
-            return "control_baseline"
         if llm_builder is not None:
             return "llm_with_deterministic_fallback"
         return "deterministic_rules"
@@ -160,12 +153,11 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
-        example_count = len(list(app_settings.example_docs_dir.glob("D*.md")))
         return templates.TemplateResponse(
             request=request,
             name="index.html",
             context={
-                "example_count": example_count,
+                "examples": example_corpora,
                 "max_archive_mb": app_settings.max_archive_bytes // (1024 * 1024),
             },
         )
@@ -173,6 +165,7 @@ def create_app(
     @app.post("/api/v1/runs")
     async def create_run(
         source: Annotated[str, Form()],
+        example_id: Annotated[str | None, Form()] = None,
         archive: Annotated[UploadFile | None, File()] = None,
     ) -> JSONResponse:
         try:
@@ -181,9 +174,17 @@ def create_app(
                     raise InputValidationError(
                         "Do not upload an archive when the built-in example is selected"
                     )
+                selected_example = examples_by_id.get(
+                    example_id or example_corpora[0].id
+                )
+                if selected_example is None:
+                    raise InputValidationError(
+                        f"Unknown built-in example: {example_id}"
+                    )
                 documents = documents_from_directory(
-                    app_settings.example_docs_dir,
+                    selected_example.directory,
                     max_documents=app_settings.max_documents,
+                    document_paths=selected_example.document_paths,
                 )
             elif source == "upload":
                 if archive is None or not archive.filename:
@@ -208,9 +209,6 @@ def create_app(
         except InputValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        process_available, process_reason = process_model_capability(
-            summary.source_type
-        )
         return JSONResponse(
             {
                 "run_id": summary.run_id,
@@ -224,8 +222,8 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
-                "process_model_available": process_available,
-                "process_model_unavailable_reason": process_reason,
+                "process_model_available": True,
+                "process_model_unavailable_reason": None,
                 "process_model_strategy": process_model_strategy(),
                 "llm_status": app.state.llm_disabled_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
@@ -239,9 +237,6 @@ def create_app(
             summary = get_run_summary(session, run_id)
         if summary is None:
             raise HTTPException(status_code=404, detail="Segmentation run not found")
-        process_available, process_reason = process_model_capability(
-            summary.source_type
-        )
         return JSONResponse(
             {
                 "run_id": summary.run_id,
@@ -255,8 +250,8 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
-                "process_model_available": process_available,
-                "process_model_unavailable_reason": process_reason,
+                "process_model_available": True,
+                "process_model_unavailable_reason": None,
                 "process_model_strategy": process_model_strategy(),
                 "llm_status": app.state.llm_disabled_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
@@ -334,8 +329,6 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="Segmentation run not found"
             ) from exc
-        except ProcessModelUnavailableError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except LLMConfigurationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except LLMProviderError as exc:
