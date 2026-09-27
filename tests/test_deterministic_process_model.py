@@ -1,6 +1,7 @@
 import asyncio
 import io
 import zipfile
+from itertools import pairwise
 from pathlib import Path
 
 import httpx
@@ -135,6 +136,47 @@ def test_home_internet_corpus_uses_the_generic_deterministic_pipeline():
     assert not any(
         "fewer than two outgoing" in warning for warning in payload["warnings"]
     )
+
+    operations = {node["operation"] for node in graph["nodes"]}
+    assert not operations & {
+        "approved cable routes",
+        "assigned gateway",
+        "give the",
+        "responsible team",
+        "review time",
+        "visit",
+    }
+    assert not any(operation.endswith((" and", " for the")) for operation in operations)
+
+    l1_graph = payload["hierarchy"]["levels"][0]["graph"]
+    l1_by_id = {node["id"]: node["operation"] for node in l1_graph["nodes"]}
+    expected_l1_route = [
+        "Receive and register the request",
+        "Premises Serviceability and Building Access",
+        "Customer Identity and Service Agreement",
+        "Installation Appointment",
+        "Residential Field Installation",
+        "Service Activation and Line Test",
+        "Service Acceptance Billing and Order Closure",
+    ]
+    assert set(l1_by_id.values()) == set(expected_l1_route)
+    assert {
+        (l1_by_id[edge["source"]], l1_by_id[edge["target"]])
+        for edge in l1_graph["edges"]
+    } == set(pairwise(expected_l1_route))
+
+    l2_graph = payload["hierarchy"]["levels"][1]["graph"]
+    l2_by_id = {node["id"]: node["operation"] for node in l2_graph["nodes"]}
+    expected_l2_route = [
+        "Receive and register the request → Premises Serviceability and Building Access",
+        "Customer Identity and Service Agreement → Installation Appointment",
+        "Residential Field Installation → Service Acceptance Billing and Order Closure",
+    ]
+    assert set(l2_by_id.values()) == set(expected_l2_route)
+    assert {
+        (l2_by_id[edge["source"]], l2_by_id[edge["target"]])
+        for edge in l2_graph["edges"]
+    } == set(pairwise(expected_l2_route))
 
     reachable = {graph["nodes"][0]["id"]}
     while True:

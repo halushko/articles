@@ -22,6 +22,31 @@ def test_hard_process_split_ignores_initial_gherkin_then():
     ]
 
 
+def test_hard_process_split_does_not_treat_next_as_an_adjective_boundary():
+    assert (
+        hard_process_split(
+            "Tell the customer what remains unresolved and give the next review time."
+        )
+        is None
+    )
+    assert (
+        hard_process_split("Return the fault reference and next responsible team.")
+        is None
+    )
+    assert hard_process_split("Create a prerequisite for the next visit.") is None
+
+
+def test_hard_process_split_accepts_punctuated_next_transition():
+    result = hard_process_split(
+        "Record the request; next, verify the installation address."
+    )
+
+    assert result == {
+        "parts": ["Record the request", "verify the installation address"],
+        "triggers": ["next"],
+    }
+
+
 def test_soft_process_split():
     text = "If payment fails, the system shows an error message."
     result = soft_process_split(text)

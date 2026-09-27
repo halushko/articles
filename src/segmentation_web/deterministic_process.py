@@ -33,7 +33,7 @@ from .hashing import sha256_json
 from .llm_process import ProcessExtractionError
 from .process_model import ProcessModelSummary
 
-BUILDER_VERSION = "0.7.0"
+BUILDER_VERSION = "0.8.0"
 DERIVATION_MODE = "deterministic_rules"
 SPACE_RE = re.compile(r"\s+")
 MARKDOWN_RE = re.compile(r"[*_`]+")
@@ -511,7 +511,11 @@ def _starts_with_coordinated_action(value: str) -> bool:
     if not words:
         return False
     first = words[0].casefold()
-    if first.endswith(("ed", "ing", "s")):
+    # An ``-ed`` word before a noun is usually a past-participle modifier in
+    # operational prose (for example, "approved cable routes" or "assigned
+    # gateway"), not a second action.  Splitting there creates truncated cards.
+    # Present-tense and gerund forms remain useful action signals.
+    if first.endswith(("ing", "s")):
         return True
     return len(words) > 1 and words[1].casefold() in {
         "a",
@@ -2076,6 +2080,31 @@ class DeterministicProcessModelBuilder:
             None,
         )
 
+        # A common documentation pattern is a top-level procedure that invokes
+        # several independently documented subprocesses in sequence.  Grouping
+        # the complete top-level document as one L1 node turns those calls and
+        # returns into a hub-and-spoke graph.  Detect only the unambiguous form:
+        # every call section names one distinct target and that target is called
+        # exactly once in the corpus.
+        incoming_reference_count: dict[str, int] = defaultdict(int)
+        for target_paths in references.values():
+            for target_path in target_paths:
+                incoming_reference_count[target_path] += 1
+        entry_calls = [
+            (index, section, targets[0])
+            for index, section in enumerate(entry.sections)
+            if len(targets := references.get(section.key, ())) == 1
+            and section_nodes.get(section.key)
+        ]
+        entry_call_targets = [target for _, _, target in entry_calls]
+        sequential_call_chain = (
+            len(entry_calls) >= 2
+            and len(set(entry_call_targets)) == len(entry_call_targets)
+            and all(
+                incoming_reference_count[target] == 1 for target in entry_call_targets
+            )
+        )
+
         l1_specs: list[tuple[str, list[ProcessSection]]] = []
         phase_specs: list[tuple[str, list[ProcessSection]]] = []
         if split_section:
@@ -2138,6 +2167,53 @@ class DeterministicProcessModelBuilder:
                 )
                 for profile in downstream_profiles
             )
+        elif sequential_call_chain:
+            profiles_by_path = {profile.path: profile for profile in profiles}
+            first_call_index = entry_calls[0][0]
+            prelude = list(entry.sections[:first_call_index])
+            if prelude:
+                l1_specs.append((_phase_range_name(prelude), prelude))
+
+            for call_index, (section_index, _, target_path) in enumerate(entry_calls):
+                next_call_index = (
+                    entry_calls[call_index + 1][0]
+                    if call_index + 1 < len(entry_calls)
+                    else len(entry.sections)
+                )
+                caller_sections = list(entry.sections[section_index:next_call_index])
+                target_profile = profiles_by_path[target_path]
+                group_sections = caller_sections + list(target_profile.sections)
+                l1_specs.append(
+                    (_short_document_label(target_profile.title), group_sections)
+                )
+
+            consumed_paths = {entry.path, *entry_call_targets}
+            l1_specs.extend(
+                (
+                    _short_document_label(profile.title),
+                    list(profile.sections),
+                )
+                for profile in profiles
+                if profile.path not in consumed_paths
+            )
+
+            phase_count = 3 if len(l1_specs) >= 6 else 2
+            for index in range(min(phase_count, len(l1_specs))):
+                start = index * len(l1_specs) // phase_count
+                end = (index + 1) * len(l1_specs) // phase_count
+                chunk = l1_specs[start:end]
+                sections = [
+                    item for _, group_sections in chunk for item in group_sections
+                ]
+                if sections:
+                    first_name = chunk[0][0]
+                    last_name = chunk[-1][0]
+                    phase_name = (
+                        first_name
+                        if first_name == last_name
+                        else f"{first_name} → {last_name}"
+                    )
+                    phase_specs.append((phase_name, sections))
         elif len(profiles) > 1:
             l1_specs = [
                 (_short_document_label(profile.title), list(profile.sections))

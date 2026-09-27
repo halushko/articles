@@ -24,6 +24,28 @@ PLAIN_ELSE_RE = re.compile(
 )
 
 
+def _is_hard_sequence_marker(match: re.Match[str], text: str) -> bool:
+    """Return whether a matched word actually separates two process steps.
+
+    ``next`` is also an ordinary adjective (``the next visit`` or ``next
+    review time``).  Treat it as a transition only at the start of a statement,
+    after punctuation, or when ``next`` itself is followed by punctuation; the
+    other markers are unambiguous enough for the existing splitter.
+    """
+
+    if match.group(1).casefold() != "next":
+        return True
+    prefix = text[: match.start()]
+    if not prefix.strip():
+        return True
+    if re.search(r"[.;:,]\s*$", prefix):
+        return True
+    # ``and next, verify ...`` is an explicit transition, while ``and next
+    # responsible team`` is a coordinated noun phrase.
+    suffix = text[match.end() :]
+    return bool(re.match(r"\s*[,;:]", suffix))
+
+
 def hard_process_split(
     text: str,
     *,
@@ -31,11 +53,14 @@ def hard_process_split(
 ) -> dict[str, object] | None:
     cleaned = text.strip()
 
-    matches = list(HARD_SPLIT_RE.finditer(cleaned))
+    matches = [
+        match
+        for match in HARD_SPLIT_RE.finditer(cleaned)
+        if _is_hard_sequence_marker(match, cleaned)
+    ]
     if ignore_initial_then:
         matches = [
-            m for m in matches
-            if not (m.group(1).lower() == "then" and m.start() == 0)
+            m for m in matches if not (m.group(1).lower() == "then" and m.start() == 0)
         ]
 
     if not matches:
@@ -46,7 +71,7 @@ def hard_process_split(
     last = 0
 
     for match in matches:
-        before = cleaned[last:match.start()].strip(" ,.;")
+        before = cleaned[last : match.start()].strip(" ,.;")
         if before:
             parts.append(before)
         triggers.append(match.group(1).lower())
