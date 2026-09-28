@@ -37,7 +37,7 @@ from .hashing import sha256_json
 from .process_model import ProcessModelSummary
 
 ANALYZER_VERSION = "0.1.0"
-PROCESS_MODEL_BUILDER_VERSION = "0.3.0"
+PROCESS_MODEL_BUILDER_VERSION = "0.4.0"
 PROMPT_VERSION = "process_graph_v1"
 DERIVATION_MODE = "llm_grounded"
 SPACE_RE = re.compile(r"\s+")
@@ -61,11 +61,27 @@ AGGREGATION_CONFIG = {
             "max_candidates": 10_000,
         },
     ],
-    "candidate_selection": "source_sections_and_control_flow_regions",
-    "l1_selection": "explicit_source_structure",
+    "candidate_selection": (
+        "source_sections_control_flow_regions_and_bounded_cross_region_alternatives"
+    ),
+    "cross_region_candidate_max_graph_nodes": 12,
+    "l1_selection": (
+        "explicit_source_structure_with_scored_cross_region_alternatives"
+    ),
     "l2_selection": "q_threshold",
     "branch_integrity": "required",
 }
+
+
+def _aggregation_config_for_weights(weights: ScoreWeights) -> dict[str, Any]:
+    return {
+        **AGGREGATION_CONFIG,
+        "weights": {
+            "text": weights.text,
+            "context": weights.context,
+            "flow": weights.flow,
+        },
+    }
 
 PROCESS_EXTRACTION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -760,7 +776,19 @@ class LLMProcessModelBuilder:
         }
         self.process_config_sha256 = sha256_json(self.process_config)
 
-    def build(self, run_id: str) -> ProcessModelSummary:
+    def build(
+        self,
+        run_id: str,
+        *,
+        weights: ScoreWeights | None = None,
+    ) -> ProcessModelSummary:
+        resolved_weights = weights or ScoreWeights(**AGGREGATION_CONFIG["weights"])
+        aggregation_config = _aggregation_config_for_weights(resolved_weights)
+        process_config = {
+            **self.process_config,
+            "aggregation": aggregation_config,
+        }
+        process_config_sha256 = sha256_json(process_config)
         with self.session_factory() as session:
             run = session.get(SegmentationRun, run_id)
             if run is None:
@@ -773,7 +801,7 @@ class LLMProcessModelBuilder:
                 select(ProcessModelResult).where(
                     ProcessModelResult.run_id == run_id,
                     ProcessModelResult.builder_version == PROCESS_MODEL_BUILDER_VERSION,
-                    ProcessModelResult.config_sha256 == self.process_config_sha256,
+                    ProcessModelResult.config_sha256 == process_config_sha256,
                 )
             )
             if cached_model is not None:
@@ -789,7 +817,11 @@ class LLMProcessModelBuilder:
                 self._validated_graph(extraction, catalog)
             )
             candidates, phases = _hierarchy_candidates_from_evidence(graph, provenance)
-            aggregation = self._aggregate(graph, candidates)
+            aggregation = self._aggregate(
+                graph,
+                candidates,
+                weights=resolved_weights,
+            )
             payload = {
                 "schema_version": "1.0",
                 "source_run": {
@@ -800,7 +832,7 @@ class LLMProcessModelBuilder:
                     "mode": DERIVATION_MODE,
                     "universal_extraction": True,
                     "builder_version": PROCESS_MODEL_BUILDER_VERSION,
-                    "config_sha256": self.process_config_sha256,
+                    "config_sha256": process_config_sha256,
                     "message": (
                         "L0 actions and transitions were extracted by an LLM. "
                         "Every accepted node and edge passed deterministic "
@@ -810,7 +842,7 @@ class LLMProcessModelBuilder:
                         "deterministic aggregation algorithm."
                     ),
                 },
-                "configuration": self.process_config,
+                "configuration": process_config,
                 "llm": extraction_meta,
                 "process_title": _normalise(extraction.get("process_title"))
                 or "Documentation-derived process",
@@ -825,7 +857,7 @@ class LLMProcessModelBuilder:
             model = ProcessModelResult(
                 run_id=run.id,
                 builder_version=PROCESS_MODEL_BUILDER_VERSION,
-                config_sha256=self.process_config_sha256,
+                config_sha256=process_config_sha256,
                 derivation_mode=DERIVATION_MODE,
                 payload=payload,
                 level_count=1 + len(aggregation.levels),
@@ -1186,6 +1218,8 @@ class LLMProcessModelBuilder:
     def _aggregate(
         graph: ProcessGraph,
         candidate_definitions: tuple[CandidateDefinition, ...],
+        *,
+        weights: ScoreWeights,
     ) -> AggregationRun:
         target_levels = {
             definition.target_level for definition in candidate_definitions
@@ -1198,6 +1232,13 @@ class LLMProcessModelBuilder:
                 max_candidate_nodes=item["max_candidate_nodes"],
                 radius=item["radius"],
                 max_candidates=item["max_candidates"],
+                include_cross_region_candidates=(
+                    item["target_level"] == 1
+                    and len(graph.nodes)
+                    <= AGGREGATION_CONFIG[
+                        "cross_region_candidate_max_graph_nodes"
+                    ]
+                ),
             )
             for item in AGGREGATION_CONFIG["levels"]
             if item["target_level"] in target_levels
@@ -1205,7 +1246,7 @@ class LLMProcessModelBuilder:
         try:
             return HierarchicalAggregator(
                 AggregationConfig(
-                    weights=ScoreWeights(**AGGREGATION_CONFIG["weights"]),
+                    weights=weights,
                     levels=levels,
                 )
             ).run(graph, candidate_definitions)

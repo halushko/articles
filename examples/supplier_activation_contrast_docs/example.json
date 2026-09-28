@@ -1,0 +1,13 @@
+{
+  "id": "supplier-activation-contrast",
+  "title": "Supplier activation · combined vs topology",
+  "description": "A compact supplier-onboarding corpus whose verified stage boundaries expose topology-only over-aggregation while the combined score preserves compliance, integration and settlement stages.",
+  "documents": [
+    "supplier_activation_guide.md",
+    "supplier_compliance_procedure.md",
+    "supplier_integration_runbook.md",
+    "supplier_settlement_standard.md",
+    "supplier_activation_policy.md"
+  ]
+}
+

@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from process_hierarchy.models import ScoreWeights
 from segmentation_web.archive import (
     SourceDocument,
     discover_example_corpora,
@@ -90,6 +91,80 @@ def home_internet_documents():
         max_documents=20,
         document_paths=corpus.document_paths,
     )
+
+
+def supplier_activation_contrast_documents():
+    corpus = next(
+        corpus
+        for corpus in discover_example_corpora(
+            catalog_dir=Path("examples"),
+            fallback_dir=Path("examples/access_recovery_source_docs"),
+            max_documents=20,
+        )
+        if corpus.id == "supplier-activation-contrast"
+    )
+    return documents_from_directory(
+        corpus.directory,
+        max_documents=20,
+        document_paths=corpus.document_paths,
+    )
+
+
+def test_supplier_activation_weights_change_partition_and_cache_key():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        supplier_activation_contrast_documents(),
+        source_type="example",
+    )
+    builder = DeterministicProcessModelBuilder(sessions)
+
+    combined = builder.build(
+        run.run_id,
+        weights=ScoreWeights(text=0.2, context=0.4, flow=0.4),
+    )
+    topology = builder.build(
+        run.run_id,
+        weights=ScoreWeights(text=0.0, context=0.0, flow=1.0),
+    )
+    cached_topology = builder.build(
+        run.run_id,
+        weights=ScoreWeights(text=0.0, context=0.0, flow=1.0),
+    )
+
+    assert combined.id != topology.id
+    assert topology.cache_hit is False
+    assert cached_topology.cache_hit is True
+    assert cached_topology.id == topology.id
+    assert (
+        combined.payload["derivation"]["config_sha256"]
+        != topology.payload["derivation"]["config_sha256"]
+    )
+
+    combined_l1 = combined.payload["hierarchy"]["levels"][0]
+    topology_l1 = topology.payload["hierarchy"]["levels"][0]
+    assert {
+        candidate["candidate_id"]
+        for candidate in combined_l1["accepted_candidates"]
+    } == {"L1_REGION_001", "L1_REGION_002", "L1_REGION_003"}
+    assert any(
+        candidate["candidate_id"] is None
+        for candidate in topology_l1["accepted_candidates"]
+    )
+    assert any(
+        node["role"].startswith("mixed")
+        for node in topology_l1["graph"]["nodes"]
+        if len(node["member_ids"]) > 1
+    )
+    assert {
+        frozenset(node["member_ids"]) for node in combined_l1["graph"]["nodes"]
+    } != {
+        frozenset(node["member_ids"]) for node in topology_l1["graph"]["nodes"]
+    }
+
+    with sessions() as session:
+        cached_rows = session.scalars(select(ProcessModelResult)).all()
+    assert len(cached_rows) == 2
+    assert len({row.config_sha256 for row in cached_rows}) == 2
 
 
 def test_home_internet_corpus_uses_the_generic_deterministic_pipeline():

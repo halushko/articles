@@ -10,7 +10,12 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from process_hierarchy.models import ProcessEdge, ProcessGraph, ProcessNode
+from process_hierarchy.models import (
+    ProcessEdge,
+    ProcessGraph,
+    ProcessNode,
+    ScoreWeights,
+)
 from segmentation_web.archive import SourceDocument
 from segmentation_web.database import Base
 from segmentation_web.db_models import LLMExtractionResult, ProcessModelResult
@@ -173,10 +178,25 @@ def test_llm_builder_creates_grounded_graph_and_reuses_corpus_cache():
     first_run = pipeline.process(source_documents(), source_type="upload")
     first = builder.build(first_run.run_id)
     cached_model = builder.build(first_run.run_id)
+    text_only = builder.build(
+        first_run.run_id,
+        weights=ScoreWeights(text=1.0, context=0.0, flow=0.0),
+    )
+    cached_text_only = builder.build(
+        first_run.run_id,
+        weights=ScoreWeights(text=1.0, context=0.0, flow=0.0),
+    )
 
     assert first.cache_hit is False
     assert cached_model.cache_hit is True
+    assert text_only.cache_hit is False
+    assert cached_text_only.cache_hit is True
     assert client.calls == 1
+    assert text_only.payload["configuration"]["aggregation"]["weights"] == {
+        "text": 1.0,
+        "context": 0.0,
+        "flow": 0.0,
+    }
     assert first.payload["derivation"]["mode"] == "llm_grounded"
     assert first.payload["derivation"]["universal_extraction"] is True
     assert first.payload["llm"]["extraction_cache_hit"] is False
@@ -192,7 +212,7 @@ def test_llm_builder_creates_grounded_graph_and_reuses_corpus_cache():
         item["evidence"] for item in first.payload["transition_provenance"].values()
     )
     assert first.payload["configuration"]["aggregation"]["candidate_selection"] == (
-        "source_sections_and_control_flow_regions"
+        "source_sections_control_flow_regions_and_bounded_cross_region_alternatives"
     )
     assert all(
         not node["operation"].startswith("Stage:")
@@ -214,7 +234,7 @@ def test_llm_builder_creates_grounded_graph_and_reuses_corpus_cache():
             select(func.count()).select_from(ProcessModelResult)
         )
     assert extraction_count == 1
-    assert model_count == 2
+    assert model_count == 3
 
 
 def test_llm_builder_rejects_unknown_fragment_references():
