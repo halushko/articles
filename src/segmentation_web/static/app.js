@@ -421,6 +421,17 @@ processButton.addEventListener("click", async () => {
 
 function showProcessModel(body) {
   processModel = body.process_model;
+  const aggregationConfig = processModel.configuration.aggregation || processModel.configuration;
+  const activeWeights = aggregationConfig.weights || {};
+  setText(
+    "#active-process-weights",
+    [activeWeights.text, activeWeights.context, activeWeights.flow].join(" / "),
+  );
+  setText("#process-cache-state", body.cache_hit ? "hit" : "new calculation");
+  setText(
+    "#process-config-key",
+    (processModel.derivation.config_sha256 || "unknown").slice(0, 12),
+  );
   derivationNote.textContent = processModel.derivation.message;
   setText(
     "#process-title",

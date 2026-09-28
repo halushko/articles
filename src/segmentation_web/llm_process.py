@@ -37,7 +37,7 @@ from .hashing import sha256_json
 from .process_model import ProcessModelSummary
 
 ANALYZER_VERSION = "0.1.0"
-PROCESS_MODEL_BUILDER_VERSION = "0.3.0"
+PROCESS_MODEL_BUILDER_VERSION = "0.4.0"
 PROMPT_VERSION = "process_graph_v1"
 DERIVATION_MODE = "llm_grounded"
 SPACE_RE = re.compile(r"\s+")
@@ -61,8 +61,13 @@ AGGREGATION_CONFIG = {
             "max_candidates": 10_000,
         },
     ],
-    "candidate_selection": "source_sections_and_control_flow_regions",
-    "l1_selection": "explicit_source_structure",
+    "candidate_selection": (
+        "source_sections_control_flow_regions_and_bounded_cross_region_alternatives"
+    ),
+    "cross_region_candidate_max_graph_nodes": 12,
+    "l1_selection": (
+        "explicit_source_structure_with_scored_cross_region_alternatives"
+    ),
     "l2_selection": "q_threshold",
     "branch_integrity": "required",
 }
@@ -1227,6 +1232,13 @@ class LLMProcessModelBuilder:
                 max_candidate_nodes=item["max_candidate_nodes"],
                 radius=item["radius"],
                 max_candidates=item["max_candidates"],
+                include_cross_region_candidates=(
+                    item["target_level"] == 1
+                    and len(graph.nodes)
+                    <= AGGREGATION_CONFIG[
+                        "cross_region_candidate_max_graph_nodes"
+                    ]
+                ),
             )
             for item in AGGREGATION_CONFIG["levels"]
             if item["target_level"] in target_levels

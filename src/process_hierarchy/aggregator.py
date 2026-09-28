@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import replace
 
@@ -26,6 +27,13 @@ MISSING_CONTEXT_VALUES = {
     "unknown",
     "unspecified",
 }
+
+
+def _node_sort_key(node_id: str) -> tuple[str, int, str]:
+    match = re.match(r"^(.*?)(\d+)$", node_id)
+    if match:
+        return match.group(1), int(match.group(2)), node_id
+    return node_id, 10**9, node_id
 
 
 def _dominant_or_mixed(values: list[str]) -> str:
@@ -94,6 +102,14 @@ class HierarchicalAggregator:
             candidate_items = self._defined_candidates(
                 current_graph, candidate_definitions
             )
+            if level_config.include_cross_region_candidates:
+                candidate_items.extend(
+                    self._cross_region_candidates(
+                        current_graph,
+                        candidate_items,
+                        level_config=level_config,
+                    )
+                )
         else:
             candidate_items = [
                 (visible_node_ids, None)
@@ -218,6 +234,42 @@ class HierarchicalAggregator:
         return result
 
     @staticmethod
+    def _cross_region_candidates(
+        graph: ProcessGraph,
+        defined_candidates: list[
+            tuple[tuple[str, ...], CandidateDefinition]
+        ],
+        *,
+        level_config: AggregationLevelConfig,
+    ) -> list[tuple[tuple[str, ...], None]]:
+        """Generate bounded alternatives that cross explicit region borders.
+
+        Source sections remain the explainable reference candidates.  The extra
+        candidates model a competing hypothesis: adjacent actions from two or
+        more source regions may form a better aggregate.  Candidates contained
+        wholly inside one source region are excluded because they would merely
+        fragment that region rather than test its boundary.
+        """
+
+        regions = [set(visible) for visible, _ in defined_candidates if visible]
+        if len(regions) < 2:
+            return []
+
+        generated = generate_connected_candidates(
+            graph,
+            max_candidate_nodes=level_config.max_candidate_nodes,
+            radius=level_config.radius,
+            max_candidates=level_config.max_candidates,
+        )
+        result: list[tuple[tuple[str, ...], None]] = []
+        for visible in generated:
+            members = set(visible)
+            crossed_regions = sum(bool(members & region) for region in regions)
+            if crossed_regions >= 2:
+                result.append((visible, None))
+        return result
+
+    @staticmethod
     def _atomic_ids(
         graph: ProcessGraph,
         visible_node_ids: tuple[str, ...],
@@ -313,7 +365,32 @@ class HierarchicalAggregator:
         base_graph: ProcessGraph,
         candidate_name: str | None,
     ) -> ProcessNode:
-        atomic_nodes = [base_graph.nodes[node_id] for node_id in atomic_node_ids]
+        requested = set(atomic_node_ids)
+        incoming_count = {node_id: 0 for node_id in requested}
+        outgoing: dict[str, list[str]] = defaultdict(list)
+        for edge in base_graph.edges:
+            if edge.source in requested and edge.target in requested:
+                outgoing[edge.source].append(edge.target)
+                incoming_count[edge.target] += 1
+
+        ready = sorted(
+            (node_id for node_id, count in incoming_count.items() if count == 0),
+            key=_node_sort_key,
+        )
+        ordered_ids: list[str] = []
+        while ready:
+            node_id = ready.pop(0)
+            ordered_ids.append(node_id)
+            for target in sorted(outgoing[node_id], key=_node_sort_key):
+                incoming_count[target] -= 1
+                if incoming_count[target] == 0:
+                    ready.append(target)
+                    ready.sort(key=_node_sort_key)
+        ordered_ids.extend(
+            sorted(requested - set(ordered_ids), key=_node_sort_key)
+        )
+
+        atomic_nodes = [base_graph.nodes[node_id] for node_id in ordered_ids]
         operations = [node.operation for node in atomic_nodes]
         roles = [node.role for node in atomic_nodes]
         systems = [node.system for node in atomic_nodes]
@@ -330,7 +407,7 @@ class HierarchicalAggregator:
             or HierarchicalAggregator._automatic_aggregate_name(operations),
             role=_dominant_or_mixed(roles),
             system=_dominant_or_mixed(systems),
-            member_ids=atomic_node_ids,
+            member_ids=tuple(ordered_ids),
             source_fragment_ids=tuple(source_fragments),
         )
 

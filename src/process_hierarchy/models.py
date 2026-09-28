@@ -124,6 +124,7 @@ class AggregationLevelConfig:
     max_candidate_nodes: int = 5
     radius: int = 3
     max_candidates: int = 10_000
+    include_cross_region_candidates: bool = False
 
     def __post_init__(self) -> None:
         if not 0 <= self.q_min <= 1:

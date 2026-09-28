@@ -96,6 +96,14 @@ def test_builtin_example_run_and_result_download(tmp_path):
                 },
             )
             assert text_only.status_code == 201
+            assert (
+                text_only.json()["process_model_id"]
+                != process.json()["process_model_id"]
+            )
+            assert (
+                text_only.json()["process_model"]["derivation"]["config_sha256"]
+                != process.json()["process_model"]["derivation"]["config_sha256"]
+            )
             assert text_only.json()["process_model"]["configuration"]["weights"] == {
                 "text": 1.0,
                 "context": 0.0,
@@ -174,6 +182,7 @@ def test_second_builtin_example_uses_the_same_api_and_builder(tmp_path):
             assert index.status_code == 200
             assert "Corporate access recovery" in index.text
             assert "Home internet connection" in index.text
+            assert "Supplier activation · combined vs topology" in index.text
 
             response = await client.post(
                 "/api/v1/runs",
@@ -194,6 +203,89 @@ def test_second_builtin_example_uses_the_same_api_and_builder(tmp_path):
                 "Home Internet Order Fulfilment Guide"
             )
             assert process_body["analysis"]["procedural_document_count"] == 7
+
+    asyncio.run(scenario())
+
+
+def test_supplier_contrast_changes_partition_via_weighted_api(tmp_path):
+    base_app = make_client(tmp_path)
+    app = create_app(
+        settings=Settings(
+            database_url="sqlite://",
+            example_docs_dir=Path("examples/access_recovery_source_docs"),
+            example_catalog_dir=Path("examples"),
+            process_model_mode="deterministic",
+            max_archive_bytes=1024 * 1024,
+            max_uncompressed_bytes=2 * 1024 * 1024,
+            max_documents=20,
+        ),
+        session_factory=base_app.state.session_factory,
+    )
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/v1/runs",
+                data={
+                    "source": "example",
+                    "example_id": "supplier-activation-contrast",
+                },
+            )
+            assert response.status_code == 201
+            process_url = response.json()["process_model_url"]
+
+            combined = await client.post(process_url)
+            topology = await client.post(
+                process_url,
+                params={
+                    "weight_text": 0,
+                    "weight_context": 0,
+                    "weight_flow": 1,
+                },
+            )
+            cached_topology = await client.post(
+                process_url,
+                params={
+                    "weight_text": 0,
+                    "weight_context": 0,
+                    "weight_flow": 1,
+                },
+            )
+
+            assert combined.status_code == 201
+            assert topology.status_code == 201
+            assert cached_topology.status_code == 200
+            assert cached_topology.json()["cache_hit"] is True
+            assert combined.json()["process_model_id"] != topology.json()[
+                "process_model_id"
+            ]
+
+            combined_model = combined.json()["process_model"]
+            topology_model = topology.json()["process_model"]
+            assert combined_model["derivation"]["config_sha256"] != topology_model[
+                "derivation"
+            ]["config_sha256"]
+            assert combined_model["configuration"]["weights"] == {
+                "text": 0.2,
+                "context": 0.4,
+                "flow": 0.4,
+            }
+            assert topology_model["configuration"]["weights"] == {
+                "text": 0.0,
+                "context": 0.0,
+                "flow": 1.0,
+            }
+
+            combined_l1 = combined_model["hierarchy"]["levels"][0]["graph"]
+            topology_l1 = topology_model["hierarchy"]["levels"][0]["graph"]
+            assert {
+                frozenset(node["member_ids"]) for node in combined_l1["nodes"]
+            } != {
+                frozenset(node["member_ids"]) for node in topology_l1["nodes"]
+            }
 
     asyncio.run(scenario())
 

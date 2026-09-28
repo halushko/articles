@@ -33,7 +33,7 @@ from .hashing import sha256_json
 from .llm_process import ProcessExtractionError
 from .process_model import ProcessModelSummary
 
-BUILDER_VERSION = "0.9.0"
+BUILDER_VERSION = "0.10.0"
 DERIVATION_MODE = "deterministic_rules"
 SPACE_RE = re.compile(r"\s+")
 MARKDOWN_RE = re.compile(r"[*_`]+")
@@ -103,6 +103,7 @@ MODAL_ACTION_RE = re.compile(
 # unknown verbs are left for the LLM path or for future language adapters.
 ACTION_ROOTS = {
     "acknowledge",
+    "activate",
     "add",
     "adjust",
     "analyze",
@@ -127,6 +128,7 @@ ACTION_ROOTS = {
     "compare",
     "communicate",
     "complete",
+    "configure",
     "confirm",
     "connect",
     "contact",
@@ -347,8 +349,13 @@ CONFIG: dict[str, Any] = {
         "subprocess_return_to_continuation",
         "decision_outcome_to_named_branch",
     ],
-    "candidate_generation": "named_process_regions",
-    "l1_selection": "explicit_source_structure",
+    "candidate_generation": (
+        "named_process_regions_plus_bounded_cross_region_alternatives"
+    ),
+    "cross_region_candidate_max_graph_nodes": 12,
+    "l1_selection": (
+        "explicit_source_structure_with_scored_cross_region_alternatives"
+    ),
     "l2_selection": "q_threshold",
     "document_order_is_hypothesis_only": True,
     "weights": {"text": 0.2, "context": 0.4, "flow": 0.4},
@@ -3403,6 +3410,11 @@ class DeterministicProcessModelBuilder:
                 max_candidate_nodes=item["max_candidate_nodes"],
                 radius=item["radius"],
                 max_candidates=item["max_candidates"],
+                include_cross_region_candidates=(
+                    item["target_level"] == 1
+                    and len(graph.nodes)
+                    <= CONFIG["cross_region_candidate_max_graph_nodes"]
+                ),
             )
             for item in CONFIG["levels"]
             if item["target_level"] in target_levels

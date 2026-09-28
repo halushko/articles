@@ -212,7 +212,7 @@ def test_llm_builder_creates_grounded_graph_and_reuses_corpus_cache():
         item["evidence"] for item in first.payload["transition_provenance"].values()
     )
     assert first.payload["configuration"]["aggregation"]["candidate_selection"] == (
-        "source_sections_and_control_flow_regions"
+        "source_sections_control_flow_regions_and_bounded_cross_region_alternatives"
     )
     assert all(
         not node["operation"].startswith("Stage:")
