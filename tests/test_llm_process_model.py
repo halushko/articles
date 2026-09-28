@@ -1,0 +1,654 @@
+import asyncio
+import io
+import json
+import zipfile
+from pathlib import Path
+
+import httpx
+import pytest
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from process_hierarchy.models import (
+    ProcessEdge,
+    ProcessGraph,
+    ProcessNode,
+    ScoreWeights,
+)
+from segmentation_web.archive import SourceDocument
+from segmentation_web.database import Base
+from segmentation_web.db_models import LLMExtractionResult, ProcessModelResult
+from segmentation_web.llm_process import (
+    LLMCompletion,
+    LLMProcessModelBuilder,
+    LLMProviderError,
+    LLMUnavailableError,
+    OpenAICompatibleClient,
+    ProcessExtractionError,
+    _hierarchy_candidates_from_evidence,
+)
+from segmentation_web.main import create_app
+from segmentation_web.pipeline import SegmentationPipeline
+from segmentation_web.settings import Settings
+
+
+class FakeStructuredLLMClient:
+    provider = "test-provider"
+    model = "test-process-model"
+
+    def __init__(self, *, invalid_ref: bool = False):
+        self.calls = 0
+        self.invalid_ref = invalid_ref
+
+    @property
+    def config_identity(self):
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "response_format": "json_schema",
+        }
+
+    def complete_json(
+        self,
+        *,
+        schema_name,
+        schema,
+        system_prompt,
+        user_payload,
+    ):
+        self.calls += 1
+        refs = [
+            fragment["ref"]
+            for document in user_payload["documents"]
+            for fragment in document["fragments"]
+        ]
+        assert schema_name == "grounded_process_graph"
+        assert schema["type"] == "object"
+        assert "untrusted source data" in system_prompt
+        assert len(refs) >= 6
+        if self.invalid_ref:
+            refs[0] = "F99999"
+        keys = [
+            "receive_request",
+            "register_incident",
+            "classify_incident",
+            "check_account",
+            "restore_access",
+            "close_incident",
+        ]
+        operations = [
+            "Receive access request",
+            "Register incident",
+            "Classify incident",
+            "Check account status",
+            "Restore user access",
+            "Close incident",
+        ]
+        nodes = []
+        for index, (key, operation) in enumerate(zip(keys, operations)):
+            nodes.append(
+                {
+                    "key": key,
+                    "operation": operation,
+                    "role": "Service Desk"
+                    if index < 3 or index == 5
+                    else "Identity Analyst",
+                    "system": "ITSM" if index < 3 or index == 5 else "IAM",
+                    "node_type": "action",
+                    "evidence_fragment_refs": [refs[index]],
+                    "confidence": 0.9,
+                }
+            )
+        edges = []
+        for index in range(len(keys) - 1):
+            edges.append(
+                {
+                    "source_key": keys[index],
+                    "target_key": keys[index + 1],
+                    "edge_type": "sequence",
+                    "condition": None,
+                    "reason": "The documentation states the next operational step.",
+                    "evidence_fragment_refs": [refs[index], refs[index + 1]],
+                    "confidence": 0.85,
+                }
+            )
+        return LLMCompletion(
+            data={
+                "process_title": "Access recovery",
+                "nodes": nodes,
+                "edges": edges,
+                "warnings": [],
+            },
+            request_id="fake-request-1",
+            model=self.model,
+            finish_reason="stop",
+            input_tokens=800,
+            output_tokens=500,
+        )
+
+
+def session_factory():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def source_documents():
+    return [
+        SourceDocument(
+            "D1_service_desk.md",
+            b"""# Service Desk Guide
+
+## Intake
+
+- Receive the access request from the user.
+- Register the incident in ITSM.
+- Classify the incident as an access issue.
+""",
+        ),
+        SourceDocument(
+            "D2_recovery.md",
+            b"""# Identity Recovery Guide
+
+## Recovery
+
+- Check the account status in IAM.
+- Restore user access after confirming the lock.
+- Close the incident in ITSM after recovery.
+""",
+        ),
+    ]
+
+
+def test_llm_builder_creates_grounded_graph_and_reuses_corpus_cache():
+    sessions = session_factory()
+    client = FakeStructuredLLMClient()
+    builder = LLMProcessModelBuilder(
+        sessions,
+        client,
+        max_input_chars=100_000,
+    )
+    pipeline = SegmentationPipeline(sessions)
+
+    first_run = pipeline.process(source_documents(), source_type="upload")
+    first = builder.build(first_run.run_id)
+    cached_model = builder.build(first_run.run_id)
+    text_only = builder.build(
+        first_run.run_id,
+        weights=ScoreWeights(text=1.0, context=0.0, flow=0.0),
+    )
+    cached_text_only = builder.build(
+        first_run.run_id,
+        weights=ScoreWeights(text=1.0, context=0.0, flow=0.0),
+    )
+
+    assert first.cache_hit is False
+    assert cached_model.cache_hit is True
+    assert text_only.cache_hit is False
+    assert cached_text_only.cache_hit is True
+    assert client.calls == 1
+    assert text_only.payload["configuration"]["aggregation"]["weights"] == {
+        "text": 1.0,
+        "context": 0.0,
+        "flow": 0.0,
+    }
+    assert first.payload["derivation"]["mode"] == "llm_grounded"
+    assert first.payload["derivation"]["universal_extraction"] is True
+    assert first.payload["llm"]["extraction_cache_hit"] is False
+    assert len(first.payload["hierarchy"]["base_graph"]["nodes"]) == 6
+    assert len(first.payload["hierarchy"]["base_graph"]["edges"]) == 5
+    assert all(first.payload["provenance"].values())
+    assert all(
+        evidence["hierarchy_path"]
+        for evidence_items in first.payload["provenance"].values()
+        for evidence in evidence_items
+    )
+    assert all(
+        item["evidence"] for item in first.payload["transition_provenance"].values()
+    )
+    assert first.payload["configuration"]["aggregation"]["candidate_selection"] == (
+        "source_sections_and_control_flow_regions"
+    )
+    assert all(
+        not node["operation"].startswith("Stage:")
+        for level in first.payload["hierarchy"]["levels"]
+        for node in level["graph"]["nodes"]
+    )
+
+    second_run = pipeline.process(source_documents(), source_type="upload")
+    second = builder.build(second_run.run_id)
+
+    assert client.calls == 1
+    assert second.payload["llm"]["extraction_cache_hit"] is True
+    assert second.payload["llm"]["input_tokens"] == 800
+    with sessions() as session:
+        extraction_count = session.scalar(
+            select(func.count()).select_from(LLMExtractionResult)
+        )
+        model_count = session.scalar(
+            select(func.count()).select_from(ProcessModelResult)
+        )
+    assert extraction_count == 1
+    assert model_count == 3
+
+
+def test_llm_builder_rejects_unknown_fragment_references():
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        source_documents(),
+        source_type="upload",
+    )
+    builder = LLMProcessModelBuilder(
+        sessions,
+        FakeStructuredLLMClient(invalid_ref=True),
+        max_input_chars=100_000,
+    )
+
+    with pytest.raises(ProcessExtractionError, match="unknown fragments"):
+        builder.build(run.run_id)
+
+    with sessions() as session:
+        assert (
+            session.scalar(select(func.count()).select_from(LLMExtractionResult)) == 0
+        )
+        assert session.scalar(select(func.count()).select_from(ProcessModelResult)) == 0
+
+
+def test_llm_hierarchy_planner_uses_split_join_regions_for_l2():
+    graph = ProcessGraph(
+        nodes={
+            f"v{index}": ProcessNode(
+                id=f"v{index}",
+                operation=operation,
+                role="Operator",
+                system="System",
+            )
+            for index, operation in enumerate(
+                (
+                    "Receive request",
+                    "Decision: Select route?",
+                    "Run identity recovery",
+                    "Run platform recovery",
+                    "Review specialist result",
+                    "Verify outcome",
+                    "Close case",
+                ),
+                start=1,
+            )
+        },
+        edges=tuple(
+            ProcessEdge(id=f"e{index}", source=source, target=target)
+            for index, (source, target) in enumerate(
+                (
+                    ("v1", "v2"),
+                    ("v2", "v3"),
+                    ("v2", "v4"),
+                    ("v3", "v5"),
+                    ("v4", "v5"),
+                    ("v5", "v6"),
+                    ("v6", "v7"),
+                ),
+                start=1,
+            )
+        ),
+    )
+    section_names = {
+        "v1": "Intake",
+        "v2": "Routing",
+        "v3": "Identity branch",
+        "v4": "Platform branch",
+        "v5": "Verification and closure",
+        "v6": "Verification and closure",
+        "v7": "Verification and closure",
+    }
+    provenance = {
+        node_id: [
+            {
+                "document_path": "guide.md",
+                "hierarchy_path": ["Guide", section],
+            }
+        ]
+        for node_id, section in section_names.items()
+    }
+
+    definitions, phases = _hierarchy_candidates_from_evidence(graph, provenance)
+    l2 = [item for item in definitions if item.target_level == 2]
+
+    assert len(l2) == 3
+    assert {node_id for item in l2 for node_id in item.atomic_node_ids} == set(
+        graph.nodes
+    )
+    assert any("Alternative paths" in item.name for item in l2)
+    assert len(phases) == 3
+
+
+def test_uploaded_zip_can_build_llm_process_model_via_api():
+    sessions = session_factory()
+    client = FakeStructuredLLMClient()
+    builder = LLMProcessModelBuilder(
+        sessions,
+        client,
+        max_input_chars=100_000,
+    )
+    settings = Settings(
+        database_url="sqlite://",
+        example_docs_dir=Path("examples/access_recovery_source_docs"),
+        process_model_mode="llm",
+        max_archive_bytes=1024 * 1024,
+        max_uncompressed_bytes=2 * 1024 * 1024,
+        max_documents=10,
+    )
+    app = create_app(
+        settings=settings,
+        session_factory=sessions,
+        process_model_builder=builder,
+    )
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for document in source_documents():
+            archive.writestr(document.relative_path, document.content)
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as web_client:
+            run_response = await web_client.post(
+                "/api/v1/runs",
+                data={"source": "upload"},
+                files={
+                    "archive": (
+                        "documentation.zip",
+                        archive_buffer.getvalue(),
+                        "application/zip",
+                    )
+                },
+            )
+            assert run_response.status_code == 201
+            run_body = run_response.json()
+            assert run_body["process_model_available"] is True
+
+            model_response = await web_client.post(run_body["process_model_url"])
+            assert model_response.status_code == 201
+            model_body = model_response.json()
+            assert model_body["atomic_node_count"] == 6
+            assert model_body["process_model"]["process_title"] == "Access recovery"
+
+            result = await web_client.get(run_body["result_url"])
+            with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
+                hierarchy = json.loads(archive.read("process_model_hierarchy.json"))
+                manifest = json.loads(archive.read("manifest.json"))
+            assert hierarchy["derivation"]["mode"] == "llm_grounded"
+            assert manifest["process_model"]["derivation_mode"] == "llm_grounded"
+
+    asyncio.run(scenario())
+
+
+def test_openai_compatible_client_requests_strict_structured_output(monkeypatch):
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers["Authorization"]
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "request-123"},
+            json={
+                "id": "completion-123",
+                "model": "test-model-2026-09-01",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"nodes":[],"edges":[]}'},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 7,
+                    "completion_tokens_details": {"reasoning_tokens": 2},
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=500,
+        response_format="json_schema",
+    )
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "nodes": {"type": "array"},
+            "edges": {"type": "array"},
+        },
+        "required": ["nodes", "edges"],
+    }
+
+    completion = client.complete_json(
+        schema_name="process_graph",
+        schema=schema,
+        system_prompt="Return grounded JSON",
+        user_payload={"documents": []},
+    )
+
+    assert captured["url"] == "https://llm.example/v1/chat/completions"
+    assert captured["authorization"] == "Bearer local-test-key"
+    assert captured["body"]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "process_graph",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+    assert captured["body"]["max_completion_tokens"] == 500
+    assert captured["body"]["reasoning_effort"] == "low"
+    assert completion.data == {"nodes": [], "edges": []}
+    assert completion.request_id == "request-123"
+    assert completion.input_tokens == 12
+    assert completion.output_tokens == 7
+    assert completion.reasoning_tokens == 2
+
+
+def test_openai_compatible_client_reports_truncated_structured_output(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "request-truncated"},
+            json={
+                "id": "completion-truncated",
+                "model": "test-model",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": ""},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 9000,
+                    "completion_tokens": 12000,
+                    "completion_tokens_details": {"reasoning_tokens": 11950},
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=12000,
+        response_format="json_schema",
+        reasoning_effort="low",
+    )
+
+    with pytest.raises(LLMProviderError) as error:
+        client.complete_json(
+            schema_name="process_graph",
+            schema={"type": "object"},
+            system_prompt="Return grounded JSON",
+            user_payload={"documents": []},
+        )
+
+    message = str(error.value)
+    assert "truncated" in message
+    assert "finish_reason=length" in message
+    assert "reasoning_tokens=11950" in message
+    assert "request_id=request-truncated" in message
+
+
+@pytest.mark.parametrize("status_code", [402, 429])
+def test_openai_compatible_client_reports_exhausted_quota(monkeypatch, status_code):
+    def handler(request):
+        return httpx.Response(
+            status_code,
+            request=request,
+            json={
+                "error": {
+                    "message": "You exceeded your current quota. Check your plan and billing details.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_quota",
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=500,
+        response_format="json_schema",
+    )
+
+    with pytest.raises(LLMUnavailableError, match="Без LLM"):
+        client.complete_json(
+            schema_name="process_graph",
+            schema={"type": "object"},
+            system_prompt="Return grounded JSON",
+            user_payload={"documents": []},
+        )
+
+
+def test_openai_compatible_client_keeps_temporary_rate_limit_as_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            429,
+            request=request,
+            json={
+                "error": {
+                    "message": "Rate limit reached. Retry after 20 seconds.",
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        return real_client(transport=transport, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr("segmentation_web.llm_process.httpx.Client", client_factory)
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1",
+        api_key="local-test-key",
+        model="test-model",
+        timeout_seconds=10,
+        max_output_tokens=500,
+        response_format="json_schema",
+    )
+
+    with pytest.raises(LLMProviderError, match="HTTP 429") as error:
+        client.complete_json(
+            schema_name="process_graph",
+            schema={"type": "object"},
+            system_prompt="Return grounded JSON",
+            user_payload={"documents": []},
+        )
+
+    assert not isinstance(error.value, LLMUnavailableError)
+
+
+def test_exhausted_quota_switches_app_to_deterministic_fallback():
+    class ExhaustedQuotaBuilder:
+        def __init__(self):
+            self.calls = 0
+
+        def build(self, run_id):
+            self.calls += 1
+            raise LLMUnavailableError("Без LLM")
+
+    sessions = session_factory()
+    builder = ExhaustedQuotaBuilder()
+    settings = Settings(
+        database_url="sqlite://",
+        example_docs_dir=Path("examples/access_recovery_source_docs"),
+        process_model_mode="llm",
+    )
+    app = create_app(
+        settings=settings,
+        session_factory=sessions,
+        process_model_builder=builder,
+    )
+    run = SegmentationPipeline(sessions).process(
+        source_documents(),
+        source_type="upload",
+    )
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as web_client:
+            first = await web_client.post(f"/api/v1/runs/{run.run_id}/process-model")
+            assert first.status_code == 201
+            assert first.json()["llm_status"] == "Без LLM"
+            assert first.json()["process_model"]["derivation"]["mode"] == (
+                "deterministic_rules"
+            )
+
+            status = await web_client.get(f"/api/v1/runs/{run.run_id}")
+            assert status.json()["process_model_available"] is True
+            assert status.json()["process_model_unavailable_reason"] is None
+            assert status.json()["llm_status"] == "Без LLM"
+
+            second = await web_client.post(f"/api/v1/runs/{run.run_id}/process-model")
+            assert second.status_code == 200
+            assert second.json()["llm_status"] == "Без LLM"
+            assert second.json()["cache_hit"] is True
+            assert builder.calls == 1
+
+    asyncio.run(scenario())

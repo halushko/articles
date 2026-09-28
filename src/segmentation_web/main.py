@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -13,22 +13,35 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
-from .archive import InputValidationError, documents_from_directory, documents_from_zip
-from .control_process import (
-    ControlProcessModelBuilder,
-    ProcessModelSummary,
-    ProcessModelUnavailableError,
+from process_hierarchy.models import ScoreWeights
+
+from .archive import (
+    InputValidationError,
+    discover_example_corpora,
+    documents_from_directory,
+    documents_from_zip,
 )
 from .database import create_database_engine, create_session_factory
+from .deterministic_process import DeterministicProcessModelBuilder
 from .documentation_graph import (
     DocumentationGraphBuilder,
     DocumentationGraphSummary,
 )
 from .exporter import build_result_zip
+from .llm_process import (
+    LLMConfigurationError,
+    LLMProcessModelBuilder,
+    LLMProviderError,
+    LLMUnavailableError,
+    OpenAICompatibleClient,
+    ProcessExtractionError,
+)
 from .pipeline import SegmentationPipeline, get_run_summary
+from .process_model import ProcessModelSummary
 from .settings import Settings
 
 PACKAGE_DIR = Path(__file__).resolve().parent
+WITHOUT_LLM_MESSAGE = "Без LLM"
 
 
 def _graph_response(summary: DocumentationGraphSummary) -> dict[str, object]:
@@ -42,8 +55,12 @@ def _graph_response(summary: DocumentationGraphSummary) -> dict[str, object]:
     }
 
 
-def _process_model_response(summary: ProcessModelSummary) -> dict[str, object]:
-    return {
+def _process_model_response(
+    summary: ProcessModelSummary,
+    *,
+    llm_status: str | None = None,
+) -> dict[str, object]:
+    response: dict[str, object] = {
         "process_model_id": summary.id,
         "run_id": summary.run_id,
         "level_count": summary.level_count,
@@ -51,40 +68,113 @@ def _process_model_response(summary: ProcessModelSummary) -> dict[str, object]:
         "cache_hit": summary.cache_hit,
         "process_model": summary.payload,
     }
+    if llm_status:
+        response["llm_status"] = llm_status
+    return response
+
+
+def _build_with_weights(
+    builder: Any,
+    run_id: str,
+    weights: ScoreWeights,
+) -> ProcessModelSummary:
+    if isinstance(
+        builder,
+        (DeterministicProcessModelBuilder, LLMProcessModelBuilder),
+    ):
+        return builder.build(run_id, weights=weights)
+    # Keep test and extension builders written against the original protocol
+    # compatible. They do not participate in weighted aggregation.
+    return builder.build(run_id)
 
 
 def create_app(
     *,
     settings: Settings | None = None,
     session_factory: sessionmaker[Session] | None = None,
+    process_model_builder: Any | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings.from_env()
+    builder_was_injected = process_model_builder is not None
     if session_factory is None:
         engine = create_database_engine(app_settings.database_url)
         session_factory = create_session_factory(engine)
 
+    example_corpora = discover_example_corpora(
+        catalog_dir=app_settings.example_catalog_dir,
+        fallback_dir=app_settings.example_docs_dir,
+        max_documents=app_settings.max_documents,
+    )
+    examples_by_id = {corpus.id: corpus for corpus in example_corpora}
+
+    deterministic_builder = DeterministicProcessModelBuilder(session_factory)
+    llm_builder: Any | None = None
+    if process_model_builder is None:
+        if app_settings.process_model_mode in {"auto", "llm"} and (
+            app_settings.llm_configured
+        ):
+            llm_builder = LLMProcessModelBuilder(
+                session_factory,
+                OpenAICompatibleClient(
+                    base_url=app_settings.llm_base_url,
+                    api_key=app_settings.llm_api_key,
+                    model=app_settings.llm_model,
+                    timeout_seconds=app_settings.llm_timeout_seconds,
+                    max_output_tokens=app_settings.llm_max_output_tokens,
+                    response_format=app_settings.llm_response_format,
+                    reasoning_effort=app_settings.llm_reasoning_effort,
+                ),
+                max_input_chars=app_settings.llm_max_input_chars,
+            )
+            process_model_builder = llm_builder
+        elif app_settings.process_model_mode in {"auto", "llm", "deterministic"}:
+            process_model_builder = deterministic_builder
+        else:
+            raise ValueError(
+                "PROCESS_MODEL_MODE must be 'auto', 'llm' or 'deterministic'"
+            )
+    elif app_settings.process_model_mode in {"auto", "llm"}:
+        llm_builder = process_model_builder
+
     app = FastAPI(
         title="Documentation to Process Hierarchy",
-        version="0.2.0",
+        version="0.4.0",
         description=(
             "Segment Markdown documentation, inspect its source structure, "
-            "and build a traceable hierarchical control process model."
+            "and build a traceable hierarchical process model with or without an LLM."
         ),
     )
     app.state.settings = app_settings
     app.state.session_factory = session_factory
+    app.state.process_model_builder = process_model_builder
+    app.state.deterministic_process_model_builder = deterministic_builder
+    app.state.llm_process_model_builder = llm_builder
+    app.state.llm_disabled_reason = (
+        WITHOUT_LLM_MESSAGE
+        if app_settings.process_model_mode in {"auto", "llm", "deterministic"}
+        and (
+            app_settings.process_model_mode == "deterministic"
+            or not app_settings.llm_enabled
+            or (not builder_was_injected and not app_settings.llm_configured)
+        )
+        else None
+    )
+
+    def process_model_strategy() -> str:
+        if llm_builder is not None:
+            return "llm_with_deterministic_fallback"
+        return "deterministic_rules"
 
     templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
-        example_count = len(list(app_settings.example_docs_dir.glob("D*.md")))
         return templates.TemplateResponse(
             request=request,
             name="index.html",
             context={
-                "example_count": example_count,
+                "examples": example_corpora,
                 "max_archive_mb": app_settings.max_archive_bytes // (1024 * 1024),
             },
         )
@@ -92,6 +182,7 @@ def create_app(
     @app.post("/api/v1/runs")
     async def create_run(
         source: Annotated[str, Form()],
+        example_id: Annotated[str | None, Form()] = None,
         archive: Annotated[UploadFile | None, File()] = None,
     ) -> JSONResponse:
         try:
@@ -100,9 +191,17 @@ def create_app(
                     raise InputValidationError(
                         "Do not upload an archive when the built-in example is selected"
                     )
+                selected_example = examples_by_id.get(
+                    example_id or example_corpora[0].id
+                )
+                if selected_example is None:
+                    raise InputValidationError(
+                        f"Unknown built-in example: {example_id}"
+                    )
                 documents = documents_from_directory(
-                    app_settings.example_docs_dir,
+                    selected_example.directory,
                     max_documents=app_settings.max_documents,
+                    document_paths=selected_example.document_paths,
                 )
             elif source == "upload":
                 if archive is None or not archive.filename:
@@ -140,7 +239,10 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
-                "process_model_available": summary.source_type == "example",
+                "process_model_available": True,
+                "process_model_unavailable_reason": None,
+                "process_model_strategy": process_model_strategy(),
+                "llm_status": app.state.llm_disabled_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             },
             status_code=201,
@@ -165,7 +267,10 @@ def create_app(
                 "documentation_graph_url": (
                     f"/api/v1/runs/{summary.run_id}/documentation-graph"
                 ),
-                "process_model_available": summary.source_type == "example",
+                "process_model_available": True,
+                "process_model_unavailable_reason": None,
+                "process_model_strategy": process_model_strategy(),
+                "llm_status": app.state.llm_disabled_reason,
                 "process_model_url": f"/api/v1/runs/{summary.run_id}/process-model",
             }
         )
@@ -201,32 +306,90 @@ def create_app(
         return JSONResponse(_graph_response(summary))
 
     @app.post("/api/v1/runs/{run_id}/process-model")
-    async def build_process_model(run_id: str) -> JSONResponse:
-        builder = ControlProcessModelBuilder(
-            session_factory,
-            app_settings.control_process_path,
-        )
+    async def build_process_model(
+        run_id: str,
+        weight_text: float = Query(default=0.2, ge=0, le=1),
+        weight_context: float = Query(default=0.4, ge=0, le=1),
+        weight_flow: float = Query(default=0.4, ge=0, le=1),
+    ) -> JSONResponse:
         try:
-            summary = await run_in_threadpool(builder.build, run_id)
+            weights = ScoreWeights(
+                text=weight_text,
+                context=weight_context,
+                flow=weight_flow,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        llm_status = app.state.llm_disabled_reason
+        try:
+            use_llm = (
+                llm_builder is not None
+                and process_model_builder is llm_builder
+                and app.state.llm_disabled_reason is None
+            )
+            if use_llm:
+                try:
+                    summary = await run_in_threadpool(
+                        _build_with_weights,
+                        llm_builder,
+                        run_id,
+                        weights,
+                    )
+                except LLMUnavailableError:
+                    app.state.llm_disabled_reason = WITHOUT_LLM_MESSAGE
+                    llm_status = WITHOUT_LLM_MESSAGE
+                    summary = await run_in_threadpool(
+                        _build_with_weights,
+                        deterministic_builder,
+                        run_id,
+                        weights,
+                    )
+                except (
+                    LLMConfigurationError,
+                    LLMProviderError,
+                    ProcessExtractionError,
+                ):
+                    llm_status = WITHOUT_LLM_MESSAGE
+                    summary = await run_in_threadpool(
+                        _build_with_weights,
+                        deterministic_builder,
+                        run_id,
+                        weights,
+                    )
+            else:
+                active_builder = (
+                    deterministic_builder
+                    if llm_builder is not None
+                    and app.state.llm_disabled_reason is not None
+                    else process_model_builder
+                )
+                summary = await run_in_threadpool(
+                    _build_with_weights,
+                    active_builder,
+                    run_id,
+                    weights,
+                )
         except KeyError as exc:
             raise HTTPException(
                 status_code=404, detail="Segmentation run not found"
             ) from exc
-        except ProcessModelUnavailableError as exc:
+        except LLMConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except LLMProviderError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ProcessExtractionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         return JSONResponse(
-            _process_model_response(summary),
+            _process_model_response(summary, llm_status=llm_status),
             status_code=200 if summary.cache_hit else 201,
         )
 
     @app.get("/api/v1/runs/{run_id}/process-model")
     async def get_process_model(run_id: str) -> JSONResponse:
         summary = await run_in_threadpool(
-            ControlProcessModelBuilder(
-                session_factory,
-                app_settings.control_process_path,
-            ).get,
+            DeterministicProcessModelBuilder.latest,
+            session_factory,
             run_id,
         )
         if summary is None:
@@ -234,7 +397,12 @@ def create_app(
                 status_code=404,
                 detail="Process model has not been built for this run",
             )
-        return JSONResponse(_process_model_response(summary))
+        return JSONResponse(
+            _process_model_response(
+                summary,
+                llm_status=app.state.llm_disabled_reason,
+            )
+        )
 
     @app.get("/api/v1/runs/{run_id}/result")
     async def download_result(run_id: str) -> StreamingResponse:

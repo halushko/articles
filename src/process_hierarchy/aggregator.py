@@ -18,12 +18,28 @@ from .models import (
 )
 from .scoring import CandidateScorer
 
+MISSING_CONTEXT_VALUES = {
+    "",
+    "n/a",
+    "none",
+    "not recorded",
+    "unknown",
+    "unspecified",
+}
+
 
 def _dominant_or_mixed(values: list[str]) -> str:
-    distinct = sorted(set(values))
+    known = [
+        value
+        for value in values
+        if value.strip().casefold() not in MISSING_CONTEXT_VALUES
+    ]
+    if not known:
+        return "Unknown"
+    distinct = sorted(set(known))
     if len(distinct) == 1:
         return distinct[0]
-    dominant, _ = Counter(values).most_common(1)[0]
+    dominant, _ = Counter(known).most_common(1)[0]
     return f"mixed (dominant: {dominant})"
 
 
@@ -85,6 +101,7 @@ class HierarchicalAggregator:
                     current_graph,
                     max_candidate_nodes=level_config.max_candidate_nodes,
                     radius=level_config.radius,
+                    max_candidates=level_config.max_candidates,
                 )
             ]
 
@@ -106,6 +123,11 @@ class HierarchicalAggregator:
                 rejection_reason=integrity_reason,
                 candidate_id=definition.id if definition else None,
                 candidate_name=definition.name if definition else None,
+                selection_basis=(
+                    "explicit_source_structure"
+                    if definition and definition.purpose == "structural"
+                    else "score"
+                ),
             )
             if definition and definition.purpose == "diagnostic":
                 rejected.append(
@@ -121,7 +143,9 @@ class HierarchicalAggregator:
                 )
             elif not integrity_ok:
                 rejected.append(score)
-            elif score.q < level_config.q_min:
+            elif (
+                not definition or definition.purpose != "structural"
+            ) and score.q < level_config.q_min:
                 rejected.append(replace(score, rejection_reason="below_q_min"))
             else:
                 eligible.append(score)
@@ -302,9 +326,16 @@ class HierarchicalAggregator:
         )
         return ProcessNode(
             id=target_id,
-            operation=candidate_name or "Aggregate: " + "; ".join(operations),
+            operation=candidate_name
+            or HierarchicalAggregator._automatic_aggregate_name(operations),
             role=_dominant_or_mixed(roles),
             system=_dominant_or_mixed(systems),
             member_ids=atomic_node_ids,
             source_fragment_ids=tuple(source_fragments),
         )
+
+    @staticmethod
+    def _automatic_aggregate_name(operations: list[str]) -> str:
+        if len(operations) == 2:
+            return f"Stage: {operations[0]} → {operations[1]}"
+        return f"Stage: {operations[0]} → {operations[-1]} ({len(operations)} actions)"

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Iterable
-
 from .detectors import (
     detect_acceptance_criterion,
     detect_api_operation,
@@ -9,7 +7,7 @@ from .detectors import (
     is_acceptance_criteria_section,
 )
 from .fragment_factory import FragmentFactory
-from .models import Fragment, RawBlock, SourcePosition
+from .models import Fragment, RawBlock
 from .partitioners.markdown_rule import MarkdownRulePartitioner
 from .partitioners.plain_text import PlainTextPartitioner
 from .process_splitter import hard_process_split, soft_process_split
@@ -291,7 +289,14 @@ class Segmenter:
     ) -> list[Fragment]:
         result: list[Fragment] = []
 
-        hard = hard_process_split(sentence_text, ignore_initial_then=ignore_initial_then)
+        # Parse a leading IF/WHEN/UNLESS before looking for sequential THEN
+        # markers. Otherwise ``if X then A else B`` is incorrectly split into
+        # unrelated process steps and the decision semantics are lost.
+        leading_soft = soft_process_split(sentence_text)
+        hard = None if leading_soft else hard_process_split(
+            sentence_text,
+            ignore_initial_then=ignore_initial_then,
+        )
         active_targets: list[Fragment] = [parent_fragment]
 
         if hard:
@@ -325,7 +330,11 @@ class Segmenter:
             active_targets = process_steps
 
         for target in active_targets:
-            soft = soft_process_split(target.text)
+            soft = (
+                leading_soft
+                if target is parent_fragment and leading_soft is not None
+                else soft_process_split(target.text)
+            )
             if not soft:
                 continue
 
@@ -344,6 +353,7 @@ class Segmenter:
                     structural_fields={"condition_trigger": soft["trigger"]},
                 )
             )
+
             result.append(
                 self.factory.create(
                     artifact_id=artifact_id,
@@ -356,8 +366,31 @@ class Segmenter:
                     segmentation_method="soft_process_split",
                     segmentation_trigger=soft["trigger"],
                     segmentation_confidence=0.82,
-                    structural_fields={"condition_trigger": soft["trigger"]},
+                    structural_fields={
+                        "condition_trigger": soft["trigger"],
+                        "condition_branch": "then",
+                    },
                 )
             )
+
+            if soft.get("else_scope"):
+                result.append(
+                    self.factory.create(
+                        artifact_id=artifact_id,
+                        parent_block_id=block.id,
+                        parent_fragment_id=target.id,
+                        text=soft["else_scope"],
+                        fragment_type="conditional_scope",
+                        hierarchy_path=block.hierarchy_path,
+                        source_position=block.source_position,
+                        segmentation_method="soft_process_split",
+                        segmentation_trigger="else",
+                        segmentation_confidence=0.82,
+                        structural_fields={
+                            "condition_trigger": soft["trigger"],
+                            "condition_branch": "else",
+                        },
+                    )
+                )
 
         return result

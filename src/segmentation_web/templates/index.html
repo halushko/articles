@@ -24,10 +24,26 @@
           <label class="source-option selected" data-source-card>
             <input type="radio" name="source" value="example" checked>
             <span>
-              <strong>Built-in example</strong>
-              <small>Use the {{ example_count }} realistic access-recovery documents.</small>
+              <strong>Built-in examples</strong>
+              <small>Run a curated documentation corpus through the same generic pipeline used for uploads.</small>
             </span>
           </label>
+
+          <div id="example-field" class="example-field">
+            <label for="example-id">Example corpus</label>
+            <select id="example-id" name="example_id">
+              {% for example in examples %}
+                <option value="{{ example.id }}">
+                  {{ example.title }} — {{ example.document_count }} documents
+                </option>
+              {% endfor %}
+            </select>
+            {% for example in examples %}
+              <p class="example-description" data-example-description="{{ example.id }}"{% if not loop.first %} hidden{% endif %}>
+                {{ example.description }}
+              </p>
+            {% endfor %}
+          </div>
 
           <label class="source-option" data-source-card>
             <input type="radio" name="source" value="upload">
@@ -54,13 +70,32 @@
           <div><dt>Fragments</dt><dd id="fragment-count">—</dd></div>
           <div><dt>Cache hits</dt><dd id="cache-hits">—</dd></div>
         </dl>
-        <div class="actions">
+        <fieldset id="aggregation-settings" class="aggregation-settings" hidden>
+          <legend>Aggregation weights</legend>
+          <div class="aggregation-preset">
+            <label for="weight-preset">Configuration</label>
+            <select id="weight-preset">
+              <option value="combined">Combined · 0.2 / 0.4 / 0.4</option>
+              <option value="text">Text only · 1 / 0 / 0</option>
+              <option value="context">Context only · 0 / 1 / 0</option>
+              <option value="flow">Topology only · 0 / 0 / 1</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="weight-fields">
+            <label>S<sub>txt</sub><input id="weight-text" type="number" min="0" max="1" step="0.05" value="0.2"></label>
+            <label>S<sub>ctx</sub><input id="weight-context" type="number" min="0" max="1" step="0.05" value="0.4"></label>
+            <label>S<sub>flow</sub><input id="weight-flow" type="number" min="0" max="1" step="0.05" value="0.4"></label>
+          </div>
+          <p id="weight-message">The three weights must be non-negative and sum to 1.</p>
+        </fieldset>
+        <div class="actions result-tabs" role="tablist" aria-label="Run result views">
           <a id="download-link" class="download" href="#" hidden>Download result ZIP</a>
-          <button id="documentation-button" class="secondary" type="button" hidden>
-            Explore documentation
+          <button id="documentation-button" class="secondary result-tab" type="button" role="tab" hidden>
+            Documentation
           </button>
-          <button id="process-button" class="secondary" type="button" hidden>
-            Build process hierarchy
+          <button id="process-button" class="secondary result-tab" type="button" role="tab" hidden>
+            Process model
           </button>
         </div>
       </section>
@@ -113,8 +148,8 @@
       <section id="process-panel" class="panel explorer-panel" aria-live="polite" hidden>
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">L0 → L1 → L2</p>
-            <h2>Hierarchical process model</h2>
+            <p class="eyebrow">L0 actions → hierarchical stages</p>
+            <h2 id="process-title">Hierarchical process model</h2>
             <p id="process-message" class="panel-message"></p>
           </div>
           <dl id="process-metrics" class="compact-metrics" hidden>
@@ -123,17 +158,14 @@
           </dl>
         </div>
 
-        <p id="derivation-note" class="control-baseline-note"></p>
+        <p id="derivation-note" class="derivation-note"></p>
+        <div id="process-warnings" class="process-warnings" hidden></div>
 
-        <div class="level-summary" aria-label="Hierarchy levels">
-          <span><strong>L0</strong><small>18 actions · 21 transitions</small></span>
-          <span><strong>L1</strong><small>5 stages · 5 transitions</small></span>
-          <span><strong>L2</strong><small>3 macro stages · 2 transitions</small></span>
-        </div>
+        <div id="level-summary" class="level-summary" aria-label="Hierarchy levels"></div>
 
         <div class="process-toolbar">
           <span>View:</span>
-          <button type="button" data-process-level="2" class="active">L2 overview</button>
+          <button type="button" data-process-level="2">L2 overview</button>
           <button type="button" data-process-level="1">L1 stages</button>
           <button type="button" data-process-level="0">L0 actions</button>
         </div>
@@ -142,15 +174,18 @@
           its parent stage. Arrows are directed process transitions; labels show conditions.
         </p>
         <div class="process-legend" aria-label="Process graph legend">
-          <span><i class="legend-line sequence"></i>Sequence transition</span>
-          <span><i class="legend-line conditional"></i>Conditional transition</span>
+          <span><i class="legend-line sequence"></i>Explicit transition</span>
+          <span><i class="legend-line inferred"></i>Inferred hypothesis</span>
+          <span><i class="legend-line conditional"></i>Condition</span>
           <span><i class="legend-node stage"></i>Aggregated stage</span>
           <span><i class="legend-node action"></i>Atomic action</span>
+          <span><i class="legend-node gateway"></i>Decision gateway</span>
+          <span><i class="legend-node join"></i>Merge gateway</span>
         </div>
 
         <div class="process-workspace">
           <div id="process-canvas" class="process-canvas" role="application" aria-label="Hierarchical process model">
-            <svg id="process-edges" class="process-edges" aria-hidden="true"></svg>
+            <svg id="process-edges" class="process-edges" aria-label="Process transitions"></svg>
             <div id="process-nodes" class="process-nodes"></div>
           </div>
         </div>
@@ -166,6 +201,20 @@
           </dl>
           <h4>Source evidence</h4>
           <div id="process-evidence" class="process-evidence"></div>
+        </aside>
+
+        <aside id="transition-details" class="process-details" hidden>
+          <span class="detail-type">Selected transition</span>
+          <h3 id="transition-detail-label"></h3>
+          <dl>
+            <div><dt>Type</dt><dd id="transition-detail-type">—</dd></div>
+            <div><dt>Condition</dt><dd id="transition-detail-condition">—</dd></div>
+            <div><dt>Confidence</dt><dd id="transition-detail-confidence">—</dd></div>
+          </dl>
+          <h4>Why this transition exists</h4>
+          <div id="transition-reasons" class="transition-reasons"></div>
+          <h4>Source evidence</h4>
+          <div id="transition-evidence" class="process-evidence"></div>
         </aside>
 
         <details class="calculation-panel">

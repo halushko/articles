@@ -123,6 +123,7 @@ class AggregationLevelConfig:
     q_min: float
     max_candidate_nodes: int = 5
     radius: int = 3
+    max_candidates: int = 10_000
 
     def __post_init__(self) -> None:
         if not 0 <= self.q_min <= 1:
@@ -131,6 +132,8 @@ class AggregationLevelConfig:
             raise ValueError("max_candidate_nodes must be at least 2")
         if self.radius < 1:
             raise ValueError("radius must be at least 1")
+        if self.max_candidates < 1:
+            raise ValueError("max_candidates must be at least 1")
 
 
 @dataclass(frozen=True)
@@ -158,8 +161,10 @@ class CandidateDefinition:
             raise ValueError("Candidate target_level must be at least 1")
         if len(set(self.atomic_node_ids)) < 2:
             raise ValueError(f"Candidate {self.id!r} must contain at least two nodes")
-        if self.purpose not in {"aggregation", "diagnostic"}:
-            raise ValueError("Candidate purpose must be 'aggregation' or 'diagnostic'")
+        if self.purpose not in {"aggregation", "diagnostic", "structural"}:
+            raise ValueError(
+                "Candidate purpose must be 'aggregation', 'diagnostic' or 'structural'"
+            )
 
 
 @dataclass(frozen=True)
@@ -174,6 +179,7 @@ class CandidateScore:
     rejection_reason: str | None = None
     candidate_id: str | None = None
     candidate_name: str | None = None
+    selection_basis: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

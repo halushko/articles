@@ -122,6 +122,49 @@ def build_result_zip(session: Session, run_id: str) -> bytes:
         if process_model is not None:
             process_model_file = "process_model_hierarchy.json"
             archive.writestr(process_model_file, _json_bytes(process_model.payload))
+            hierarchy = process_model.payload.get("hierarchy") or {}
+            level_files: dict[str, str] = {}
+            base_graph = hierarchy.get("base_graph")
+            if base_graph:
+                level_files["L0"] = "process_model_l0.json"
+                archive.writestr(level_files["L0"], _json_bytes(base_graph))
+            hierarchy_levels = list(hierarchy.get("levels") or [])
+            for level in hierarchy_levels:
+                target_level = int(level.get("target_level") or 0)
+                if target_level < 1 or not level.get("graph"):
+                    continue
+                label = f"L{target_level}"
+                level_files[label] = f"process_model_l{target_level}.json"
+                archive.writestr(level_files[label], _json_bytes(level["graph"]))
+
+            aggregation_file = "aggregation_results.json"
+            archive.writestr(
+                aggregation_file,
+                _json_bytes(
+                    {
+                        "configuration": process_model.payload.get("configuration"),
+                        "levels": hierarchy_levels,
+                    }
+                ),
+            )
+            provenance_file = "provenance.json"
+            archive.writestr(
+                provenance_file,
+                _json_bytes(
+                    {
+                        "nodes": process_model.payload.get("provenance") or {},
+                        "transitions": process_model.payload.get(
+                            "transition_provenance"
+                        )
+                        or {},
+                    }
+                ),
+            )
+            warnings_file = "process_model_warnings.json"
+            archive.writestr(
+                warnings_file,
+                _json_bytes(process_model.payload.get("warnings") or []),
+            )
             manifest["process_model"] = {
                 "id": process_model.id,
                 "builder_version": process_model.builder_version,
@@ -129,6 +172,10 @@ def build_result_zip(session: Session, run_id: str) -> bytes:
                 "level_count": process_model.level_count,
                 "atomic_node_count": process_model.atomic_node_count,
                 "result_file": process_model_file,
+                "level_files": level_files,
+                "aggregation_file": aggregation_file,
+                "provenance_file": provenance_file,
+                "warnings_file": warnings_file,
             }
         archive.writestr("manifest.json", _json_bytes(manifest))
         archive.writestr(

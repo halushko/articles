@@ -1,4 +1,6 @@
 const form = document.querySelector("#run-form");
+const exampleField = document.querySelector("#example-field");
+const exampleSelect = document.querySelector("#example-id");
 const uploadField = document.querySelector("#upload-field");
 const archiveInput = document.querySelector("#archive");
 const runButton = document.querySelector("#run-button");
@@ -17,6 +19,12 @@ const documentSelect = document.querySelector("#document-select");
 const documentTree = document.querySelector("#document-tree");
 
 const processButton = document.querySelector("#process-button");
+const aggregationSettings = document.querySelector("#aggregation-settings");
+const weightPreset = document.querySelector("#weight-preset");
+const weightText = document.querySelector("#weight-text");
+const weightContext = document.querySelector("#weight-context");
+const weightFlow = document.querySelector("#weight-flow");
+const weightMessage = document.querySelector("#weight-message");
 const processPanel = document.querySelector("#process-panel");
 const processMessage = document.querySelector("#process-message");
 const processMetrics = document.querySelector("#process-metrics");
@@ -25,6 +33,9 @@ const processCanvas = document.querySelector("#process-canvas");
 const processEdges = document.querySelector("#process-edges");
 const processNodes = document.querySelector("#process-nodes");
 const processDetails = document.querySelector("#process-details");
+const transitionDetails = document.querySelector("#transition-details");
+const processWarnings = document.querySelector("#process-warnings");
+const levelSummary = document.querySelector("#level-summary");
 const aggregationTableBody = document.querySelector("#aggregation-table-body");
 
 let documentationGraphUrl = null;
@@ -35,16 +46,63 @@ let processIndexCache = null;
 let selectedProcessNodeId = null;
 let visibleProcessNodeIds = new Set();
 
+const weightPresets = {
+  combined: [0.2, 0.4, 0.4],
+  text: [1, 0, 0],
+  context: [0, 1, 0],
+  flow: [0, 0, 1],
+};
+
+function selectedWeights() {
+  return [weightText, weightContext, weightFlow].map((input) => Number(input.value));
+}
+
+function validateWeights() {
+  const weights = selectedWeights();
+  const valid = weights.every((value) => Number.isFinite(value) && value >= 0 && value <= 1)
+    && Math.abs(weights.reduce((sum, value) => sum + value, 0) - 1) < 1e-9;
+  weightMessage.textContent = valid
+    ? `Active weights: ${weights.join(" / ")}. Changing them creates a separately cached model.`
+    : "The three weights must be between 0 and 1 and sum to 1.";
+  weightMessage.classList.toggle("invalid", !valid);
+  return valid ? weights : null;
+}
+
+weightPreset.addEventListener("change", () => {
+  const preset = weightPresets[weightPreset.value];
+  if (preset) [weightText.value, weightContext.value, weightFlow.value] = preset;
+  validateWeights();
+});
+
+[weightText, weightContext, weightFlow].forEach((input) => {
+  input.addEventListener("input", () => {
+    const weights = selectedWeights();
+    const matchingPreset = Object.entries(weightPresets).find(([, values]) => (
+      values.every((value, index) => Math.abs(value - weights[index]) < 1e-9)
+    ));
+    weightPreset.value = matchingPreset?.[0] || "custom";
+    validateWeights();
+  });
+});
+
 function selectedSource() {
   return form.querySelector('input[name="source"]:checked').value;
 }
 
 function updateSourceUI() {
   const source = selectedSource();
+  exampleField.hidden = source !== "example";
+  exampleSelect.disabled = source !== "example";
   uploadField.hidden = source !== "upload";
   archiveInput.required = source === "upload";
   document.querySelectorAll("[data-source-card]").forEach((card) => {
     card.classList.toggle("selected", card.querySelector("input").checked);
+  });
+}
+
+function updateExampleDescription() {
+  document.querySelectorAll("[data-example-description]").forEach((description) => {
+    description.hidden = description.dataset.exampleDescription !== exampleSelect.value;
   });
 }
 
@@ -69,6 +127,7 @@ function emptyState(message) {
 form.querySelectorAll('input[name="source"]').forEach((input) => {
   input.addEventListener("change", updateSourceUI);
 });
+exampleSelect.addEventListener("change", updateExampleDescription);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -80,6 +139,7 @@ form.addEventListener("submit", async (event) => {
 
   const payload = new FormData();
   payload.append("source", source);
+  if (source === "example") payload.append("example_id", exampleSelect.value);
   if (source === "upload") payload.append("archive", archiveInput.files[0]);
 
   statusPanel.hidden = false;
@@ -88,6 +148,11 @@ form.addEventListener("submit", async (event) => {
   downloadLink.hidden = true;
   documentationButton.hidden = true;
   processButton.hidden = true;
+  aggregationSettings.hidden = true;
+  documentationButton.textContent = "Documentation";
+  processButton.textContent = "Process model";
+  documentationButton.classList.remove("active");
+  processButton.classList.remove("active");
   documentationPanel.hidden = true;
   processPanel.hidden = true;
   documentationGraphUrl = null;
@@ -113,7 +178,18 @@ form.addEventListener("submit", async (event) => {
     documentationGraphUrl = body.documentation_graph_url;
     processModelUrl = body.process_model_url;
     documentationButton.hidden = !documentationGraphUrl;
-    processButton.hidden = !body.process_model_available;
+    processButton.hidden = !processModelUrl;
+    aggregationSettings.hidden = !processModelUrl;
+    processButton.disabled = !body.process_model_available;
+    processButton.textContent = body.llm_status === "Без LLM"
+      ? "Process model · Без LLM"
+      : "Process model";
+    if (body.llm_status === "Без LLM") {
+      statusMessage.textContent += " Без LLM: process extraction will use deterministic evidence rules.";
+    }
+    if (!body.process_model_available && body.process_model_unavailable_reason) {
+      statusMessage.textContent += ` Process extraction is unavailable: ${body.process_model_unavailable_reason}`;
+    }
   } catch (error) {
     statusMessage.textContent = error.message;
   } finally {
@@ -124,6 +200,11 @@ form.addEventListener("submit", async (event) => {
 documentationButton.addEventListener("click", async () => {
   if (!documentationGraphUrl) return;
   documentationPanel.hidden = false;
+  processPanel.hidden = true;
+  documentationButton.classList.add("active");
+  documentationButton.setAttribute("aria-selected", "true");
+  processButton.classList.remove("active");
+  processButton.setAttribute("aria-selected", "false");
   documentationMessage.textContent = "Reading document structure and explicit references…";
   documentationMetrics.hidden = true;
   documentationButton.disabled = true;
@@ -133,7 +214,7 @@ documentationButton.addEventListener("click", async () => {
     if (!response.ok) throw new Error(body.detail || "The documentation view could not be built.");
     documentationGraph = body.graph;
     renderDocumentationExplorer();
-    documentationButton.textContent = "Reopen documentation";
+    documentationButton.textContent = "Documentation";
     documentationPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     documentationMessage.textContent = error.message;
@@ -310,20 +391,26 @@ function renderDocumentTree(documentId) {
 
 processButton.addEventListener("click", async () => {
   if (!processModelUrl) return;
+  const weights = validateWeights();
+  if (!weights) return;
   processPanel.hidden = false;
-  processMessage.textContent = "Building the deterministic control hierarchy…";
+  documentationPanel.hidden = true;
+  processButton.classList.add("active");
+  processButton.setAttribute("aria-selected", "true");
+  documentationButton.classList.remove("active");
+  documentationButton.setAttribute("aria-selected", "false");
+  processMessage.textContent = "Loading or building a grounded process hierarchy…";
   processMetrics.hidden = true;
   processButton.disabled = true;
   try {
-    const response = await fetch(processModelUrl, { method: "POST" });
+    const buildUrl = new URL(processModelUrl, window.location.origin);
+    buildUrl.searchParams.set("weight_text", weights[0]);
+    buildUrl.searchParams.set("weight_context", weights[1]);
+    buildUrl.searchParams.set("weight_flow", weights[2]);
+    const response = await fetch(buildUrl, { method: "POST" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || "The process hierarchy could not be built.");
-    processModel = body.process_model;
-    derivationNote.textContent = processModel.derivation.message;
-    processMessage.textContent = "Choose a level or expand individual stages. Every action remains linked to source evidence.";
-    setExactProcessLevel(2);
-    renderAggregationTable();
-    processButton.textContent = "Reopen process hierarchy";
+    showProcessModel(body);
     processPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     processMessage.textContent = error.message;
@@ -332,10 +419,69 @@ processButton.addEventListener("click", async () => {
   }
 });
 
+function showProcessModel(body) {
+  processModel = body.process_model;
+  derivationNote.textContent = processModel.derivation.message;
+  setText(
+    "#process-title",
+    processModel.process_title || "Hierarchical process model",
+  );
+  processMessage.textContent = body.llm_status === "Без LLM"
+    ? "Без LLM · deterministic model. Inspect warnings and source evidence before accepting inferred stages."
+    : "Choose a level, expand stages, or select an arrow to inspect why the transition exists.";
+  renderProcessWarnings();
+  renderLevelControls();
+  const availableLevels = [...processGraphs().keys()];
+  setExactProcessLevel(Math.max(...availableLevels));
+  renderAggregationTable();
+  processButton.textContent = body.llm_status === "Без LLM"
+    ? "Process model · Без LLM"
+    : "Process model";
+}
+
 function processGraphs() {
   const graphs = new Map([[0, processModel.hierarchy.base_graph]]);
   processModel.hierarchy.levels.forEach((level) => graphs.set(level.target_level, level.graph));
   return graphs;
+}
+
+function renderProcessWarnings() {
+  processWarnings.replaceChildren();
+  const warnings = processModel.warnings || [];
+  if (!warnings.length) {
+    processWarnings.hidden = true;
+    return;
+  }
+  const strong = document.createElement("strong");
+  strong.textContent = "Extraction warnings";
+  const list = document.createElement("ul");
+  warnings.forEach((warning) => {
+    const item = document.createElement("li");
+    item.textContent = warning;
+    list.append(item);
+  });
+  processWarnings.append(strong, list);
+  processWarnings.hidden = false;
+}
+
+function renderLevelControls() {
+  const summaryByLevel = new Map(
+    (processModel.summary || []).map((item) => [item.level, item]),
+  );
+  levelSummary.replaceChildren();
+  [...summaryByLevel.keys()].sort((left, right) => left - right).forEach((level) => {
+    const summary = summaryByLevel.get(level);
+    const item = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = `L${level}`;
+    const counts = document.createElement("small");
+    counts.textContent = `${summary.node_count} nodes · ${summary.edge_count} transitions`;
+    item.append(title, counts);
+    levelSummary.append(item);
+  });
+  document.querySelectorAll("[data-process-level]").forEach((button) => {
+    button.hidden = !summaryByLevel.has(Number(button.dataset.processLevel));
+  });
 }
 
 function atomicNumber(nodeId) {
@@ -374,6 +520,14 @@ function processIndex() {
   return { graphs, nodeById, childrenByParent, parentByChild, scoreByNode };
 }
 
+function processNodeKind(nodeId, children) {
+  if (children.length) return "stage";
+  const nodeType = processModel.node_metadata?.[nodeId]?.node_type;
+  if (nodeType === "gateway") return "gateway";
+  if (nodeType === "join") return "join";
+  return "action";
+}
+
 document.querySelectorAll("[data-process-level]").forEach((button) => {
   button.addEventListener("click", () => setExactProcessLevel(Number(button.dataset.processLevel)));
 });
@@ -387,6 +541,7 @@ function setExactProcessLevel(level) {
   visibleProcessNodeIds = new Set(graph.nodes.map((node) => node.id));
   selectedProcessNodeId = null;
   processDetails.hidden = true;
+  transitionDetails.hidden = true;
   document.querySelectorAll("[data-process-level]").forEach((button) => {
     button.classList.toggle("active", Number(button.dataset.processLevel) === level);
   });
@@ -400,6 +555,7 @@ function expandProcessNode(nodeId) {
   children.forEach((child) => visibleProcessNodeIds.add(child));
   selectedProcessNodeId = null;
   processDetails.hidden = true;
+  transitionDetails.hidden = true;
   document.querySelectorAll("[data-process-level]").forEach((button) => button.classList.remove("active"));
   renderProcessGraph();
 }
@@ -444,14 +600,21 @@ function visibleProcessEdges() {
     if (edge.condition) group.conditions.add(edge.condition);
     group.originalIds.push(...edge.original_edge_ids);
   });
-  return [...groups.values()].map((group, index) => ({
-    id: `visible-edge-${index + 1}`,
-    source: group.source,
-    target: group.target,
-    edgeType: group.types.size === 1 ? [...group.types][0] : "mixed",
-    condition: [...group.conditions].join(" | "),
-    originalIds: [...new Set(group.originalIds)],
-  }));
+  return [...groups.values()].map((group, index) => {
+    const originalIds = [...new Set(group.originalIds)];
+    const confidences = originalIds
+      .map((edgeId) => processModel.transition_provenance?.[edgeId]?.confidence)
+      .filter((value) => typeof value === "number");
+    return {
+      id: `visible-edge-${index + 1}`,
+      source: group.source,
+      target: group.target,
+      edgeType: group.types.size === 1 ? [...group.types][0] : "mixed",
+      condition: [...group.conditions].join(" | "),
+      originalIds,
+      confidence: confidences.length ? Math.min(...confidences) : null,
+    };
+  });
 }
 
 function processLayout(nodeIds, edges) {
@@ -488,10 +651,10 @@ function processLayout(nodeIds, edges) {
   });
   byLayer.forEach((ids) => ids.sort(processNodeOrder));
 
-  const width = 230;
-  const height = 94;
+  const width = 250;
+  const height = 118;
   const horizontalGap = 150;
-  const verticalGap = 42;
+  const verticalGap = 54;
   const margin = 34;
   const maxRows = Math.max(...[...byLayer.values()].map((ids) => ids.length));
   const positions = new Map();
@@ -509,10 +672,50 @@ function processLayout(nodeIds, edges) {
     });
   });
   const maxLayer = Math.max(...layers.values());
+  const contentBottom = Math.max(
+    ...[...positions.values()].map((position) => position.y + position.height),
+  );
+  const routeLanes = [];
+  const edgeRoutes = new Map();
+  edges
+    .filter((edge) => {
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      return source && target && target.x - source.x > width + horizontalGap + 20;
+    })
+    .sort((left, right) => {
+      const leftSource = positions.get(left.source);
+      const rightSource = positions.get(right.source);
+      const leftTarget = positions.get(left.target);
+      const rightTarget = positions.get(right.target);
+      return leftSource.x - rightSource.x || leftTarget.x - rightTarget.x;
+    })
+    .forEach((edge) => {
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      let lane = routeLanes.findIndex((endX) => endX + 24 < source.x);
+      if (lane === -1) {
+        lane = routeLanes.length;
+        routeLanes.push(target.x + target.width);
+      } else {
+        routeLanes[lane] = target.x + target.width;
+      }
+      edgeRoutes.set(edge.id, {
+        y: contentBottom + 44 + lane * 34,
+      });
+    });
+  const routingBottom = edgeRoutes.size
+    ? contentBottom + 44 + Math.max(0, routeLanes.length - 1) * 34 + 24
+    : 0;
   return {
     positions,
+    edgeRoutes,
     width: Math.max(820, margin * 2 + (maxLayer + 1) * width + maxLayer * horizontalGap),
-    height: Math.max(360, margin * 2 + maxRows * height + Math.max(0, maxRows - 1) * verticalGap),
+    height: Math.max(
+      360,
+      margin * 2 + maxRows * height + Math.max(0, maxRows - 1) * verticalGap,
+      routingBottom + margin,
+    ),
   };
 }
 
@@ -549,19 +752,49 @@ function renderProcessEdge(edge, layout) {
   const targetX = target.x;
   const targetY = target.y + target.height / 2;
   const middleX = sourceX + (targetX - sourceX) / 2;
+  const route = layout.edgeRoutes.get(edge.id);
   const isConditional = edge.edgeType !== "sequence";
+  const confidenceClass = edge.confidence === null || edge.confidence >= 0.8
+    ? "process-edge-confirmed"
+    : edge.confidence >= 0.5
+      ? "process-edge-inferred"
+      : "process-edge-very-low";
+  const pathDefinition = route
+    ? [
+      `M ${sourceX} ${sourceY}`,
+      `C ${sourceX + 34} ${sourceY}, ${sourceX + 34} ${route.y}, ${sourceX + 68} ${route.y}`,
+      `L ${targetX - 68} ${route.y}`,
+      `C ${targetX - 34} ${route.y}, ${targetX - 34} ${targetY}, ${targetX} ${targetY}`,
+    ].join(" ")
+    : `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`;
+  const selectTransition = (event) => {
+    event.stopPropagation();
+    showTransitionDetails(edge);
+  };
+  const hitPath = svgElement("path", {
+    class: "process-edge-hit",
+    d: pathDefinition,
+    tabindex: "0",
+    role: "button",
+    "aria-label": `Inspect transition ${edge.source} to ${edge.target}; confidence ${edge.confidence ?? "not recorded"}`,
+  });
+  hitPath.addEventListener("click", selectTransition);
+  hitPath.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") selectTransition(event);
+  });
   const path = svgElement("path", {
-    class: `process-edge${isConditional ? " process-edge-conditional" : ""}`,
-    d: `M ${sourceX} ${sourceY} C ${middleX} ${sourceY}, ${middleX} ${targetY}, ${targetX} ${targetY}`,
+    class: `process-edge ${confidenceClass}${isConditional ? " process-edge-conditional" : ""}`,
+    d: pathDefinition,
   });
   const title = svgElement("title");
-  title.textContent = `${edge.source} → ${edge.target}; ${edge.edgeType}; ${edge.condition || "no condition"}; source transitions: ${edge.originalIds.join(", ")}`;
+  title.textContent = `${edge.source} → ${edge.target}; ${edge.edgeType}; confidence ${edge.confidence?.toFixed(2) ?? "not recorded"}; ${edge.condition || "no condition"}; source transitions: ${edge.originalIds.join(", ")}`;
   path.append(title);
-  processEdges.append(path);
+  path.addEventListener("click", selectTransition);
+  processEdges.append(hitPath, path);
 
   if (edge.condition) {
     const labelX = middleX;
-    const labelY = (sourceY + targetY) / 2;
+    const labelY = route ? route.y : (sourceY + targetY) / 2;
     const visibleLabel = edge.condition.length > 30
       ? `${edge.condition.slice(0, 29)}…`
       : edge.condition;
@@ -606,7 +839,7 @@ function renderProcessGraph() {
     const position = layout.positions.get(nodeId);
     const children = processIndexCache.childrenByParent.get(nodeId) || [];
     const parent = processIndexCache.parentByChild.get(nodeId);
-    const kind = children.length ? "stage" : (["v5", "v15"].includes(nodeId) ? "gateway" : "action");
+    const kind = processNodeKind(nodeId, children);
     const box = document.createElement("div");
     box.className = `process-node process-node-${kind}`;
     if (nodeId === selectedProcessNodeId) box.classList.add("selected");
@@ -625,7 +858,13 @@ function renderProcessGraph() {
     label.textContent = node.operation;
     const members = document.createElement("span");
     members.className = "process-node-members";
-    members.textContent = node.member_ids.length === 1 ? "1 atomic action" : `${node.member_ids.length} atomic actions`;
+    members.textContent = kind === "gateway"
+      ? "branch decision"
+      : (kind === "join"
+        ? "branch merge"
+        : (node.member_ids.length === 1
+          ? "1 atomic action"
+          : `${node.member_ids.length} atomic actions`));
     box.append(type, label, members);
 
     if (children.length) {
@@ -682,7 +921,12 @@ function showProcessDetails(nodeId) {
   const node = processIndexCache.nodeById.get(nodeId);
   if (!node) return;
   const children = processIndexCache.childrenByParent.get(nodeId) || [];
-  const type = children.length ? "Aggregated stage" : (["v5", "v15"].includes(nodeId) ? "Decision gateway" : "Atomic action");
+  const kind = processNodeKind(nodeId, children);
+  const type = kind === "stage"
+    ? "Aggregated stage"
+    : (kind === "gateway"
+      ? "Decision gateway"
+      : (kind === "join" ? "Merge gateway" : "Atomic action"));
   setText("#process-detail-type", `${type} · ${nodeId}`);
   setText("#process-detail-label", node.operation);
   setText("#process-detail-role", node.role);
@@ -707,7 +951,69 @@ function showProcessDetails(nodeId) {
     });
   });
   if (!evidenceBox.children.length) evidenceBox.append(emptyState("No source evidence is recorded for this node."));
+  transitionDetails.hidden = true;
   processDetails.hidden = false;
+}
+
+function showTransitionDetails(edge) {
+  const source = processIndexCache.nodeById.get(edge.source);
+  const target = processIndexCache.nodeById.get(edge.target);
+  setText(
+    "#transition-detail-label",
+    `${source?.operation || edge.source} → ${target?.operation || edge.target}`,
+  );
+  setText("#transition-detail-type", edge.edgeType);
+  setText("#transition-detail-condition", edge.condition || "none");
+
+  const records = edge.originalIds
+    .map((edgeId) => processModel.transition_provenance?.[edgeId])
+    .filter(Boolean);
+  const confidences = records
+    .map((record) => record.confidence)
+    .filter((value) => typeof value === "number");
+  setText(
+    "#transition-detail-confidence",
+    confidences.length
+      ? `${Math.min(...confidences).toFixed(2)}–${Math.max(...confidences).toFixed(2)}`
+      : "not recorded",
+  );
+
+  const reasons = document.querySelector("#transition-reasons");
+  reasons.replaceChildren();
+  const uniqueReasons = [...new Set(records.map((record) => record.reason).filter(Boolean))];
+  if (!uniqueReasons.length) {
+    uniqueReasons.push("This transition is defined by the selected process graph.");
+  }
+  uniqueReasons.forEach((reason) => {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = reason;
+    reasons.append(paragraph);
+  });
+
+  const evidenceBox = document.querySelector("#transition-evidence");
+  evidenceBox.replaceChildren();
+  const evidenceItems = records.flatMap((record) => record.evidence || []);
+  const evidenceKeys = new Set();
+  evidenceItems.forEach((evidence) => {
+    const key = `${evidence.document_path}\u001f${evidence.fragment_id}`;
+    if (evidenceKeys.has(key)) return;
+    evidenceKeys.add(key);
+    const article = document.createElement("article");
+    const quote = document.createElement("p");
+    quote.textContent = `“${evidence.quote}”`;
+    const meta = document.createElement("div");
+    meta.className = "source-meta";
+    meta.textContent = `${evidence.document_path} · ${lineLabel(evidence)}`;
+    article.append(quote, meta);
+    evidenceBox.append(article);
+  });
+  if (!evidenceBox.children.length) {
+    evidenceBox.append(emptyState("No transition-specific source evidence is recorded."));
+  }
+  selectedProcessNodeId = null;
+  processNodes.querySelectorAll(".selected").forEach((node) => node.classList.remove("selected"));
+  processDetails.hidden = true;
+  transitionDetails.hidden = false;
 }
 
 function renderAggregationTable() {
@@ -738,7 +1044,9 @@ function renderAggregationTable() {
       const decision = document.createElement("td");
       decision.className = accepted ? "decision-accepted" : "decision-rejected";
       decision.textContent = accepted
-        ? `aggregated at L${level.target_level}`
+        ? candidate.selection_basis === "explicit_source_structure"
+          ? `aggregated at L${level.target_level}: explicit source structure`
+          : `aggregated at L${level.target_level}: Q ≥ threshold`
         : `rejected: ${(candidate.rejection_reason || "not selected").replaceAll("_", " ")}`;
       row.append(decision);
       aggregationTableBody.append(row);
@@ -747,3 +1055,4 @@ function renderAggregationTable() {
 }
 
 updateSourceUI();
+updateExampleDescription();

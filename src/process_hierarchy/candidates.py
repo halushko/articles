@@ -5,6 +5,10 @@ from collections import deque
 from .models import ProcessGraph
 
 
+class CandidateGenerationLimitError(ValueError):
+    """Raised when exhaustive local candidate generation becomes unsafe."""
+
+
 def _nodes_within_radius(
     seed: str,
     neighbors: dict[str, set[str]],
@@ -31,8 +35,12 @@ def generate_connected_candidates(
     *,
     max_candidate_nodes: int,
     radius: int,
+    max_candidates: int = 10_000,
 ) -> tuple[tuple[str, ...], ...]:
     """Enumerate connected visible-node candidates inside local neighborhoods."""
+
+    if max_candidates < 1:
+        raise ValueError("max_candidates must be at least 1")
 
     neighbors = graph.undirected_neighbors()
     candidates: set[frozenset[str]] = set()
@@ -46,6 +54,12 @@ def generate_connected_candidates(
             current = queue.popleft()
             if len(current) >= 2:
                 candidates.add(current)
+                if len(candidates) > max_candidates:
+                    raise CandidateGenerationLimitError(
+                        "Connected-candidate generation exceeded the configured "
+                        f"limit of {max_candidates}. Reduce graph density, lower "
+                        "max_candidate_nodes/radius, or raise the limit explicitly."
+                    )
             if len(current) == max_candidate_nodes:
                 continue
 
