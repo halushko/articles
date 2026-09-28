@@ -19,6 +19,12 @@ const documentSelect = document.querySelector("#document-select");
 const documentTree = document.querySelector("#document-tree");
 
 const processButton = document.querySelector("#process-button");
+const aggregationSettings = document.querySelector("#aggregation-settings");
+const weightPreset = document.querySelector("#weight-preset");
+const weightText = document.querySelector("#weight-text");
+const weightContext = document.querySelector("#weight-context");
+const weightFlow = document.querySelector("#weight-flow");
+const weightMessage = document.querySelector("#weight-message");
 const processPanel = document.querySelector("#process-panel");
 const processMessage = document.querySelector("#process-message");
 const processMetrics = document.querySelector("#process-metrics");
@@ -39,6 +45,45 @@ let processModel = null;
 let processIndexCache = null;
 let selectedProcessNodeId = null;
 let visibleProcessNodeIds = new Set();
+
+const weightPresets = {
+  combined: [0.2, 0.4, 0.4],
+  text: [1, 0, 0],
+  context: [0, 1, 0],
+  flow: [0, 0, 1],
+};
+
+function selectedWeights() {
+  return [weightText, weightContext, weightFlow].map((input) => Number(input.value));
+}
+
+function validateWeights() {
+  const weights = selectedWeights();
+  const valid = weights.every((value) => Number.isFinite(value) && value >= 0 && value <= 1)
+    && Math.abs(weights.reduce((sum, value) => sum + value, 0) - 1) < 1e-9;
+  weightMessage.textContent = valid
+    ? `Active weights: ${weights.join(" / ")}. Changing them creates a separately cached model.`
+    : "The three weights must be between 0 and 1 and sum to 1.";
+  weightMessage.classList.toggle("invalid", !valid);
+  return valid ? weights : null;
+}
+
+weightPreset.addEventListener("change", () => {
+  const preset = weightPresets[weightPreset.value];
+  if (preset) [weightText.value, weightContext.value, weightFlow.value] = preset;
+  validateWeights();
+});
+
+[weightText, weightContext, weightFlow].forEach((input) => {
+  input.addEventListener("input", () => {
+    const weights = selectedWeights();
+    const matchingPreset = Object.entries(weightPresets).find(([, values]) => (
+      values.every((value, index) => Math.abs(value - weights[index]) < 1e-9)
+    ));
+    weightPreset.value = matchingPreset?.[0] || "custom";
+    validateWeights();
+  });
+});
 
 function selectedSource() {
   return form.querySelector('input[name="source"]:checked').value;
@@ -103,6 +148,7 @@ form.addEventListener("submit", async (event) => {
   downloadLink.hidden = true;
   documentationButton.hidden = true;
   processButton.hidden = true;
+  aggregationSettings.hidden = true;
   documentationButton.textContent = "Documentation";
   processButton.textContent = "Process model";
   documentationButton.classList.remove("active");
@@ -133,6 +179,7 @@ form.addEventListener("submit", async (event) => {
     processModelUrl = body.process_model_url;
     documentationButton.hidden = !documentationGraphUrl;
     processButton.hidden = !processModelUrl;
+    aggregationSettings.hidden = !processModelUrl;
     processButton.disabled = !body.process_model_available;
     processButton.textContent = body.llm_status === "Без LLM"
       ? "Process model · Без LLM"
@@ -344,6 +391,8 @@ function renderDocumentTree(documentId) {
 
 processButton.addEventListener("click", async () => {
   if (!processModelUrl) return;
+  const weights = validateWeights();
+  if (!weights) return;
   processPanel.hidden = false;
   documentationPanel.hidden = true;
   processButton.classList.add("active");
@@ -354,12 +403,12 @@ processButton.addEventListener("click", async () => {
   processMetrics.hidden = true;
   processButton.disabled = true;
   try {
-    let response = await fetch(processModelUrl);
-    let body = await response.json();
-    if (response.status === 404) {
-      response = await fetch(processModelUrl, { method: "POST" });
-      body = await response.json();
-    }
+    const buildUrl = new URL(processModelUrl, window.location.origin);
+    buildUrl.searchParams.set("weight_text", weights[0]);
+    buildUrl.searchParams.set("weight_context", weights[1]);
+    buildUrl.searchParams.set("weight_flow", weights[2]);
+    const response = await fetch(buildUrl, { method: "POST" });
+    const body = await response.json();
     if (!response.ok) throw new Error(body.detail || "The process hierarchy could not be built.");
     showProcessModel(body);
     processPanel.scrollIntoView({ behavior: "smooth", block: "start" });

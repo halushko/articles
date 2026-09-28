@@ -373,6 +373,17 @@ CONFIG: dict[str, Any] = {
 CONFIG_SHA256 = sha256_json(CONFIG)
 
 
+def _configuration_for_weights(weights: ScoreWeights) -> dict[str, Any]:
+    return {
+        **CONFIG,
+        "weights": {
+            "text": weights.text,
+            "context": weights.context,
+            "flow": weights.flow,
+        },
+    }
+
+
 @dataclass(frozen=True)
 class SourceFragment:
     document_path: str
@@ -1232,7 +1243,15 @@ class DeterministicProcessModelBuilder:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
 
-    def build(self, run_id: str) -> ProcessModelSummary:
+    def build(
+        self,
+        run_id: str,
+        *,
+        weights: ScoreWeights | None = None,
+    ) -> ProcessModelSummary:
+        resolved_weights = weights or ScoreWeights(**CONFIG["weights"])
+        configuration = _configuration_for_weights(resolved_weights)
+        config_sha256 = sha256_json(configuration)
         with self.session_factory() as session:
             run = session.get(SegmentationRun, run_id)
             if run is None:
@@ -1245,17 +1264,23 @@ class DeterministicProcessModelBuilder:
                 select(ProcessModelResult).where(
                     ProcessModelResult.run_id == run_id,
                     ProcessModelResult.builder_version == BUILDER_VERSION,
-                    ProcessModelResult.config_sha256 == CONFIG_SHA256,
+                    ProcessModelResult.config_sha256 == config_sha256,
                 )
             )
             if cached is not None:
                 return self._summary(cached, cache_hit=True)
 
-            payload = self._build_payload(session, run)
+            payload = self._build_payload(
+                session,
+                run,
+                weights=resolved_weights,
+                configuration=configuration,
+                config_sha256=config_sha256,
+            )
             result = ProcessModelResult(
                 run_id=run.id,
                 builder_version=BUILDER_VERSION,
-                config_sha256=CONFIG_SHA256,
+                config_sha256=config_sha256,
                 derivation_mode=DERIVATION_MODE,
                 payload=payload,
                 level_count=len(payload["summary"]),
@@ -1304,7 +1329,15 @@ class DeterministicProcessModelBuilder:
             payload=result.payload,
         )
 
-    def _build_payload(self, session: Session, run: SegmentationRun) -> dict[str, Any]:
+    def _build_payload(
+        self,
+        session: Session,
+        run: SegmentationRun,
+        *,
+        weights: ScoreWeights,
+        configuration: dict[str, Any],
+        config_sha256: str,
+    ) -> dict[str, Any]:
         fragments, document_titles = self._load_fragments(session, run.id)
         if not fragments:
             raise ProcessExtractionError(
@@ -1343,7 +1376,11 @@ class DeterministicProcessModelBuilder:
             section_nodes,
             references,
         )
-        aggregation, aggregation_warning = self._aggregate(graph, candidates)
+        aggregation, aggregation_warning = self._aggregate(
+            graph,
+            candidates,
+            weights=weights,
+        )
         warnings = self._warnings(
             graph,
             nodes,
@@ -1362,7 +1399,7 @@ class DeterministicProcessModelBuilder:
                 "universal_extraction": True,
                 "llm_used": False,
                 "builder_version": BUILDER_VERSION,
-                "config_sha256": CONFIG_SHA256,
+                "config_sha256": config_sha256,
                 "message": (
                     "Без LLM: the process is reconstructed from named procedural "
                     "sections, explicit document hand-offs and conditional routes. "
@@ -1372,7 +1409,7 @@ class DeterministicProcessModelBuilder:
                     "steps."
                 ),
             },
-            "configuration": CONFIG,
+            "configuration": configuration,
             "process_title": self._structured_process_title(
                 procedural_profiles,
                 references,
@@ -3346,6 +3383,8 @@ class DeterministicProcessModelBuilder:
     def _aggregate(
         graph: ProcessGraph,
         candidate_definitions: tuple[CandidateDefinition, ...],
+        *,
+        weights: ScoreWeights,
     ) -> tuple[AggregationRun, str | None]:
         target_levels = {
             definition.target_level for definition in candidate_definitions
@@ -3372,7 +3411,7 @@ class DeterministicProcessModelBuilder:
             return (
                 HierarchicalAggregator(
                     AggregationConfig(
-                        weights=ScoreWeights(**CONFIG["weights"]),
+                        weights=weights,
                         levels=levels,
                     )
                 ).run(graph, candidate_definitions),

@@ -81,6 +81,48 @@ def test_builtin_example_run_and_result_download(tmp_path):
             assert process.json()["process_model"]["derivation"]["mode"] == (
                 "deterministic_rules"
             )
+            assert process.json()["process_model"]["configuration"]["weights"] == {
+                "text": 0.2,
+                "context": 0.4,
+                "flow": 0.4,
+            }
+
+            text_only = await client.post(
+                body["process_model_url"],
+                params={
+                    "weight_text": 1,
+                    "weight_context": 0,
+                    "weight_flow": 0,
+                },
+            )
+            assert text_only.status_code == 201
+            assert text_only.json()["process_model"]["configuration"]["weights"] == {
+                "text": 1.0,
+                "context": 0.0,
+                "flow": 0.0,
+            }
+
+            cached_text_only = await client.post(
+                body["process_model_url"],
+                params={
+                    "weight_text": 1,
+                    "weight_context": 0,
+                    "weight_flow": 0,
+                },
+            )
+            assert cached_text_only.status_code == 200
+            assert cached_text_only.json()["cache_hit"] is True
+
+            invalid_weights = await client.post(
+                body["process_model_url"],
+                params={
+                    "weight_text": 0.5,
+                    "weight_context": 0.5,
+                    "weight_flow": 0.5,
+                },
+            )
+            assert invalid_weights.status_code == 422
+            assert invalid_weights.json()["detail"] == "Score weights must sum to 1"
 
             status = await client.get(f"/api/v1/runs/{body['run_id']}")
             assert status.status_code == 200

@@ -70,6 +70,25 @@
           <div><dt>Fragments</dt><dd id="fragment-count">—</dd></div>
           <div><dt>Cache hits</dt><dd id="cache-hits">—</dd></div>
         </dl>
+        <fieldset id="aggregation-settings" class="aggregation-settings" hidden>
+          <legend>Aggregation weights</legend>
+          <div class="aggregation-preset">
+            <label for="weight-preset">Configuration</label>
+            <select id="weight-preset">
+              <option value="combined">Combined · 0.2 / 0.4 / 0.4</option>
+              <option value="text">Text only · 1 / 0 / 0</option>
+              <option value="context">Context only · 0 / 1 / 0</option>
+              <option value="flow">Topology only · 0 / 0 / 1</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="weight-fields">
+            <label>S<sub>txt</sub><input id="weight-text" type="number" min="0" max="1" step="0.05" value="0.2"></label>
+            <label>S<sub>ctx</sub><input id="weight-context" type="number" min="0" max="1" step="0.05" value="0.4"></label>
+            <label>S<sub>flow</sub><input id="weight-flow" type="number" min="0" max="1" step="0.05" value="0.4"></label>
+          </div>
+          <p id="weight-message">The three weights must be non-negative and sum to 1.</p>
+        </fieldset>
         <div class="actions result-tabs" role="tablist" aria-label="Run result views">
           <a id="download-link" class="download" href="#" hidden>Download result ZIP</a>
           <button id="documentation-button" class="secondary result-tab" type="button" role="tab" hidden>

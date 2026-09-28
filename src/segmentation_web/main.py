@@ -4,7 +4,7 @@ import io
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -12,6 +12,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
+
+from process_hierarchy.models import ScoreWeights
 
 from .archive import (
     InputValidationError,
@@ -69,6 +71,21 @@ def _process_model_response(
     if llm_status:
         response["llm_status"] = llm_status
     return response
+
+
+def _build_with_weights(
+    builder: Any,
+    run_id: str,
+    weights: ScoreWeights,
+) -> ProcessModelSummary:
+    if isinstance(
+        builder,
+        (DeterministicProcessModelBuilder, LLMProcessModelBuilder),
+    ):
+        return builder.build(run_id, weights=weights)
+    # Keep test and extension builders written against the original protocol
+    # compatible. They do not participate in weighted aggregation.
+    return builder.build(run_id)
 
 
 def create_app(
@@ -289,7 +306,20 @@ def create_app(
         return JSONResponse(_graph_response(summary))
 
     @app.post("/api/v1/runs/{run_id}/process-model")
-    async def build_process_model(run_id: str) -> JSONResponse:
+    async def build_process_model(
+        run_id: str,
+        weight_text: float = Query(default=0.2, ge=0, le=1),
+        weight_context: float = Query(default=0.4, ge=0, le=1),
+        weight_flow: float = Query(default=0.4, ge=0, le=1),
+    ) -> JSONResponse:
+        try:
+            weights = ScoreWeights(
+                text=weight_text,
+                context=weight_context,
+                flow=weight_flow,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         llm_status = app.state.llm_disabled_reason
         try:
             use_llm = (
@@ -299,13 +329,20 @@ def create_app(
             )
             if use_llm:
                 try:
-                    summary = await run_in_threadpool(llm_builder.build, run_id)
+                    summary = await run_in_threadpool(
+                        _build_with_weights,
+                        llm_builder,
+                        run_id,
+                        weights,
+                    )
                 except LLMUnavailableError:
                     app.state.llm_disabled_reason = WITHOUT_LLM_MESSAGE
                     llm_status = WITHOUT_LLM_MESSAGE
                     summary = await run_in_threadpool(
-                        deterministic_builder.build,
+                        _build_with_weights,
+                        deterministic_builder,
                         run_id,
+                        weights,
                     )
                 except (
                     LLMConfigurationError,
@@ -314,8 +351,10 @@ def create_app(
                 ):
                     llm_status = WITHOUT_LLM_MESSAGE
                     summary = await run_in_threadpool(
-                        deterministic_builder.build,
+                        _build_with_weights,
+                        deterministic_builder,
                         run_id,
+                        weights,
                     )
             else:
                 active_builder = (
@@ -324,7 +363,12 @@ def create_app(
                     and app.state.llm_disabled_reason is not None
                     else process_model_builder
                 )
-                summary = await run_in_threadpool(active_builder.build, run_id)
+                summary = await run_in_threadpool(
+                    _build_with_weights,
+                    active_builder,
+                    run_id,
+                    weights,
+                )
         except KeyError as exc:
             raise HTTPException(
                 status_code=404, detail="Segmentation run not found"
