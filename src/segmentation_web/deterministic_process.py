@@ -33,7 +33,7 @@ from .hashing import sha256_json
 from .llm_process import ProcessExtractionError
 from .process_model import ProcessModelSummary
 
-BUILDER_VERSION = "0.10.0"
+BUILDER_VERSION = "0.10.1"
 DERIVATION_MODE = "deterministic_rules"
 SPACE_RE = re.compile(r"\s+")
 MARKDOWN_RE = re.compile(r"[*_`]+")

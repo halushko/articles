@@ -37,7 +37,7 @@ from .hashing import sha256_json
 from .process_model import ProcessModelSummary
 
 ANALYZER_VERSION = "0.1.0"
-PROCESS_MODEL_BUILDER_VERSION = "0.4.0"
+PROCESS_MODEL_BUILDER_VERSION = "0.4.1"
 PROMPT_VERSION = "process_graph_v1"
 DERIVATION_MODE = "llm_grounded"
 SPACE_RE = re.compile(r"\s+")
