@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from process_hierarchy.models import ScoreWeights
+from segmentation_web import deterministic_process
 from segmentation_web.archive import (
     SourceDocument,
     discover_example_corpora,
@@ -309,6 +310,25 @@ def test_unrelated_uploaded_corpus_builds_grounded_deterministic_hierarchy():
     with sessions() as session:
         count = session.scalar(select(func.count()).select_from(ProcessModelResult))
     assert count == 1
+
+
+def test_rebuild_does_not_reuse_hierarchy_with_old_branch_detection(monkeypatch):
+    sessions = session_factory()
+    run = SegmentationPipeline(sessions).process(
+        invoice_documents(), source_type="upload"
+    )
+    builder = DeterministicProcessModelBuilder(sessions)
+    with monkeypatch.context() as patch:
+        patch.setattr(deterministic_process, "BUILDER_VERSION", "0.10.0")
+        previous = builder.build(run.run_id)
+
+    rebuilt = builder.build(run.run_id)
+    cached = builder.build(run.run_id)
+
+    assert rebuilt.cache_hit is False
+    assert rebuilt.id != previous.id
+    assert cached.cache_hit is True
+    assert cached.id == rebuilt.id
 
 
 def test_plain_sentence_adjacency_is_only_a_very_low_confidence_hypothesis():

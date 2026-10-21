@@ -13,26 +13,30 @@ class BranchRegion:
     branches: tuple[frozenset[str], ...]
 
 
-def _distances(start: str, outgoing: dict[str, tuple[str, ...]]) -> dict[str, int]:
+def _distances(
+    start: str, outgoing: dict[str, tuple[str, ...]], *, split: str
+) -> dict[str, int]:
     result = {start: 0}
     queue = deque([start])
     while queue:
         current = queue.popleft()
         for target in outgoing[current]:
-            if target in result:
+            if target == split or target in result:
                 continue
             result[target] = result[current] + 1
             queue.append(target)
     return result
 
 
-def _ancestors(target: str, incoming: dict[str, tuple[str, ...]]) -> set[str]:
+def _ancestors(
+    target: str, incoming: dict[str, tuple[str, ...]], *, split: str
+) -> set[str]:
     result = {target}
     queue = deque([target])
     while queue:
         current = queue.popleft()
         for source in incoming[current]:
-            if source in result:
+            if source == split or source in result:
                 continue
             result.add(source)
             queue.append(source)
@@ -44,12 +48,18 @@ def _branch_nodes(
     join: str,
     outgoing: dict[str, tuple[str, ...]],
     join_ancestors: set[str],
+    *,
+    split: str,
 ) -> frozenset[str]:
     result: set[str] = set()
     queue = deque([start])
     while queue:
         current = queue.popleft()
-        if current == join or current in result or current not in join_ancestors:
+        if (
+            current in {split, join}
+            or current in result
+            or current not in join_ancestors
+        ):
             continue
         result.add(current)
         queue.extend(outgoing[current])
@@ -60,7 +70,10 @@ def detect_branch_regions(graph: ProcessGraph) -> tuple[BranchRegion, ...]:
     """Detect simple split-join regions in a directed process graph.
 
     For every node with multiple outgoing edges, the nearest common reachable
-    node with multiple incoming edges is treated as its matching join.
+    node with multiple incoming edges is treated as its matching join. Returning
+    to the split starts another iteration, so neither the join search nor branch
+    interiors may cross it. Only nonempty, disjoint branch interiors define a
+    simple region; overlapping paths are not independent alternatives.
     """
 
     outgoing = graph.outgoing()
@@ -72,7 +85,9 @@ def detect_branch_regions(graph: ProcessGraph) -> tuple[BranchRegion, ...]:
         if len(successors) < 2:
             continue
 
-        distances = [_distances(successor, outgoing) for successor in successors]
+        distances = [
+            _distances(successor, outgoing, split=split) for successor in successors
+        ]
         common = set(distances[0])
         for item in distances[1:]:
             common &= item.keys()
@@ -92,12 +107,12 @@ def detect_branch_regions(graph: ProcessGraph) -> tuple[BranchRegion, ...]:
                 node_id,
             ),
         )
-        join_ancestors = _ancestors(join, incoming)
+        join_ancestors = _ancestors(join, incoming, split=split)
         branches = tuple(
-            _branch_nodes(successor, join, outgoing, join_ancestors)
+            _branch_nodes(successor, join, outgoing, join_ancestors, split=split)
             for successor in successors
         )
-        if all(branches):
+        if all(branches) and sum(map(len, branches)) == len(set().union(*branches)):
             regions.append(BranchRegion(split=split, join=join, branches=branches))
 
     return tuple(regions)

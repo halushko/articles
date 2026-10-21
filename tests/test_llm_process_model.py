@@ -16,6 +16,7 @@ from process_hierarchy.models import (
     ProcessNode,
     ScoreWeights,
 )
+from segmentation_web import llm_process
 from segmentation_web.archive import SourceDocument
 from segmentation_web.database import Base
 from segmentation_web.db_models import LLMExtractionResult, ProcessModelResult
@@ -235,6 +236,28 @@ def test_llm_builder_creates_grounded_graph_and_reuses_corpus_cache():
         )
     assert extraction_count == 1
     assert model_count == 3
+
+
+def test_llm_rebuild_reuses_extraction_but_not_old_branch_detection(monkeypatch):
+    sessions = session_factory()
+    client = FakeStructuredLLMClient()
+    builder = LLMProcessModelBuilder(sessions, client, max_input_chars=100_000)
+    run = SegmentationPipeline(sessions).process(
+        source_documents(), source_type="upload"
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(llm_process, "PROCESS_MODEL_BUILDER_VERSION", "0.4.0")
+        previous = builder.build(run.run_id)
+
+    rebuilt = builder.build(run.run_id)
+    cached = builder.build(run.run_id)
+
+    assert rebuilt.cache_hit is False
+    assert rebuilt.id != previous.id
+    assert rebuilt.payload["llm"]["extraction_cache_hit"] is True
+    assert client.calls == 1
+    assert cached.cache_hit is True
+    assert cached.id == rebuilt.id
 
 
 def test_llm_builder_rejects_unknown_fragment_references():
