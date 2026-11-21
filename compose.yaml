@@ -1,0 +1,72 @@
+# Runtime only: no `build:` or source/config bind mounts.
+# Update: docker compose down && docker compose pull && docker compose up -d
+name: jarvis-llm-index
+
+services:
+  ollama:
+    image: ollama/ollama:0.40.17
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    # Only internal Docker-network access, never exposed to the host.
+
+  model-init:
+    image: ollama/ollama:0.40.17
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_started
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      until ollama list >/dev/null 2>&1; do sleep 3; done
+      for model in qwen2.5:3b qwen3:4b; do
+        if ! ollama show "$$model" >/dev/null 2>&1; then
+          echo "Downloading missing model: $$model"
+          ollama pull "$$model"
+        fi
+      done
+
+  llm:
+    image: ghcr.io/halushko/articles-llm-index-llm:latest
+    restart: unless-stopped
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      LLM_SETTINGS: /project/config/llm.json
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-240}
+
+  research:
+    image: ghcr.io/halushko/articles-llm-index-research:latest
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_started
+    environment:
+      DATABASE_PATH: /data/research.sqlite3
+      RESEARCH_SETTINGS: /project/config/research.json
+      OLLAMA_URL: http://ollama:11434
+      SEMANTIC_ENABLED: ${SEMANTIC_ENABLED:-false}
+    volumes:
+      - research_data:/data
+
+  gateway:
+    image: ghcr.io/halushko/articles-llm-index-gateway:latest
+    restart: unless-stopped
+    depends_on:
+      - llm
+      - research
+    environment:
+      LLM_URL: http://llm:8000
+      RESEARCH_URL: http://research:8000
+      HOST_BIND: ${HOST_BIND:-127.0.0.1}
+      JARVIS_TOKEN: ${JARVIS_TOKEN:-}
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:${JARVIS_PORT:-8766}:8000"
+
+volumes:
+  ollama_models:
+  research_data:

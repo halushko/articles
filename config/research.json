@@ -1,0 +1,11 @@
+{
+  "learning_rate": 0.75,
+  "min_distinct_examples": 2,
+  "online_min_similarity": 0.62,
+  "online_min_margin": 0.12,
+  "max_candidates": 4,
+  "semantic_model": "bge-m3",
+  "semantic_min_similarity": 0.94,
+  "semantic_min_margin": 0.08,
+  "semantic_min_distinct_examples": 2
+}

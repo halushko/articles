@@ -1,0 +1,12 @@
+{"split":"train","text":"Включи свет в туалете","target_id":"light.lab_toilet","family":"toilet"}
+{"split":"train","text":"Погаси свет в туалете","target_id":"light.lab_toilet","family":"toilet"}
+{"split":"train","text":"Включи коридорный свет","target_id":"light.lab_corridor","family":"corridor"}
+{"split":"train","text":"Выключи свет в коридоре","target_id":"light.lab_corridor","family":"corridor"}
+{"split":"train","text":"Увімкни світло в спальні","target_id":"light.lab_bedroom","family":"bedroom"}
+{"split":"train","text":"Вимкни світло спальні","target_id":"light.lab_bedroom","family":"bedroom"}
+{"split":"test","text":"Выключи свет в туалете","target_id":"light.lab_toilet","family":"toilet"}
+{"split":"test","text":"Зажги свет туалета","target_id":"light.lab_toilet","family":"toilet"}
+{"split":"test","text":"Включи свет коридора","target_id":"light.lab_corridor","family":"corridor"}
+{"split":"test","text":"Вимкни світло у спальні","target_id":"light.lab_bedroom","family":"bedroom"}
+{"split":"test","text":"Не включай свет в туалете","target_id":null,"family":"safety","expect":"blocked"}
+{"split":"test","text":"Включи свет на балконе","target_id":null,"family":"unseen","expect":"needs_confirmation"}
