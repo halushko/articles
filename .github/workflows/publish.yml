@@ -5,6 +5,10 @@ on:
     branches: [llm-index]
   workflow_dispatch:
 
+concurrency:
+  group: publish-llm-index
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
