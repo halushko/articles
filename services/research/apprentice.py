@@ -14,6 +14,7 @@ from .graph import KnowledgeGraph
 from .changes import KnowledgeChanges
 from .teaching import grounded_candidates
 from .utterance import classify
+from .safety import request_without_executor
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS apprentice_proposals (
@@ -452,6 +453,7 @@ class ApprenticeMemory:
         return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
                 "normalized_text":normalized_text, "direct_reply":direct,
                 "utterance_intent":intent_info,
+                "unavailable_operation":request_without_executor(normalized_text),
                 "change_proposal":change_proposal, 
                 "pending_changes":self.changes.snapshot(6)["pending"],
                 "inspection":inspection, "graph":relevant_graph,
