@@ -23,3 +23,7 @@ COPY services/gateway/ services/gateway/
 COPY web/ web/
 EXPOSE 8000
 CMD ["uvicorn", "services.gateway.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Bundled SearXNG configuration enables its JSON API without publishing it.
+FROM searxng/searxng:latest AS searxng
+COPY config/searxng.yml /etc/searxng/settings.yml

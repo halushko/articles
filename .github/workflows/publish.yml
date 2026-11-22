@@ -24,6 +24,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: node --check web/app.js
+      - run: node --check web/research-ui.js
       - run: node --check web/voice.js
       - run: node --test tests/voice.test.cjs
       - run: python -m unittest discover -s tests -v
@@ -40,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [llm, research, gateway]
+        component: [llm, research, gateway, searxng]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

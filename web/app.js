@@ -27,7 +27,7 @@ function mkButton(text,cls,cb) {
   button.textContent=text;button.type='button';button.className=cls;button.onclick=cb;
   return button;
 }
-function renderProposal(entry, target, description=entry.description||'') {
+function renderProposal(entry, target, description=entry.description||'', turnId=null) {
   const panel=document.createElement('div');panel.className='proposal';
   const kind=document.createElement('div');kind.className='proposal-kind';
   kind.textContent=kindLabels[entry.kind]||entry.kind;
@@ -71,6 +71,10 @@ function renderProposal(entry, target, description=entry.description||'') {
                         name:name.textContent,description:detail.textContent,
                         details:triple||undefined})});
       panel.remove();
+      await window.JarvisResearchUI?.onReview({
+        entry:{...entry,name:name.textContent,description:detail.textContent,
+               details:triple||entry.details||{}},decision,turnId
+      });
       putMessage(decision==='confirm'?
         `Подтверждено: ${result.name} · ${kindLabels[result.kind]||result.kind}. Сохранил в память, но никаких действий не выполнял.`:
         `Отклонено: ${result.name}. Не использую как знание.`,'system','teacher review');
@@ -106,11 +110,16 @@ function setupCorrection(container,phrase) {
   });
   panel.append(save);container.append(panel);
 }
-async function send(text,experiment) {
+async function send(text,experiment,extras={}) {
   const mode=experiment||$('experiment').value;
+  const sessions=window.JarvisResearchUI;
+  await sessions?.ready();
   const options={text,experiment:mode,profile:$('profile').value,
                  ablation:$('ablation').value,
-                 history:mode==='apprentice'?turnHistory.slice(-12):[]};
+                 history:mode==='apprentice'?turnHistory.slice(-12):[],
+                 session_id:sessions?.id()||undefined,
+                 web_mode:mode==='apprentice' ? sessions?.webMode()||'ask':'off',
+                 ...extras};
   const r=await api('/api/chat',{method:'POST',body:JSON.stringify(options)});
   const stamp=[r.route,r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
                r.tokens!=null?`${r.tokens} токенов`:null,
@@ -140,6 +149,7 @@ async function send(text,experiment) {
       try{
         await api('/api/apprentice/grade',{method:'POST',
            body:JSON.stringify({question:text,answer:r.answer,rating,teacher_note:teacherNote})});
+        await window.JarvisResearchUI?.grade(r.turn_id,rating,teacherNote);
         gradeControls.textContent=rating==='good'?'✓ Ответ оценён как верный':'✕ Ошибка учтена в статистике. Объясни правильный ответ следующим сообщением, чтобы обучить память.';
         await refresh();
       }catch(e){
@@ -158,7 +168,7 @@ async function send(text,experiment) {
       const title=document.createElement('div');title.className='proposal-caption';
       title.textContent='Я заметил новые знания / возможности. Проверь:';
       card.append(title);
-      for(const p of r.proposals)renderProposal(p,card);
+      for(const p of r.proposals)renderProposal(p,card,p.description,r.turn_id);
     }
     if(r.missing){
       const missing=document.createElement('div');missing.className='msg-meta';
@@ -168,6 +178,7 @@ async function send(text,experiment) {
   }else if(r.is_command && r.status==='needs_confirmation' && mode!=='llm_only'){
     setupCorrection(card,text);
   }
+  await sessions?.onAnswer({card,response:r,question:text,mode});
   return r;
 }
 // Browser speech is implemented by a testable voice controller.
@@ -408,3 +419,12 @@ $('show-memory').onclick=async()=>{
 };
 $('token').addEventListener('change',refresh);
 refresh();
+window.JarvisResearchUI?.init({
+  api,putMessage,chat,send, isBusy:()=>busy,
+  setBusy:value=>{
+    busy=value;
+    $('send').disabled=value;
+    $('voice').disabled=value || !voice.isSupported;
+  },
+  setHistory:items=>{turnHistory=items;}
+});

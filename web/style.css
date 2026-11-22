@@ -102,3 +102,24 @@
 .mode-explanation{border:1px solid #816039;background:#2c291f;color:#f2d1a4;
  padding:10px;border-radius:10px;margin:0 0 13px;font-size:12px}
 .mode-explanation[hidden]{display:none}
+
+/* Research v0.5: persistent conversations and auditable web sources. */
+#session-select{width:100%;max-width:100%;margin:9px 0 7px;font-size:12px}
+.google-open{width:100%;margin:8px 0}
+#google-paste{width:100%;resize:vertical;min-height:84px;font:inherit;
+ background:#142033;color:#e3ebfa;border:1px solid var(--line);border-radius:8px;padding:9px}
+#google-question{width:100%;font-size:12px}
+.source-panel{padding:10px 11px;margin:12px 0 4px;border:1px solid #39545d;
+ border-radius:10px;background:#162b33;color:#d3eeec;font-size:12px}
+.source-panel summary{cursor:pointer;font-weight:600}
+.source-entry{display:flex;flex-direction:column;gap:4px;margin-top:8px;
+ padding:8px;border-top:1px solid #324653;overflow-wrap:anywhere}
+.source-entry a{color:#8ed2fa;text-decoration:underline}
+.source-entry small{font-size:10px;color:#a9b8c7}
+.source-entry p{font-size:11px;color:#cad9e5;line-height:1.5;margin:0}
+.web-permission{margin-top:10px;padding:10px;background:#24362d;
+ border:1px solid #4e896c;border-radius:9px;font-size:12px}
+.web-permission p{margin:0 0 8px;overflow-wrap:anywhere}
+.web-permission button{font-size:12px}
+.save-warning{font-size:12px;color:#ffb8ad;margin-top:7px}
+#session-status{overflow-wrap:anywhere}

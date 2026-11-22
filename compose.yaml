@@ -40,14 +40,25 @@ services:
       LLM_SETTINGS: /project/config/llm.json
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-240}
 
+  # No published ports: only the research service can query this engine.
+  searxng:
+    image: ghcr.io/halushko/articles-llm-index-searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-jarvis-internal-search-change-me}
+
   research:
     image: ghcr.io/halushko/articles-llm-index-research:latest
     restart: unless-stopped
     depends_on:
       ollama:
         condition: service_started
+      searxng:
+        condition: service_started
     environment:
       DATABASE_PATH: /data/research.sqlite3
+      SEARXNG_URL: http://searxng:8080
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
       RESEARCH_SETTINGS: /project/config/research.json
       OLLAMA_URL: http://ollama:11434
       SEMANTIC_ENABLED: ${SEMANTIC_ENABLED:-false}
@@ -65,6 +76,7 @@ services:
       RESEARCH_URL: http://research:8000
       HOST_BIND: ${HOST_BIND:-127.0.0.1}
       JARVIS_TOKEN: ${JARVIS_TOKEN:-}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
     ports:
       - "${HOST_BIND:-127.0.0.1}:${JARVIS_PORT:-8766}:8000"
 

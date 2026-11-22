@@ -6,7 +6,8 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+import json
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
@@ -22,7 +23,7 @@ async def lifespan(app):
         raise RuntimeError("Non-loopback access needs JARVIS_TOKEN length >= 16")
     yield
 
-app = FastAPI(title="JARVIS Research Workbench", version="0.4.0", lifespan=lifespan, docs_url=None)
+app = FastAPI(title="JARVIS Research Workbench", version="0.5.0", lifespan=lifespan, docs_url=None)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parents[2]/"web")), name="static")
 
 class ChatIn(BaseModel):
@@ -31,6 +32,11 @@ class ChatIn(BaseModel):
     profile: str = Field(default="fast",pattern="^(fast|deep)$")
     ablation: str = Field(default="combined",pattern="^(exact|online|combined)$")
     history: list[dict] = Field(default_factory=list,max_length=14)
+    session_id: str | None = Field(default=None,max_length=60)
+    web_mode: str = Field(default="off",pattern="^(off|ask|auto)$")
+    allow_web_search: bool = False
+    approved_web_query: str = Field(default="",max_length=240)
+    external_context: str = Field(default="",max_length=8000)
 
 class LearnIn(BaseModel):
     phrase: str = Field(min_length=1,max_length=500)
@@ -74,6 +80,19 @@ class GraphAliasIn(BaseModel):
 
 class GraphAliasDeleteIn(BaseModel):
     item_id: int = Field(gt=0)
+
+class SessionCreateIn(BaseModel):
+    title: str = Field(default="",max_length=140)
+
+class SessionEventIn(BaseModel):
+    event_type: str = Field(pattern="^[a-z][a-z0-9_.]{0,50}$")
+    data: dict = Field(default_factory=dict)
+    turn_id: int | None = Field(default=None,gt=0)
+
+class SessionGradeIn(BaseModel):
+    turn_id: int = Field(gt=0)
+    rating: str = Field(pattern="^(good|bad)$")
+    teacher_note: str = Field(default="",max_length=1200)
 
 class MemoryInspectIn(BaseModel):
     query: str = Field(min_length=1,max_length=3000)
@@ -127,7 +146,8 @@ async def root():
 
 @app.get("/api/health", dependencies=[Depends(auth)])
 async def health():
-    result = {"version":"0.4.0", "gateway":"ok", "research":None,"llm":None}
+    result = {"version":"0.5.0", "gateway":"ok", "research":None,"llm":None,
+              "web_search_enabled":os.getenv("WEB_SEARCH_ENABLED","true").lower() in ("true","1","yes")}
     async with httpx.AsyncClient(timeout=6) as client:
         for key,url in (("research",RESEARCH_URL),("llm",LLM_URL)):
             try:
@@ -137,6 +157,44 @@ async def health():
             except httpx.HTTPError as e:
                 result[key] = {"status":"unavailable", "error":type(e).__name__}
     return result
+
+@app.post("/api/sessions", dependencies=[Depends(auth)])
+async def create_session(req: SessionCreateIn):
+    return await forward(RESEARCH_URL+"/research/sessions","POST",req.model_dump())
+
+@app.get("/api/sessions", dependencies=[Depends(auth)])
+async def list_sessions():
+    return await forward(RESEARCH_URL+"/research/sessions")
+
+@app.get("/api/sessions/{sid}", dependencies=[Depends(auth)])
+async def read_session(sid: str):
+    return await forward(RESEARCH_URL+"/research/sessions/"+sid)
+
+@app.post("/api/sessions/{sid}/events", dependencies=[Depends(auth)])
+async def add_session_event(sid: str,req: SessionEventIn):
+    return await forward(RESEARCH_URL+"/research/sessions/"+sid+"/events",
+                         "POST",req.model_dump())
+
+@app.post("/api/sessions/{sid}/grade", dependencies=[Depends(auth)])
+async def grade_session_turn(sid: str,req: SessionGradeIn):
+    return await forward(RESEARCH_URL+"/research/sessions/"+sid+"/grade",
+                         "POST",req.model_dump())
+
+@app.get("/api/sessions/{sid}/export", dependencies=[Depends(auth)])
+async def export_session(sid: str, format: str = "md"):
+    if format not in ("md","json"):
+        raise HTTPException(422,"Доступные форматы: md, json")
+    data=await forward(RESEARCH_URL+"/research/sessions/"+sid+"/export")
+    if format=="md":
+        body=data["markdown"]
+        kind="text/markdown; charset=utf-8"
+    else:
+        body=json.dumps(data["session"],ensure_ascii=False,indent=2)
+        kind="application/json; charset=utf-8"
+    return Response(content=body,media_type=kind,headers={
+        "Content-Disposition":f'attachment; filename="jarvis-{sid}.{format}"',
+        "Cache-Control":"no-store"
+    })
 
 @app.get("/api/memory", dependencies=[Depends(auth)])
 async def memory():
@@ -227,6 +285,60 @@ def requests_external_connection(text: str) -> bool:
     return bool(wants_connection and assistant_target)
 
 
+def proposed_web_query(text: str, parsed: dict) -> str:
+    """Model proposes search terms. A small explicit-user-request fallback
+    handles missed tool planning by weak Qwen profiles; neither is a result.
+    """
+    if not isinstance(parsed,dict):
+        parsed={}
+    query=str(parsed.get("web_query") or "").strip()
+    if parsed.get("needs_web") is True:
+        return (query or text)[:240]
+    # Only explicit questions that request finding information on the web.
+    if re.search(r"(?iu)\b(найди|найдите|поищи|поищите|загугли|"
+                 r"проверь\s+в\s+интернете|search\s+the\s+web|"
+                 r"ищи\s+в\s+сети)\b",text):
+        return text[:240]
+    return ""
+
+
+async def answer_from_public_search(data: ChatIn, text: str,
+                                    memory: dict, query: str, start: float):
+    results=await forward(RESEARCH_URL+"/research/web/search","POST",{
+        "query":query[:240],"session_id":data.session_id or ""})
+    evidence=results.get("sources") or []
+    if not results.get("available") or not evidence:
+        return {"answer":"Не удалось выполнить публичный поиск: "+
+                        (results.get("reason") or "источники недоступны")+
+                        ". Не буду выдавать предположения за найденные сведения.",
+                "route":"apprentice_web_unavailable","model":"SQLite",
+                "search_query":query[:240],"search_status":results.get("status"),
+                "search_error":results.get("reason",""),"sources":[],
+                "tool_trace":{"tool":"public_web.search","status":results.get("status")},
+                "proposals":[],"tokens":0,"executed":False,
+                "total_ms":round((time.perf_counter()-start)*1000,2)}
+    grounded=await forward(LLM_URL+"/web-answer","POST",{
+        "question":text,"profile":data.profile,"sources":evidence,
+        "memory":memory,"origin":"searxng"})
+    grounded.update({"sources":[{"title":v.get("title"),"url":v.get("url"),
+                                   "snippet":v.get("snippet"),"status":v.get("status"),
+                                   "page_text":v.get("page_text","")[:1500]}
+                                  for v in evidence],
+                     "search_query":query[:240],"search_status":"ok",
+                     "tool_trace":{"tool":"public_web.search",
+                                   "status":"ok","pages_read":sum(
+                                       x.get("status")=="read" for x in evidence)},
+                     "web_requested":True,"proposals":[],
+                     "total_ms":round((time.perf_counter()-start)*1000,2),
+                     "executed":False})
+    if unverified_external_activity(grounded.get("answer","")):
+        grounded["answer"]=("Я изучил найденные публичные источники, но у меня "
+            "нет подключения к устройствам или произвольному API. "
+            "Ссылки и выдержки приведены ниже.")
+        grounded["integrity_warning"]="Blocked unsupported external action claim"
+    return grounded
+
+
 async def apprentice_chat(data: ChatIn, start: float):
     # Only confirmed knowledge is given to the interpreter; guesses stay pending.
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",{"query":data.text})
@@ -244,6 +356,27 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "evidence_source":inspection.get("source") if inspection else "dialogue_roles",
                 "normalized_input":text if text != data.text else None,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
+    # User-pasted Google AI text is a manually supplied, unverified outside
+    # observation. It is never saved as teacher-confirmed knowledge.
+    if data.external_context:
+        source={"title":"Google AI Mode · вставлено учителем",
+                "url":"","status":"manually_pasted_unverified",
+                "text":data.external_context[:8000]}
+        grounded=await forward(LLM_URL+"/web-answer","POST",{
+            "question":text,"profile":data.profile,"sources":[source],
+            "memory":memory,"origin":"google_ai_manual"})
+        grounded.update({"sources":[{"title":source["title"],"url":"",
+                                      "status":source["status"],
+                                      "snippet":source["text"][:1600]}],
+                         "external_origin":"google_ai_manual",
+                         "tool_trace":{"tool":"google.ai_mode",
+                                       "status":"teacher_pasted_not_api"},
+                         "executed":False,"proposals":[],
+                         "total_ms":round((time.perf_counter()-start)*1000,2)})
+        return grounded
+    if data.allow_web_search and data.web_mode != "off":
+        return await answer_from_public_search(
+            data,text,memory,data.approved_web_query.strip() or text,start)
     capabilities = {item.get("name"):item.get("status")
                     for item in memory.get("capabilities",[])}
     if (requests_external_connection(text)
@@ -277,6 +410,25 @@ async def apprentice_chat(data: ChatIn, start: float):
         parsed["proposals"] = []
         parsed["missing"] = "Внешний инструмент подключения с отдельной настройкой доступа"
         parsed["integrity_warning"] = "Model claimed an external action without a tool call"
+    # Web evidence is only looked up when policy allows it. In ask mode
+    # JARVIS can propose a search but must wait for explicit user approval.
+    wanted=proposed_web_query(text,parsed)
+    if wanted and data.web_mode=="auto":
+        result=await answer_from_public_search(data,text,memory,wanted,start)
+        result["planner_model"]=parsed.get("model")
+        result["planner_tokens"]=parsed.get("tokens",0)
+        result["tokens"]=int(result.get("tokens") or 0)+int(parsed.get("tokens") or 0)
+        return result
+    if wanted and data.web_mode=="ask":
+        parsed["web_approval"]={"query":wanted,"question":text}
+        parsed["web_requested"]=True
+    # Do not turn information requests or model guesses into confirmed
+    # teaching proposals: only explicit teaching can create candidates.
+    if (parsed.get("intent") in ("ask","request")
+            or "?" in text or re.match(
+                r"(?iu)^(какие|какой|что|чем|сколько|как|почему|где|"
+                r"когда|можешь ли|ты можешь|what|how)\b",text.strip())):
+        parsed["proposals"]=[]
     proposals = []
     # The research service also has a transparent language-specific teaching
     # baseline. Call it for first-person declarations even when Qwen misses
@@ -297,6 +449,10 @@ async def apprentice_chat(data: ChatIn, start: float):
             "missing":missing,
             "parse_warning":parsed.get("parse_warning"),
             "integrity_warning":parsed.get("integrity_warning"),
+            "web_approval":parsed.get("web_approval"),
+            "web_requested":bool(wanted),
+            "search_status":"approval_needed" if wanted and data.web_mode=="ask"
+                             else "disabled" if wanted and data.web_mode=="off" else "not_needed",
             "proposals":proposals,"model":parsed.get("model"),
             "tokens":parsed.get("tokens",0),
             "prompt_tokens":parsed.get("prompt_tokens",0),
@@ -320,8 +476,7 @@ def probable_graph_inspection(text: str) -> bool:
     return bool(has_verb and about_memory)
 
 
-@app.post("/api/chat", dependencies=[Depends(auth)])
-async def chat(data: ChatIn):
+async def chat_core(data: ChatIn):
     start = time.perf_counter()
     text = data.text.strip()
     if data.experiment == "apprentice":
@@ -367,3 +522,25 @@ async def chat(data: ChatIn):
     answer["total_ms"] = round((time.perf_counter()-start)*1000,2)
     answer["experiment"] = data.experiment
     return answer
+
+
+@app.post("/api/chat", dependencies=[Depends(auth)])
+async def chat(data: ChatIn):
+    """Persist a complete model/retrieval turn without affecting control modes."""
+    result=await chat_core(data)
+    if data.session_id:
+        try:
+            saved=await forward(
+                RESEARCH_URL+"/research/sessions/"+data.session_id+"/turns",
+                "POST",{
+                    "question":data.text,"answer":str(result.get("answer",""))[:6000],
+                    "experiment":data.experiment,"profile":data.profile,
+                    "ablation":data.ablation,"web_mode":data.web_mode,
+                    "result":result})
+            result["turn_id"]=saved["turn_id"]
+            result["session_id"]=data.session_id
+        except HTTPException as error:
+            # Never pretend unsaved turns were persisted. Return answer with
+            # explicit warning so the UI can let the teacher export manually.
+            result["persistence_warning"]=str(error.detail)[:300]
+    return result

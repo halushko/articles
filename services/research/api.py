@@ -11,15 +11,21 @@ from .apprentice import ApprenticeMemory
 from .settings import load
 from .normalize import parse_command
 from .embedding import embed
+from .sessions import ConversationStore, markdown
+from .web_research import FreeWebResearch
 
 engine: Engine | None = None
 apprentice: ApprenticeMemory | None = None
+sessions: ConversationStore | None = None
+web_research: FreeWebResearch | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice
+    global engine, apprentice, sessions, web_research
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
+    sessions = ConversationStore(engine)
+    web_research = FreeWebResearch(engine)
     yield
 
 app = FastAPI(title="JARVIS Research Index", version="0.3.2", lifespan=lifespan)
@@ -230,3 +236,80 @@ def speech_correction_delete(req: SpeechCorrectionDeleteIn):
         return apprentice.dialogue.delete_correction(req.item_id)
     except ValueError as error:
         raise HTTPException(422,str(error))
+
+# Research sessions and free public-web search are independent from the old
+# online-weight index. Every answer's provenance is stored per-turn.
+class SessionCreateIn(BaseModel):
+    title: str = Field(default="",max_length=140)
+
+class SessionTurnIn(BaseModel):
+    question: str = Field(min_length=1,max_length=3000)
+    answer: str = Field(default="",max_length=6000)
+    experiment: str = Field(max_length=40)
+    profile: str = Field(max_length=40)
+    ablation: str = Field(max_length=40)
+    web_mode: str = Field(default="off",pattern="^(off|ask|auto)$")
+    result: dict = Field(default_factory=dict)
+
+class SessionEventIn(BaseModel):
+    event_type: str = Field(pattern="^[a-z][a-z0-9_.]{0,50}$")
+    data: dict = Field(default_factory=dict)
+    turn_id: int | None = Field(default=None,gt=0)
+
+class SessionGradeIn(BaseModel):
+    turn_id: int = Field(gt=0)
+    rating: str = Field(pattern="^(good|bad)$")
+    teacher_note: str = Field(default="",max_length=1200)
+
+class WebSearchIn(BaseModel):
+    query: str = Field(min_length=3,max_length=240)
+    session_id: str = Field(default="",max_length=60)
+
+@app.post("/research/sessions")
+def research_session_create(req: SessionCreateIn):
+    return sessions.create(req.title)
+
+@app.get("/research/sessions")
+def research_session_list():
+    return {"sessions":sessions.list()}
+
+@app.get("/research/sessions/{sid}")
+def research_session_read(sid: str):
+    try:
+        return sessions.read(sid)
+    except ValueError as error:
+        raise HTTPException(404,str(error))
+
+@app.post("/research/sessions/{sid}/turns")
+def research_session_turn(sid: str, req: SessionTurnIn):
+    try:
+        return sessions.save_turn(sid,req.question,req.answer,req.experiment,
+                                  req.profile,req.ablation,req.web_mode,req.result)
+    except ValueError as error:
+        raise HTTPException(404,str(error))
+
+@app.post("/research/sessions/{sid}/events")
+def research_session_event(sid: str,req: SessionEventIn):
+    try:
+        return sessions.event(sid,req.event_type,req.data,req.turn_id)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+@app.post("/research/sessions/{sid}/grade")
+def research_session_grade(sid: str,req: SessionGradeIn):
+    try:
+        return sessions.grade(sid,req.turn_id,req.rating,req.teacher_note)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+@app.get("/research/sessions/{sid}/export")
+def research_session_export(sid: str):
+    try:
+        data=sessions.read(sid)
+    except ValueError as error:
+        raise HTTPException(404,str(error))
+    return {"markdown":markdown(data),"session":data}
+
+@app.post("/research/web/search")
+async def research_web_search(req: WebSearchIn):
+    return await web_research.search(req.query,req.session_id)

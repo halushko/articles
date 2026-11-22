@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JARVIS 0.4 · Ученик</title>
+  <title>JARVIS 0.5 · Ученик</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><div class="orb">J</div><div><div class="title">JARVIS <span class="version">v0.4 · Apprentice</span></div>
+  <div class="brand"><div class="orb">J</div><div><div class="title">JARVIS <span class="version">v0.5 · Web Research</span></div>
     <p>Маленькая языковая модель · большая обучаемая память</p></div></div>
   <span class="status" id="health">Проверка сервисов…</span>
 </header>
@@ -27,6 +27,13 @@
           <option value="llm_only">Только LLM · контроль БЕЗ памяти</option>
         </select>
       </label>
+      <label>Интернет для ученика
+        <select id="web-mode">
+          <option value="ask" selected>🔎 Спросить разрешение</option>
+          <option value="auto">🌐 Автопоиск</option>
+          <option value="off">🚫 Без интернета</option>
+        </select>
+      </label>
       <label>Языковая модель
         <select id="profile"><option value="fast">Qwen2.5:3b · быстро</option><option value="deep">Qwen3:4b · глубже</option></select>
       </label>
@@ -42,6 +49,7 @@
       чтобы можно было сравнивать качество без обучения.
     </div>
     <div id="mode-explanation" class="mode-explanation" aria-live="polite" hidden></div>
+    <p class="explain" id="web-privacy">В режиме «Спросить» запрос не покинет JARVIS до нажатия «Разрешить поиск». В «Автопоиске» сформулированный запрос отправляется внешним поисковикам SearXNG. Ответы из интернета не становятся подтверждёнными знаниями.</p>
     <div class="quick-examples">
       <button type="button" class="chip" data-example="У меня дома есть аккумулятор по имени Мелкий. Он стоит в гараже.">Познакомить с устройством</button>
       <button type="button" class="chip" data-example="Научиcь сортировке массива: сравниваем соседние элементы и меняем их местами, пока массив не станет отсортированным. Пример: [3,1,2] → [1,2,3].">Провести урок</button>
@@ -68,6 +76,8 @@
     <div id="voice-status" class="voice-status" role="status" aria-live="polite" hidden></div>
     <div id="tts-status" class="voice-status" role="status" aria-live="polite"></div>
     <div class="foot-actions">
+      <button id="download-md" type="button" class="secondary">📥 Скачать диалог .md</button>
+      <button id="download-json" type="button" class="secondary">📦 Экспорт JSON</button>
       <button id="show-learning" type="button" class="secondary">Показать все знания</button>
       <button id="run-ab" type="button" class="secondary">A/B: чистая LLM / старый Hybrid</button>
       <button id="show-memory" type="button" class="secondary">Память старого индекса</button>
@@ -76,6 +86,25 @@
       подключение Home Assistant и вызовы API не разрешены и не имитируются.</p>
   </section>
   <aside class="sidebar">
+    <section class="panel">
+      <div class="panel-title"><h2>История диалогов</h2><button id="session-new" type="button" class="text-button">+ Новый</button></div>
+      <select id="session-select" aria-label="Открыть сохранённый диалог" style="width:100%"><option>Загрузка…</option></select>
+      <p id="session-status" class="explain">Сообщения, оценки и источники сохраняются в SQLite после каждого ответа.</p>
+    </section>
+    <section class="panel">
+      <div class="panel-title"><h2>✨ Google AI Mode · бесплатно</h2></div>
+      <p class="explain">Открывается в твоём Chrome. Автоматического API нет: вставь ответ сюда для анализа Джарвисом. Ответ Google не считается проверенным знанием.</p>
+      <label class="speech-form">Вопрос для Google AI
+        <input id="google-question" maxlength="3000" placeholder="Например: Как устроен API Home Assistant?"/>
+      </label>
+      <button id="google-open" type="button" class="secondary google-open">Открыть Google AI Mode ↗</button>
+      <form id="google-import" class="speech-form">
+        <label>Ответ Google AI (вставить вручную)
+          <textarea id="google-paste" rows="4" maxlength="8000" placeholder="Вставь ответ из Chrome…" required></textarea>
+        </label>
+        <button type="submit">Сохранить и разобрать с JARVIS</button>
+      </form>
+    </section>
     <section class="panel">
       <div class="panel-title"><h2>Карта знаний</h2><button id="refresh" type="button" class="text-button">Обновить</button></div>
       <div id="learning-stats" class="stats"><span>Загрузка…</span></div>
@@ -139,6 +168,7 @@
   </aside>
 </main>
 <script defer src="/static/voice.js"></script>
+<script defer src="/static/research-ui.js"></script>
 <script defer src="/static/app.js"></script>
 </body>
 </html>
