@@ -34,6 +34,7 @@ class ChatIn(BaseModel):
     ablation: str = Field(default="combined",pattern="^(exact|online|combined)$")
     history: list[dict] = Field(default_factory=list,max_length=14)
     session_id: str | None = Field(default=None,max_length=60)
+    actor_id: str = Field(default="",max_length=36)
     web_mode: str = Field(default="off",pattern="^(off|ask|auto)$")
     allow_web_search: bool = False
     approved_web_query: str = Field(default="",max_length=240)
@@ -92,6 +93,14 @@ class ChangeReviewIn(BaseModel):
 
 class SessionCreateIn(BaseModel):
     title: str = Field(default="",max_length=140)
+
+class ActorCreateIn(BaseModel):
+    display_name: str = Field(min_length=2,max_length=70)
+
+class ActorDeviceIn(BaseModel):
+    device_id: str = Field(min_length=36,max_length=36)
+    actor_id: str = Field(min_length=36,max_length=36)
+    label: str = Field(min_length=1,max_length=70)
 
 class SessionEventIn(BaseModel):
     event_type: str = Field(pattern="^[a-z][a-z0-9_.]{0,50}$")
@@ -212,6 +221,24 @@ async def health():
 @app.post("/api/sessions", dependencies=[Depends(auth)])
 async def create_session(req: SessionCreateIn):
     return await forward(RESEARCH_URL+"/research/sessions","POST",req.model_dump())
+
+@app.get("/api/actors", dependencies=[Depends(auth)])
+async def list_actors(device_id: str = ""):
+    if device_id:
+        try:
+            device_id=str(uuid.UUID(device_id))
+        except ValueError:
+            raise HTTPException(422,"Некорректное устройство")
+    return await forward(RESEARCH_URL+"/research/actors?device_id="+device_id)
+
+@app.post("/api/actors", dependencies=[Depends(auth)])
+async def create_actor(req: ActorCreateIn):
+    return await forward(RESEARCH_URL+"/research/actors","POST",req.model_dump())
+
+@app.post("/api/actors/device", dependencies=[Depends(auth)])
+async def bind_actor_device(req: ActorDeviceIn):
+    # A device is only a hint, never authenticated identity.
+    return await forward(RESEARCH_URL+"/research/actors/device","POST",req.model_dump())
 
 @app.get("/api/sessions", dependencies=[Depends(auth)])
 async def list_sessions():
@@ -458,7 +485,8 @@ async def apprentice_chat(data: ChatIn, start: float):
                     "model":"SQLite","executed":False,
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",
-                           {"query":data.text,"session_id":data.session_id or ""})
+                           {"query":data.text,"session_id":data.session_id or "",
+                             "actor_id":data.actor_id})
     text = memory.get("normalized_text", data.text)
     direct_reply = memory.get("direct_reply")
     # Questions about graph memory have authoritative SQLite responses.
@@ -477,6 +505,7 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "evidence_source":inspection.get("source") if inspection else "dialogue_roles",
                 "normalized_input":text if text != data.text else None,
                 "change_proposal":memory.get("change_proposal"),
+                "speaker":memory.get("speaker"),
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
     # Route explicit requests to a real, allowlisted tool before Qwen.
     # Never require Qwen to infer that "найди в интернете" needs a search.
@@ -771,7 +800,7 @@ async def chat(data: ChatIn):
                     "question":data.text,"answer":str(result.get("answer",""))[:6000],
                     "experiment":data.experiment,"profile":data.profile,
                     "ablation":data.ablation,"web_mode":data.web_mode,
-                    "result":result})
+                    "result":result,"actor_id":data.actor_id})
             result["turn_id"]=saved["turn_id"]
             result["session_id"]=data.session_id
         except HTTPException as error:
