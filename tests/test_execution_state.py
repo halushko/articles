@@ -5,6 +5,7 @@ the user's latest result/previous context come from SQLite, never model prose.
 """
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from services.research.adaptive import BehaviorMemory
 from services.research.apprentice import ApprenticeMemory
 from services.gateway import api as gateway
 from services.gateway.grounding import response_from_records,looks_like_loop,claims_unobserved_search
+from services.llm.api import compact_world_context
 
 
 class ExecutionStateTests(unittest.TestCase):
@@ -129,6 +131,31 @@ class DialogueGroundingTests(unittest.TestCase):
         self.assertFalse(looks_like_loop("Домкрат, баллонный ключ, запасное колесо и упоры."))
         self.assertTrue(claims_unobserved_search(
             "Я ищу информацию в интернете, скоро отвечу."))
+
+
+class PromptBudgetTests(unittest.TestCase):
+    def test_important_memory_is_valid_json_even_with_large_graph(self):
+        memory={"identity":{"user":"Дима","assistant":"Джарвис"},
+                "speaker":{"display_name":"Дима"},
+                "dialogue":{"state":{"goal":"заменить колесо"},
+                            "last_response_evidence":{"source_kind":"external_web",
+                                                     "route":"apprentice_web_evidence"},
+                            "previous_topic":{"subject":"автомобиль"}},
+                "operations":{"current":{"approval_status":"approved",
+                                         "execution_status":"succeeded"}},
+                "graph":{"nodes":[{"name":"Сущность "+str(i),
+                                    "description":"очень длинное описание "*80}
+                                   for i in range(20)],
+                         "edges":[]},
+                "knowledge":[{"fact":"много текста "*150}]}
+        raw=compact_world_context(memory)
+        compact=json.loads(raw)
+        self.assertLessEqual(len(raw),4600)
+        self.assertEqual(compact["identity"]["user"],"Дима")
+        self.assertEqual(compact["dialogue_state"]["goal"],"заменить колесо")
+        self.assertEqual(compact["last_response_evidence"]["source_kind"],
+                         "external_web")
+        self.assertEqual(compact["operation_state"]["execution"],"succeeded")
 
 
 class GatewayExecutionTests(unittest.IsolatedAsyncioTestCase):
