@@ -169,11 +169,14 @@ class ApprenticeGradeIn(BaseModel):
     answer: str = Field(min_length=1,max_length=3000)
     rating: str = Field(pattern="^(good|bad)$")
     teacher_note: str = Field(default="",max_length=1200)
+    actor_id: str = Field(default="",max_length=36)
 
 @app.post("/apprentice/grade")
 def apprentice_grade(req: ApprenticeGradeIn):
     try:
-        return apprentice.grade(req.question,req.answer,req.rating,req.teacher_note)
+        if req.actor_id and not actors.find(req.actor_id):
+            raise ValueError("Unknown speaker")
+        return apprentice.grade(req.question,req.answer,req.rating,req.teacher_note,req.actor_id)
     except ValueError as error:
         raise HTTPException(422,str(error))
 
