@@ -532,6 +532,7 @@ async def apprentice_chat(data: ChatIn, start: float):
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
     # No pending approval? "да" is an ordinary conversational reply, not a
     # failed memory-review command. Continue with trusted session history.
+    progress(data.request_id,"memory","SQLite: проверяю знания и контекст разговора")
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",
                            {"query":data.text,"session_id":data.session_id or "",
                              "actor_id":data.actor_id})
