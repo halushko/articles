@@ -103,6 +103,20 @@ class OperationApprovals:
             decision="approved" if operation_id else None
         if not decision:
             return {"handled":False}
+        return self._apply_decision(session_id,decision,operation_id,source,actor_id)
+
+    def resolve_scoped(self,session_id,operation_id,decision,actor_id=""):
+        """Internal dialogue-coordinator entry: exact operation + server policy.
+
+        This is not exposed as a client-selectable decision override. The
+        caller must have verified latest-offer, actor, intent and risk.
+        """
+        if decision not in ("approved","rejected") or not operation_id:
+            raise ValueError("Invalid scoped decision")
+        return self._apply_decision(session_id,decision,operation_id,
+                                    "contextual_dialogue",actor_id)
+
+    def _apply_decision(self,session_id,decision,operation_id,source,actor_id):
         if not self.sessions.exists(session_id):
             return {"handled":True,"status":"no_session","executed":False,
                     "answer":"Для разрешения поиска нужна активная сессия."}
