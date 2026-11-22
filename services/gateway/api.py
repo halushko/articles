@@ -335,6 +335,20 @@ async def speech_correction_add(data: SpeechCorrectionIn):
 async def speech_correction_delete(data: SpeechCorrectionDeleteIn):
     return await forward(RESEARCH_URL+"/apprentice/speech-corrections/delete","POST",data.model_dump())
 
+@app.get("/api/apprentice/behavior", dependencies=[Depends(auth)])
+async def behavior_state(actor_id: str = ""):
+    return await forward(RESEARCH_URL+"/apprentice/behavior?actor_id="+actor_id)
+
+class BehaviorForgetIn(BaseModel):
+    rule_id: int = Field(gt=0)
+    actor_id: str = Field(default="",max_length=36)
+
+@app.post("/api/apprentice/behavior/forget", dependencies=[Depends(auth)])
+async def behavior_forget(req: BehaviorForgetIn):
+    return await forward(RESEARCH_URL+"/apprentice/behavior/forget","POST",
+                         req.model_dump())
+
+
 @app.post("/api/apprentice/grade", dependencies=[Depends(auth)])
 async def apprentice_grade(data: ApprenticeGradeIn):
     return await forward(RESEARCH_URL+"/apprentice/grade","POST",data.model_dump())
