@@ -187,7 +187,7 @@ class DialogueCoordinator:
                     or isinstance(change,dict) and change.get("id") is not None)
         return False
 
-    def resolve(self, session_id, text, actor_id=""):
+    def resolve(self, session_id, text, actor_id="", web_enabled=True):
         """Arbitrate a conversational reply; never authorizes a physical action.
 
         A last-offer check prevents "да" after a topic change from activating an
@@ -263,6 +263,9 @@ class DialogueCoordinator:
                              "К тому же доступного разрешённого исполнителя нет. "
                              "Ничего не выполняю."}
         if choice["kind"]=="web.search":
+            if not web_enabled:
+                return {"handled":True,"status":"web_disabled","executed":False,
+                        "answer":"Интернет отключён. Поиск не выполнялся."}
             decision=("approved" if search=="approved" or learned=="approve"
                       or basic=="approve" else "rejected")
             if search=="rejected" or learned=="deny" or basic=="deny":
