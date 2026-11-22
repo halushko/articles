@@ -545,6 +545,22 @@ async def apprentice_chat(data: ChatIn, start: float):
         return {"answer":"Для безопасного согласия на поиск нужен сохранённый диалог.",
                 "route":"apprentice_web_no_session","model":"SQLite",
                 "utterance_intent":intent_info,"tokens":0,"executed":False}
+    # Tool registry is the only authority for execution. Learned "skills"
+    # in SQLite do not make an action runnable. Physical/destructive commands
+    # are refused before Qwen can hallucinate having performed them.
+    blocked=memory.get("unavailable_operation")
+    if blocked and not direct_reply:
+        return {"answer":(
+                    "Я понял это как команду: "+blocked["kind"]+". "
+                    "Однако реального разрешённого исполнителя этой операции "
+                    "нет, поэтому я ничего не выполнял. "
+                    "Даже после подключения исполнителя потребуются проверка "
+                    "полномочий и отдельное подтверждение конкретного действия."),
+                "route":"apprentice_action_unavailable",
+                "utterance_intent":memory.get("utterance_intent"),
+                "requested_action":blocked,
+                "model":"SQLite","tokens":0,"executed":False,
+                "total_ms":round((time.perf_counter()-start)*1000,2)}
     # An unrelated turn invalidates older, unanswered search requests.
     if data.session_id:
         await forward(RESEARCH_URL+"/research/operations/web/clear",
