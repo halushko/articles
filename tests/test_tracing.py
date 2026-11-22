@@ -64,6 +64,9 @@ class TracePipelineTests(unittest.IsolatedAsyncioTestCase):
                 answer = await gateway.chat(data)
                 trace = answer["debug_trace"]
                 self.assertEqual(trace["selected_mode"], mode)
+                if mode in ("hybrid","apprentice") and answer["route"]=="world_grounded_chat":
+                    self.assertEqual(answer["evidence_source"],
+                                     "model_with_sqlite_context_unverified")
                 self.assertEqual(trace["outcome"]["route"], answer["route"])
                 self.assertEqual(saved[-1]["result"]["debug_trace"]["selected_mode"], mode)
                 self.assertTrue(any(s["stage"] == "gateway.route_selection"
