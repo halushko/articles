@@ -131,6 +131,13 @@ def key_for(value):
     return " ".join(value.casefold().split())
 
 
+MEMORY_STATUS_QUERY = re.compile(
+    r"(?iu)\b(?:я\s+у\s+тебя\s+(?:уже\s+)?записан(?:а)?|"
+    r"ты\s+меня\s+помнишь|ты\s+знаешь\s+кто\s+я|"
+    r"есть\s+ли\s+я\s+у\s+тебя\s+в\s+памяти|"
+    r"а\s+я\s+у\s+тебя\s+записан(?:а)?)\b"
+)
+
 CAPABILITY_QUERY = re.compile(
     r"(?iu)\b(?:что\s+ты\s+(?:умеешь|можешь\s+делать)|"
     r"какие\s+действия\s+(?:ты\s+)?можешь\s+выполнять|"
@@ -306,6 +313,25 @@ class DialogueMemory:
                 return {"text":text,"roles":roles,"direct_reply":" ".join(answers),
                         "intent_info":intent_info,"intent":"question",
                         "is_question":True}
+        if len(compact)<220 and MEMORY_STATUS_QUERY.search(compact):
+            name=roles.get("user")
+            if speaker is not None and name:
+                source=speaker.get("origin","selected_profile")
+                return {"text":text,"roles":roles,
+                    "direct_reply":f"В SQLite есть профиль «{name}» (источник: {source}). "
+                       "Он выбран для этой реплики, но это не биометрическая аутентификация.",
+                    "intent_info":intent_info,"evidence_source":"actor_registry"}
+            if speaker is not None:
+                reply=("Я не знаю, кто сейчас говорит: профиль собеседника не выбран. "
+                       "В SQLite могут быть имена людей, но это не доказывает твою личность.")
+            elif name:
+                reply=(f"В SQLite есть старое имя пользователя «{name}». "
+                       "Но не могу проверить, что именно ты сейчас говоришь.")
+            else:
+                reply=("В SQLite нет привязки текущего собеседника к имени. "
+                       "Это не значит, что в графе нет сущности человека.")
+            return {"text":text,"roles":roles,"direct_reply":reply,
+                    "intent_info":intent_info,"evidence_source":"dialogue_roles"}
         new_name=extract_name(text)
         if new_name and speaker is not None:
             known=speaker.get("display_name")
