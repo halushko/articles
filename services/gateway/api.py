@@ -564,7 +564,7 @@ async def apprentice_chat(data: ChatIn, start: float):
     # No pending approval? "да" is an ordinary conversational reply, not a
     # failed memory-review command. Continue with trusted session history.
     progress(data.request_id,"memory","SQLite: проверяю знания и контекст разговора")
-    memory = await forward(RESEARCH_URL+"/apprentice/context","POST",
+    memory = await forward(RESEARCH_URL+"/world/context","POST",
                            {"query":data.text,"session_id":data.session_id or "",
                              "actor_id":data.actor_id})
     text = memory.get("normalized_text", data.text)
@@ -677,6 +677,29 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "proposals":[], "model":"SQLite", "tokens":0,"executed":False,
                 "normalized_input":text if text != data.text else None,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
+    # Fast conversational cognition and structured teaching are different tasks.
+    # Do not ask a 3B model to extract a full graph for an ordinary question.
+    # Both paths read the SAME world/context (provenance, history, experience).
+    if intent_info.get("intent") in ("question", "unknown"):
+        progress(data.request_id,"planning","Qwen: разговор с контекстом мира")
+        grounded=await forward(LLM_URL+"/grounded-chat","POST",{
+            "text":text,"profile":data.profile,
+            "history":data.history,"memory":memory})
+        if unverified_external_activity(grounded.get("answer","")):
+            grounded["answer"]=(
+                "Я не выполнял внешних действий или подключений. "
+                "Для реальной операции требуется доступный серверный инструмент.")
+            grounded["integrity_warning"]="Blocked unsupported external action claim"
+        grounded.update({
+            "utterance_intent":intent_info,
+            "normalized_input":text if text!=data.text else None,
+            "knowledge_evidence":memory.get("graph") or {},
+            "evidence_source":("confirmed_sqlite_context"
+                              if memory.get("knowledge") or memory.get("graph",{}).get("nodes")
+                              else "model_with_dialogue_context"),
+            "experience_count":len(memory.get("experiences") or []),
+            "total_ms":round((time.perf_counter()-start)*1000,2)})
+        return grounded
     progress(data.request_id,"planning","Qwen: обдумывает вопрос и формирует ответ")
     parsed = await forward(LLM_URL+"/analyze","POST",
                            {"text":text,"profile":data.profile,
@@ -890,9 +913,13 @@ async def chat_core(data: ChatIn):
             result.update(answer=answer, tokens=0, total_ms=round((time.perf_counter()-start)*1000,2))
             return result
         if data.experiment == "research_only":
-            return {"answer":"Исследовательский индекс обрабатывает изученные команды и факты; для свободного диалога нужен LLM. Я не буду угадывать ответ.",
+            return {"answer":"Старый индекс команд не нашёл соответствия. Это контрольный режим без свободного разговора.",
                     "route":"research_abstain", "tokens":0,"executed":False,
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
+        # Hybrid previously fell through to isolated /chat, discarding memory,
+        # actor and history. Reuse the shared world-backed conversation engine.
+        if data.experiment == "hybrid":
+            return await apprentice_chat(data,start)
     progress(data.request_id,"planning","Qwen: выполняется контрольный диалог")
     answer = await forward(LLM_URL+"/chat","POST",{"text":text,"profile":data.profile})
     answer["total_ms"] = round((time.perf_counter()-start)*1000,2)
