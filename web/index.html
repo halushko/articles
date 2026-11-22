@@ -3,38 +3,87 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JARVIS 0.3.2 · Research Workbench</title>
+  <title>JARVIS 0.4 · Ученик</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><div class="orb">J</div><div><div class="title">JARVIS <span class="version">v0.3.2</span></div><p>LLM ↔ Исследовательский индекс</p></div></div>
+  <div class="brand"><div class="orb">J</div><div><div class="title">JARVIS <span class="version">v0.4 · Apprentice</span></div>
+    <p>Маленькая языковая модель · большая обучаемая память</p></div></div>
   <span class="status" id="health">Проверка сервисов…</span>
 </header>
 <main class="layout">
   <section class="panel interaction">
-    <div class="panel-title"><div><h2>Песочница экспериментов</h2><p>Ни одна команда не отправляется реальным устройствам</p></div><span class="safe">DEMO ONLY</span></div>
+    <div class="panel-title">
+      <div><h2>Диалог с учеником</h2><p>Расскажи о любом новом понятии, устройстве, действии или алгоритме обычным языком</p></div>
+      <span class="safe">БЕЗ ВЫПОЛНЕНИЯ ДЕЙСТВИЙ</span>
+    </div>
     <div class="selectors">
-      <label>Архитектура
-        <select id="experiment"><option value="hybrid">Гибрид: индекс → LLM</option><option value="research_only">Только индекс</option><option value="llm_only">Только LLM (baseline)</option></select>
+      <label>Режим
+        <select id="experiment">
+          <option value="apprentice" selected>Ученик · свободное обучение</option>
+          <option value="hybrid">v0.3 · Индекс → LLM</option>
+          <option value="research_only">v0.3 · Только индекс</option>
+          <option value="llm_only">Только LLM · baseline</option>
+        </select>
       </label>
-      <label>Профиль LLM
-        <select id="profile"><option value="fast">FAST · Qwen2.5:3b</option><option value="deep">DEEP · Qwen3:4b</option></select>
+      <label>Языковая модель
+        <select id="profile"><option value="fast">Qwen2.5:3b · быстро</option><option value="deep">Qwen3:4b · глубже</option></select>
       </label>
-      <label>Абляция индекса
-        <select id="ablation"><option value="exact">B1 · Точные совпадения</option><option value="online">B2 · Exact + online SGD</option><option value="combined" selected>B3 · SGD + опциональная семантика</option></select>
+      <label>Сравнение старого индекса
+        <select id="ablation"><option value="exact">Точные совпадения</option>
+          <option value="online">Exact + online</option><option value="combined" selected>Online + семантика</option></select>
       </label>
     </div>
-    <div id="chat" class="chat" aria-live="polite"><div class="message system">Новая пустая память v0.3.2. Попробуй «Включи свет в туалете», затем выбери правильное устройство и повтори команду.</div></div>
-    <form id="chat-form" class="composer"><input id="message" autocomplete="off" placeholder="Команда или вопрос для JARVIS…" maxlength="3000" required /><button id="send" type="submit">Отправить</button></form>
-    <div class="foot-actions"><button id="run-ab" type="button" class="secondary">Сравнить LLM-only / Hybrid</button><button id="show-memory" type="button" class="secondary">Что хранится в SQLite?</button></div>
-    <div class="note">Сравнение A/B показывает ответы и задержки, но не объявляет один ответ правильным без независимой разметки.</div>
+    <div class="learning-hint">
+      <strong>Как это работает:</strong> JARVIS сам предлагает новые сущности, действия, связи,
+      уроки и потенциальные навыки. Ты подтверждаешь или исправляешь предложения.
+      До подтверждения это <em>гипотезы</em>, а не его знания.
+    </div>
+    <div class="quick-examples">
+      <button type="button" class="chip" data-example="У меня дома есть аккумулятор по имени Мелкий. Он стоит в гараже.">Познакомить с устройством</button>
+      <button type="button" class="chip" data-example="Научиcь сортировке массива: сравниваем соседние элементы и меняем их местами, пока массив не станет отсортированным. Пример: [3,1,2] → [1,2,3].">Провести урок</button>
+      <button type="button" class="chip" data-example="Какие новые знания и способности ты приобрёл от меня?">Проверить знания</button>
+    </div>
+    <div id="chat" class="chat" aria-live="polite">
+      <div class="message system">Я ещё не знаю твоё окружение. Расскажи мне что-нибудь, как ученику: о доме, программировании или другой области. После ответа появятся предложения для подтверждения.</div>
+    </div>
+    <form id="chat-form" class="composer">
+      <input id="message" autocomplete="off" placeholder="Поговори с Джарвисом или научи чему-нибудь…" maxlength="3000" required />
+      <button id="send" type="submit">Отправить</button>
+    </form>
+    <div class="foot-actions">
+      <button id="show-learning" type="button" class="secondary">Показать все знания</button>
+      <button id="run-ab" type="button" class="secondary">A/B: чистая LLM / старый Hybrid</button>
+      <button id="show-memory" type="button" class="secondary">Память старого индекса</button>
+    </div>
+    <p class="note">Изучение алгоритма ≠ освоение программирования: навыки пока текстовые. Выполнение кода,
+      подключение Home Assistant и вызовы API не разрешены и не имитируются.</p>
   </section>
   <aside class="sidebar">
-    <section class="panel"><div class="panel-title"><h2>Состояние памяти</h2><button id="refresh" type="button" class="text-button">Обновить</button></div><div id="stats" class="stats"><span>Загрузка…</span></div><div id="recent" class="recent"></div></section>
-    <section class="panel"><h2>Новые понятия</h2><p class="explain">Индексация и отношения живут отдельно от языковой модели. Автоматического слияния понятий нет.</p><form id="concept-form"><label>Название<input id="concept-name" maxlength="150" required placeholder="например, устройство вентиляции" /></label><label>Область<input id="concept-domain" maxlength="120" value="техника" required /></label><label>Тип<input id="concept-kind" maxlength="60" value="устройство" required /></label><button type="submit" class="secondary full">Добавить понятие</button></form><div id="concept-status" class="note"></div></section>
-    <section class="panel"><h2>Что можно менять отдельно</h2><p class="explain"><code>config/llm.json</code> — Qwen, temperature, токены, thinking.</p><p class="explain"><code>config/research.json</code> — пороги, шаг обучения, подтверждения, эмбеддинги.</p><p class="explain">После правки конфигурации перезапусти только нужный сервис.</p></section>
-    <section class="panel"><h2>Доступ</h2><p class="explain">Только для локальной машины. Если установил <code>JARVIS_TOKEN</code>, вставь его здесь для запросов API.</p><input id="token" type="password" autocomplete="off" placeholder="X-Jarvis-Token (не обязателен)" /></section>
+    <section class="panel">
+      <div class="panel-title"><h2>Карта знаний</h2><button id="refresh" type="button" class="text-button">Обновить</button></div>
+      <div id="learning-stats" class="stats"><span>Загрузка…</span></div>
+      <div class="legend">Подтверждено учителем · сохранено в SQLite</div>
+      <div id="known" class="known"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-title"><h2>Нужна проверка</h2><span id="pending-count" class="badge">0</span></div>
+      <p class="explain">Предположения Qwen не становятся фактами автоматически. Подтверди, исправь или отклони каждое.</p>
+      <div id="pending" class="pending"></div>
+    </section>
+    <section class="panel">
+      <h2>Что ещё не умеет</h2>
+      <p class="explain">Список действий в памяти <b>не является доступом к инструментам</b>.
+        Джарвис пока не может выполнять код, делать HTTP-запросы или управлять домом.
+        Он должен сначала попросить недостающий доступ.</p>
+      <p class="explain">У Qwen остаются общие знания. Наше обучение дополняет их без изменения весов модели.</p>
+    </section>
+    <section class="panel">
+      <h2>Доступ к интерфейсу</h2>
+      <p class="explain">Если настроен <code>JARVIS_TOKEN</code>, введи его для API. Токен HA сюда не вводи.</p>
+      <input id="token" type="password" autocomplete="off" placeholder="X-Jarvis-Token (необязательно)" />
+    </section>
   </aside>
 </main>
 <script defer src="/static/app.js"></script>
