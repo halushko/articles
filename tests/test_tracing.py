@@ -23,7 +23,7 @@ class TracePipelineTests(unittest.IsolatedAsyncioTestCase):
             if url.endswith("/turns"):
                 saved.append(payload)
                 return {"turn_id": len(saved)}
-            if url.endswith("/resolve"):
+            if url == gateway.RESEARCH_URL + "/resolve":
                 return {"status": "not_command", "is_command": False}
             if url.endswith("/chat"):
                 return {"answer": "Ответ модели", "route": "llm_fast",
@@ -63,7 +63,7 @@ class TracePipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(any(s["stage"] == "gateway.route_selection"
                                     for s in trace["steps"]))
                 urls = calls[before:]
-                self.assertEqual(any(u.endswith("/resolve") for u in urls),
+                self.assertEqual(any(u == gateway.RESEARCH_URL + "/resolve" for u in urls),
                                  mode in ("hybrid", "research_only"))
                 self.assertEqual(any(u.endswith("/chat") for u in urls),
                                  mode in ("hybrid", "llm_only"))
