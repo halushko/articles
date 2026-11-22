@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS knowledge_changes (
  proposed_value TEXT NOT NULL,
  source_text TEXT NOT NULL,
  source_kind TEXT NOT NULL DEFAULT 'teacher_request',
+ conflict_node_id INTEGER,
  status TEXT NOT NULL DEFAULT 'pending',
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  reviewed_at TEXT
@@ -93,10 +94,20 @@ class KnowledgeChanges:
         self.graph=graph
         with self.engine.connect() as con:
             con.executescript(SCHEMA)
+            columns={row["name"] for row in con.execute(
+                "PRAGMA table_info(knowledge_changes)")}
+            if "conflict_node_id" not in columns:
+                con.execute("ALTER TABLE knowledge_changes ADD COLUMN conflict_node_id INTEGER")
 
     @staticmethod
     def view(row):
         return dict(row) if row else None
+
+    def _role_name(self,role):
+        with self.engine.connect() as con:
+            row=con.execute("SELECT display_name FROM dialogue_roles WHERE role=?",
+                            (role,)).fetchone()
+        return row["display_name"] if row else ""
 
     def _current(self, con, kind, tid):
         if kind=="role" and tid in ("assistant","user"):
@@ -109,11 +120,18 @@ class KnowledgeChanges:
             return row["name"] if row else None
         return None
 
+    @staticmethod
+    def _present_change(row):
+        if row:
+            row["conflict_detected"]=row.get("conflict_node_id") is not None
+            row["requires_merge_approval"]=row["conflict_detected"]
+        return row
+
     def snapshot(self, limit=20):
         with self.engine.connect() as con:
-            pending=[dict(x) for x in con.execute(
+            pending=[self._present_change(dict(x)) for x in con.execute(
                 "SELECT * FROM knowledge_changes WHERE status='pending' ORDER BY id DESC LIMIT ?",(limit,))]
-            recent=[dict(x) for x in con.execute(
+            recent=[self._present_change(dict(x)) for x in con.execute(
                 "SELECT * FROM knowledge_changes ORDER BY id DESC LIMIT ?",(limit,))]
             events=[dict(x) for x in con.execute(
                 "SELECT * FROM knowledge_change_events ORDER BY id DESC LIMIT ?",(limit,))]
@@ -137,6 +155,31 @@ class KnowledgeChanges:
         phrase=str(text or "").strip()
         if not phrase or "?" in phrase or len(phrase)>300:
             return None
+        # The teacher can add context and ask to restore an older name:
+        # "Тебя раньше звали Джарвис ... переименуй себя в Джарвис обратно".
+        # The final imperative is the instruction; the preface is evidence,
+        # not a separate identity or an implicit confirmation.
+        nested=re.search(
+            r"(?iu)\bпереименуй\s+себя\s+(?:в|на)\s+"
+            r"(?P<name>[\w.'-]{2,80})(?:\s+обратно)?\s*[.!]*$",phrase)
+        if nested and not re.search(r"(?iu)\bне\s+переименуй\b",phrase):
+            try:
+                return {"target_kind":"role","target_id":"assistant",
+                        "proposed_value":valid_name(nested["name"])}
+            except ValueError:
+                return None
+        restore=re.fullmatch(
+            r"(?iu)\s*верни\s+себе\s+(?:старое|прежнее)\s+имя\s*[.!]*",phrase)
+        if restore:
+            with self.engine.connect() as con:
+                names=[row["name"] for row in con.execute(
+                    "SELECT name FROM dialogue_role_aliases WHERE role='assistant'")]
+            names=[n for n in names if name_key(n)!=name_key(
+                self._role_name("assistant"))]
+            if len(names)==1:
+                return {"target_kind":"role","target_id":"assistant",
+                        "proposed_value":names[0]}
+            return {"error":"Уточни прежнее имя: "+", ".join(names)}
         for pat in SELF_RENAME:
             m=pat.match(phrase)
             if m:
@@ -197,27 +240,31 @@ class KnowledgeChanges:
                                  (name_key(new),)).fetchone()
             old_node=con.execute("SELECT id FROM graph_nodes WHERE name_key=? AND active=1",
                                  (name_key(old),)).fetchone()
-            if conflict and (not old_node or conflict["id"]!=old_node["id"]):
-                raise ValueError("Имя «"+new+"» уже принадлежит другой подтверждённой "
-                                 "сущности. Сначала разреши конфликт идентичности.")
+            conflict_id=(conflict["id"] if conflict
+                         and (not old_node or conflict["id"]!=old_node["id"])
+                         else None)
+            # A conflicting graph name is a reviewable *merge proposal*, never
+            # silently treated as a new entity or an unconditional error.
             duplicate=con.execute("""SELECT * FROM knowledge_changes
                   WHERE target_kind=? AND target_id=? AND status='pending'
                   AND expected_value=? AND proposed_value=?
                   ORDER BY id DESC LIMIT 1""",(target_kind,tid,old,new)).fetchone()
             if duplicate:
-                return self.view(duplicate)
+                return self._present_change(self.view(duplicate))
             cur=con.execute("""INSERT INTO knowledge_changes
                 (target_kind,target_id,expected_value,proposed_value,
-                 source_text,source_kind) VALUES(?,?,?,?,?,?)""",
-                (target_kind,tid,old,new,str(source_text)[:3000],source_kind))
+                 source_text,source_kind,conflict_node_id) VALUES(?,?,?,?,?,?,?)""",
+                (target_kind,tid,old,new,str(source_text)[:3000],source_kind,conflict_id))
             row=con.execute("SELECT * FROM knowledge_changes WHERE id=?",
                             (cur.lastrowid,)).fetchone()
-        return self.view(row)
+        return self._present_change(self.view(row))
 
     def from_text(self,text):
         cmd=self.detect_request(text)
         if not cmd:
             return None
+        if cmd.get("error"):
+            return {"error":cmd["error"],"intent":"change_knowledge"}
         try:
             return self.propose(text,**cmd)
         except ValueError as error:
@@ -277,16 +324,20 @@ class KnowledgeChanges:
             return f"Моё подтверждённое имя сейчас «{current}». Оно изменено и записано в SQLite."
         return f"Моё подтверждённое имя «{current}». Последнее предложение было отклонено или устарело."
 
-    def _retarget_graph(self,con,old,new):
+    def _retarget_graph(self,con,old,new,merge_approved=False):
         oldkey,newkey=name_key(old),name_key(new)
         other=con.execute("SELECT id FROM graph_nodes WHERE name_key=?",(newkey,)).fetchone()
         previous=con.execute("SELECT id FROM graph_nodes WHERE name_key=?",(oldkey,)).fetchone()
-        if other and previous and other["id"]!=previous["id"]:
-            raise ValueError("Существует отдельный графовый узел с новым именем; "
-                             "нельзя объединять их без разрешения учителя")
-        if other and not previous:
-            # An existing (possibly inactive) node is independent identity.
-            raise ValueError("Новое имя уже зарезервировано в графе знаний")
+        if other and (not previous or other["id"]!=previous["id"]):
+            if not merge_approved:
+                raise ValueError("Имя уже принадлежит другому графовому узлу. "
+                                 "Необходимо явное подтверждение объединения.")
+            if previous:
+                # Teacher-approved merge: preserve previous node id and source
+                # facts; graph edges are regenerated from audited world_facts.
+                con.execute("DELETE FROM graph_edges WHERE subject_id=? OR object_id=?",
+                            (other["id"],other["id"]))
+                con.execute("DELETE FROM graph_nodes WHERE id=?",(other["id"],))
         if previous:
             con.execute("UPDATE graph_nodes SET name_key=?,name=? WHERE id=?",
                         (newkey,new,previous["id"]))
@@ -304,7 +355,7 @@ class KnowledgeChanges:
                      canonical_name=excluded.canonical_name""",
                     (oldkey,old,newkey,new))
 
-    def review(self,change_id,decision,new_name=None):
+    def review(self,change_id,decision,new_name=None,resolve_conflict=False):
         if decision not in ("confirm","reject"):
             raise ValueError("Неизвестное решение")
         with self.engine.connect() as con:
@@ -324,7 +375,17 @@ class KnowledgeChanges:
             elif name_key(old)==name_key(changed_to):
                 status="rejected"
             else:
-                self._retarget_graph(con,old,changed_to)
+                existing=con.execute("SELECT id FROM graph_nodes WHERE name_key=?",
+                                     (name_key(changed_to),)).fetchone()
+                old_graph=con.execute("SELECT id FROM graph_nodes WHERE name_key=?",
+                                      (name_key(old),)).fetchone()
+                collision=bool(existing and
+                    (not old_graph or existing["id"]!=old_graph["id"]))
+                if collision and not resolve_conflict:
+                    raise ValueError("Имя уже используется другой сущностью в графе. "
+                         "Подтверди отдельно объединение идентичностей.")
+                self._retarget_graph(con,old,changed_to,
+                                     merge_approved=resolve_conflict)
                 if kind=="role":
                     con.execute("""INSERT INTO dialogue_role_aliases(role,name,name_key)
                          VALUES(?,?,?) ON CONFLICT(role,name_key) DO NOTHING""",
@@ -362,6 +423,7 @@ class KnowledgeChanges:
         if status=="confirmed":
             self.graph.rebuild()
         result={"id":change_id,"status":status,"target_kind":kind,"target_id":tid,
+                "merged_identity":bool(resolve_conflict and status=="confirmed"),
                 "expected_value":old,"proposed_value":changed_to,
                 "current_value":changed_to if status=="confirmed" else current,
                 "executed":False}

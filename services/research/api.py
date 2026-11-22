@@ -12,19 +12,22 @@ from .settings import load
 from .normalize import parse_command
 from .embedding import embed
 from .sessions import ConversationStore, markdown
+from .review_voice import VoiceReviews
 from .web_research import FreeWebResearch
 
 engine: Engine | None = None
 apprentice: ApprenticeMemory | None = None
 sessions: ConversationStore | None = None
 web_research: FreeWebResearch | None = None
+voice_reviews: VoiceReviews | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice, sessions, web_research
+    global engine, apprentice, sessions, web_research, voice_reviews
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
     sessions = ConversationStore(engine)
+    voice_reviews = VoiceReviews(engine,apprentice,sessions)
     web_research = FreeWebResearch(engine)
     yield
 
@@ -140,6 +143,7 @@ class ApprenticeReviewIn(BaseModel):
 
 class ApprenticeContextIn(BaseModel):
     query: str = Field(min_length=1,max_length=3000)
+    session_id: str = Field(default="",max_length=36)
 
 class ApprenticeGradeIn(BaseModel):
     question: str = Field(min_length=1,max_length=3000)
@@ -171,7 +175,15 @@ def apprentice_state():
 
 @app.post("/apprentice/context")
 def apprentice_context(req: ApprenticeContextIn):
-    return apprentice.context(req.query)
+    result=apprentice.context(req.query)
+    if req.session_id and sessions.exists(req.session_id):
+        change=result.get("change_proposal")
+        if change and change.get("id"):
+            result["voice_review"]=voice_reviews.queue(req.session_id,changes=[change])
+        else:
+            # Any unrelated utterance closes the short "yes/no" window.
+            voice_reviews.clear(req.session_id)
+    return result
 
 class GraphAliasIn(BaseModel):
     alias: str = Field(min_length=2,max_length=120)
@@ -212,6 +224,7 @@ class ChangeReviewIn(BaseModel):
     change_id: int = Field(gt=0)
     decision: str = Field(pattern="^(confirm|reject)$")
     new_name: str | None = Field(default=None,max_length=100)
+    resolve_conflict: bool = False
 
 @app.get("/apprentice/changes")
 def apprentice_changes():
@@ -224,11 +237,32 @@ def apprentice_change_propose(req: ModelChangesIn):
 @app.post("/apprentice/changes/review")
 def apprentice_change_review(req: ChangeReviewIn):
     try:
-        return apprentice.changes.review(req.change_id,req.decision,req.new_name)
+        return apprentice.changes.review(req.change_id,req.decision,req.new_name,
+                                         resolve_conflict=req.resolve_conflict)
     except ValueError as error:
         raise HTTPException(409,str(error))
     except sqlite3.IntegrityError as error:
         raise HTTPException(409,"Имя конфликтует с существующим объектом")
+
+class VoiceReviewQueueIn(BaseModel):
+    session_id: str = Field(min_length=36,max_length=36)
+    changes: list[dict] = Field(default_factory=list,max_length=5)
+    proposals: list[dict] = Field(default_factory=list,max_length=5)
+
+class VoiceReviewResolveIn(BaseModel):
+    session_id: str = Field(default="",max_length=36)
+    text: str = Field(min_length=1,max_length=250)
+
+@app.post("/apprentice/voice/queue")
+def voice_review_queue(req: VoiceReviewQueueIn):
+    try:
+        return voice_reviews.queue(req.session_id,req.changes,req.proposals)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+@app.post("/apprentice/voice/resolve")
+def voice_review_resolve(req: VoiceReviewResolveIn):
+    return voice_reviews.resolve(req.session_id,req.text)
 
 @app.post("/apprentice/propose")
 def apprentice_propose(req: ApprenticeProposalsIn):

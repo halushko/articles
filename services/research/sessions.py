@@ -161,6 +161,7 @@ class ConversationStore:
         provenance={key:result.get(key) for key in (
             "sources","search_query","search_status","search_error",
             "web_approval","web_requested","change_proposal",
+            "voice_review","voice_review_result","utterance_intent",
             "conflict_detected","retrieval_trace","knowledge_evidence",
             "evidence_source","proposals","missing","intent",
             "parse_warning","integrity_warning","normalized_input",

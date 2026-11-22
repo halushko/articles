@@ -29,6 +29,7 @@ function mkButton(text,cls,cb) {
 }
 function renderProposal(entry, target, description=entry.description||'', turnId=null) {
   const panel=document.createElement('div');panel.className='proposal';
+  panel.dataset.reviewKind='proposal'; panel.dataset.reviewId=String(entry.id);
   const kind=document.createElement('div');kind.className='proposal-kind';
   kind.textContent=kindLabels[entry.kind]||entry.kind;
   const name=document.createElement('strong');name.textContent=entry.name;
@@ -95,15 +96,19 @@ function renderChangeProposal(entry,target,turnId=null){
   if(!entry || !entry.id || entry.status!=='pending') return;
   const panel=document.createElement('div');
   panel.className='proposal knowledge-change';
+  panel.dataset.reviewKind='change'; panel.dataset.reviewId=String(entry.id);
   const kind=document.createElement('strong');
   kind.textContent='✏️ Изменить существующее имя · '+(entry.target_kind==='role'?
     entry.target_id==='assistant'?'Имя ученика':'Имя учителя':'Сущность #'+entry.target_id);
   const details=document.createElement('p');
   details.textContent='Сейчас: «'+entry.expected_value+'» → Предлагается: «'+entry.proposed_value+
-    '». Пока в SQLite НЕ изменено.';
+    '». Пока в SQLite НЕ изменено.'+
+    (entry.requires_merge_approval?' ⚠️ Это имя есть у отдельного узла графа. '
+    +'Применение означает явное объединение идентичностей с сохранением истории.':'');
   const actions=document.createElement('div');
   actions.className='review-actions';
-  const approve=mkButton('✓ Применить изменение','',()=>review('confirm'));
+  const approve=mkButton(entry.requires_merge_approval?
+    '✓ Объединить идентичности и переименовать':'✓ Применить изменение','',()=>review('confirm'));
   const reject=mkButton('✕ Отклонить','secondary',()=>review('reject'));
   let proposalName=entry.proposed_value;
   const edit=mkButton('Исправить новое имя','secondary',()=>{
@@ -118,7 +123,8 @@ function renderChangeProposal(entry,target,turnId=null){
     try{
       const result=await api('/api/apprentice/changes/review',{
         method:'POST',body:JSON.stringify({
-          change_id:entry.id,decision,new_name:decision==='confirm'?proposalName:undefined
+          change_id:entry.id,decision,new_name:decision==='confirm'?proposalName:undefined,
+          resolve_conflict:decision==='confirm'&&Boolean(entry.requires_merge_approval)
         })
       });
       await window.JarvisResearchUI?.onChangeReview({entry,result,turnId});
@@ -193,7 +199,11 @@ async function send(text,experiment,extras={}) {
     window.JarvisProgress?.end(false);
     throw error;
   }
-  const stamp=[r.route,r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
+  const intentLabels={question:'❓ вопрос',command:'⚙️ команда',
+                     statement:'🧠 утверждение',unknown:'❔ неясно'};
+  const utterance=r.utterance_intent;
+  const stamp=[r.route,utterance?.intent?intentLabels[utterance.intent]:null,
+               r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
                r.tokens!=null?`${r.tokens} токенов`:null,
                r.evidence_source==='confirmed_sqlite_graph'?'✓ подтверждено SQLite':null
               ].filter(Boolean).join(' · ');
@@ -201,6 +211,11 @@ async function send(text,experiment,extras={}) {
     putMessage('Словарь произношений: «'+text+'» → «'+r.normalized_input+'»','system');
   }
   const card=putMessage(r.answer,'assistant',stamp);
+  if(r.route==='apprentice_voice_review' && r.voice_review_result?.review){
+    const item=r.voice_review_result.review;
+    document.querySelectorAll('.proposal[data-review-kind="'+item.kind+'"]' +
+      '[data-review-id="'+item.id+'"]').forEach(el=>el.remove());
+  }
   const replay=mkButton('🔊 Повторить','replay-button',()=>voice.speak(r.answer,true));
   replay.setAttribute('aria-label','Повторить ответ голосом');
   card.append(replay);
@@ -270,7 +285,7 @@ messageInput.addEventListener('keydown', event => {
 const voice = window.JarvisVoice.initVoice({
   input: messageInput, button: voiceButton,
   language: $('voice-language'), status: $('voice-status'),
-  form: chatForm, outputToggle: $('voice-output'),
+  form: chatForm, outputToggle: $('voice-output'),voiceIntent:$('voice-intent'),
   outputStatus: $('tts-status'), isBusy: () => busy
 });
 $('chat-form').addEventListener('submit',async event=>{

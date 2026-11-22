@@ -50,7 +50,7 @@
   }
 
   function initVoice(opts) {
-    const { input, button, language, status, form, outputToggle, outputStatus } = opts;
+    const { input, button, language, status, form, outputToggle, outputStatus, voiceIntent } = opts;
     const Recognition = root.SpeechRecognition || root.webkitSpeechRecognition;
     const synth = root.speechSynthesis || null;
     const Utterance = root.SpeechSynthesisUtterance || null;
@@ -187,6 +187,13 @@
       updateMic();
       renderText(false);
       if (shouldSend && committed.trim()) {
+        const explicitMode=voiceIntent?.value || 'auto';
+        const prefix={
+          question:'Вопрос:',command:'Команда:',statement:'Утверждение:'
+        }[explicitMode];
+        if(prefix && !/^(?:вопрос|команда|утверждение)\s*[:.,-]/i.test(input.value.trim())) {
+          input.value=(prefix+' '+input.value.trim()).slice(0,input.maxLength);
+        }
         if (opts.isBusy()) {
           notice('Текст распознан, но Джарвис ещё отвечает. Нажми «Отправить».');
         } else {

@@ -87,6 +87,7 @@ class ChangeReviewIn(BaseModel):
     change_id: int = Field(gt=0)
     decision: str = Field(pattern="^(confirm|reject)$")
     new_name: str | None = Field(default=None,max_length=100)
+    resolve_conflict: bool = False
 
 class SessionCreateIn(BaseModel):
     title: str = Field(default="",max_length=140)
@@ -402,16 +403,37 @@ async def answer_from_public_search(data: ChatIn, text: str,
 async def apprentice_chat(data: ChatIn, start: float):
     # Only confirmed knowledge is given to the interpreter; guesses stay pending.
     progress(data.request_id,"memory","SQLite: проверяю знания и изменения")
-    memory = await forward(RESEARCH_URL+"/apprentice/context","POST",{"query":data.text})
+    # Voice confirmation is scoped to the last review shown in this session,
+    # and is never interpreted as a device command.
+    voice_cue=bool(re.match(
+        r"(?iu)^\s*(?:(?:команда|вопрос)\s*[:,-]?\s*)?"
+        r"(?:да\b|нет\b|ага\b|угу\b|подтвер\w*|отклон\w*|"
+        r"отмен\w*|применяй\b|согласен\b|согласна\b|сохрани\b)",data.text))
+    if voice_cue:
+        voice=await forward(RESEARCH_URL+"/apprentice/voice/resolve","POST",
+                            {"text":data.text[:250],"session_id":data.session_id or ""})
+        if voice.get("handled"):
+            return {"answer":voice["answer"],"route":"apprentice_voice_review",
+                    "intent":"review","utterance_intent":{"intent":"command",
+                    "confidence":"high","reason":"session_scoped_voice_review"},
+                    "voice_review_result":voice,"proposals":[],"tokens":0,
+                    "model":"SQLite","executed":False,
+                    "total_ms":round((time.perf_counter()-start)*1000,2)}
+    memory = await forward(RESEARCH_URL+"/apprentice/context","POST",
+                           {"query":data.text,"session_id":data.session_id or ""})
     text = memory.get("normalized_text", data.text)
     direct_reply = memory.get("direct_reply")
     # Questions about graph memory have authoritative SQLite responses.
     # The model must not hallucinate the contents of its own index.
     if direct_reply:
         inspection = memory.get("inspection")
+        intent_info=memory.get("utterance_intent") or {}
         return {"answer":direct_reply,
                 "route":"apprentice_graph_inspection" if inspection else "apprentice_confirmed_context",
-                "intent":"ask", "missing":"", "proposals":[], "model":"SQLite",
+                "intent":intent_info.get("intent") or "ask",
+                "utterance_intent":intent_info,
+                "voice_review":memory.get("voice_review"),
+                "missing":"", "proposals":[], "model":"SQLite",
                 "tokens":0, "executed":False,
                 "retrieval_trace":inspection.get("trace") if inspection else None,
                 "evidence_source":inspection.get("source") if inspection else "dialogue_roles",
@@ -522,6 +544,11 @@ async def apprentice_chat(data: ChatIn, start: float):
             "проверяемое изменение SQLite.")
         parsed["integrity_warning"]="Blocked unsupported self-mutation claim"
         parsed["proposals"]=[]
+    # Speech transcription omits punctuation. The verified intent classifier
+    # gates writes; a model saying "teach" is not a write permission.
+    interpreted=memory.get("utterance_intent") or {}
+    if interpreted.get("intent")!="statement":
+        parsed["proposals"]=[]
     # Do not turn information requests or model guesses into confirmed
     # teaching proposals: only explicit teaching can create candidates.
     if (parsed.get("intent") in ("ask","request")
@@ -533,7 +560,8 @@ async def apprentice_chat(data: ChatIn, start: float):
     # The research service also has a transparent language-specific teaching
     # baseline. Call it for first-person declarations even when Qwen misses
     # a relationship. All extracted triples remain pending teacher review.
-    declaration = bool(re.search(r"(?iu)\bу\s+меня\b",text)) and "?" not in text
+    declaration = (interpreted.get("intent")=="statement" and bool(
+        re.search(r"(?iu)\bу\s+меня\b",text)))
     if parsed.get("proposals") or declaration:
         stored = await forward(RESEARCH_URL+"/apprentice/propose","POST",
                                {"source_text":text,"proposals":parsed.get("proposals") or []})
@@ -542,6 +570,14 @@ async def apprentice_chat(data: ChatIn, start: float):
     if not isinstance(missing,str) or missing.casefold().startswith(
         ("конкретный недостающий ресурс", "конкретна недостаюча інформація")):
         missing = ""
+    voice_review=None
+    if data.session_id and (change_proposal or proposals):
+        voice_review=await forward(RESEARCH_URL+"/apprentice/voice/queue","POST",
+            {"session_id":data.session_id,"changes":[change_proposal] if change_proposal else [],
+             "proposals":proposals})
+    if voice_review and voice_review.get("ready"):
+        parsed["reply"]=(str(parsed.get("reply") or "").rstrip()+" "+
+                         voice_review.get("instruction","")).strip()
     return {"answer":parsed.get("reply",""),"route":"apprentice_tutor",
             "knowledge_evidence":memory.get("graph") or {},
             "normalized_input":text if text != data.text else None,
@@ -549,6 +585,8 @@ async def apprentice_chat(data: ChatIn, start: float):
             "missing":missing,
             "parse_warning":parsed.get("parse_warning"),
             "change_proposal":change_proposal,
+            "utterance_intent":memory.get("utterance_intent"),
+            "voice_review":voice_review,
             "integrity_warning":parsed.get("integrity_warning"),
             "web_approval":parsed.get("web_approval"),
             "web_requested":bool(wanted),

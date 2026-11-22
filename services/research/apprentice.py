@@ -13,6 +13,7 @@ from .conversation import DialogueMemory
 from .graph import KnowledgeGraph
 from .changes import KnowledgeChanges
 from .teaching import grounded_candidates
+from .utterance import classify
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS apprentice_proposals (
@@ -126,10 +127,8 @@ class ApprenticeMemory:
         # A question or a research assignment is not a teacher declaration.
         # In particular "найди документацию ..." must NOT create lessons
         # merely because Qwen returned an enthusiastic schema.
-        if ("?" in source_text or re.search(
-            r"(?iu)^\s*(?:(?:джарвис|jarvis|домик)[, ]+)?"
-            r"(?:найди|поищи|загугли|проверь|исследуй|расскажи|объясни)\b",
-            source_text.strip())):
+        intent=classify(source_text)
+        if intent["intent"] in ("question","command"):
             return []
         saved = []
         with self.engine.connect() as con:
@@ -365,16 +364,23 @@ class ApprenticeMemory:
     def context(self, query):
         """Retrieve confirmed knowledge only. Similarity is a fast *hint*, not proof."""
         normalized_original = self.dialogue.normalize_speech(query)
-        change_proposal = self.changes.from_text(normalized_original)
+        intent_info=classify(normalized_original)
+        change_proposal = (self.changes.from_text(intent_info["normalized"])
+                           if intent_info["intent"]=="command" else None)
         prepared = self.dialogue.prepare(query)
-        normalized_text = prepared["text"]
+        normalized_text = intent_info["normalized"]
         if change_proposal and change_proposal.get("id"):
             old=change_proposal["expected_value"]
             new=change_proposal["proposed_value"]
             prepared["direct_reply"]=(
                 f"Пока моё подтверждённое имя или название объекта — «{old}». "
                 f"Предлагаю изменить его на «{new}». "
-                "Изменение ещё НЕ применено: подтверди предложение ниже.")
+                "Изменение ещё НЕ применено. "+
+                ("Это имя уже есть у отдельной сущности в графе: "
+                 "для объединения нужно отдельное согласие учителя. "
+                 "Скажи «Подтверждаю объединение» или отклони."
+                 if change_proposal.get("requires_merge_approval") else
+                 "Скажи «Подтверждаю» или нажми кнопку ниже."))
         elif change_proposal and change_proposal.get("already_current"):
             prepared["direct_reply"]="Это имя уже установлено в подтверждённой памяти."
         elif change_proposal and change_proposal.get("error"):
@@ -437,6 +443,7 @@ class ApprenticeMemory:
         direct = prepared.get("direct_reply") or (inspection and inspection["answer"])
         return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
                 "normalized_text":normalized_text, "direct_reply":direct,
+                "utterance_intent":intent_info,
                 "change_proposal":change_proposal, 
                 "pending_changes":self.changes.snapshot(6)["pending"],
                 "inspection":inspection, "graph":relevant_graph,

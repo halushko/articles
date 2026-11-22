@@ -21,6 +21,7 @@ function setup({ recognitionSupported = true, speechSupported = true } = {}) {
   const input = element(''); input.maxLength = 3000;
   const button = element(), language = element('ru-RU'), status = element();
   const outputToggle = element(), outputStatus = element();
+  const voiceIntent = element('auto');
   const store = new Map();
   let recognizer;
   class FakeRecognition {
@@ -50,12 +51,12 @@ function setup({ recognitionSupported = true, speechSupported = true } = {}) {
   vm.runInNewContext(script, {window:root});
   let busy = false;
   const voice = root.JarvisVoice.initVoice({
-    input, button, language, status, form, outputToggle, outputStatus,
+    input, button, language, status, form, outputToggle, outputStatus, voiceIntent,
     isBusy:() => busy
   });
   return {
     input, button, language, status, form, voice, spoken, synthesis,
-    outputToggle, outputStatus,
+    outputToggle, outputStatus, voiceIntent,
     recognition: () => recognizer,
     nextTimer: () => { while (timers.length) { const fn=timers.shift(); if (fn) return fn(); } },
     setBusy:v => {busy=v;}
@@ -181,4 +182,32 @@ test('Markdown table is referenced once instead of reading pipes and cells', () 
   assert.match(rendered,/Таблица с подробностями показана на экране/);
   assert.doesNotMatch(rendered,/\|/);
   assert.match(rendered,/бесплатно/);
+});
+
+test('question mode prefixes voice transcript without relying on ASR punctuation', () => {
+  const h = setup();
+  h.voiceIntent.value='question';
+  h.button.click();
+  h.recognition().result('как тебя завут');
+  h.button.click();
+  assert.equal(h.input.value,'Вопрос: как тебя завут');
+  assert.equal(h.form.submits,1);
+});
+
+test('automatic voice mode preserves original transcript', () => {
+  const h = setup();
+  h.button.click();
+  h.recognition().result('как тебя зовут');
+  h.button.click();
+  assert.equal(h.input.value,'как тебя зовут');
+  assert.equal(h.form.submits,1);
+});
+
+test('command mode does not double-prefix explicit spoken command', () => {
+  const h=setup();
+  h.voiceIntent.value='command';
+  h.button.click();
+  h.recognition().result('Команда: подтверди первое');
+  h.button.click();
+  assert.equal(h.input.value,'Команда: подтверди первое');
 });
