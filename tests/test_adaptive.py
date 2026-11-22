@@ -7,6 +7,7 @@ from unittest.mock import patch
 from services.research.engine import Engine
 from services.research.settings import load
 from services.research.adaptive import BehaviorMemory, WEB_CONTEXT
+from services.research.apprentice import ApprenticeMemory
 from services.research.sessions import ConversationStore
 from services.research.approvals import OperationApprovals
 from services.gateway import api as gateway
@@ -69,6 +70,22 @@ class BehaviorRulesTests(unittest.TestCase):
         self.assertEqual(stored[0]["kind"],"preference")
         self.assertIn("кратко",self.rules.context("actor-a")[0]["instruction"])
         self.assertIsNone(self.rules.decision("Отвечать кратко",WEB_CONTEXT,"actor-a"))
+
+    def test_feedback_corrects_future_answers_without_crossing_people(self):
+        apprentice=ApprenticeMemory(self.engine)
+        apprentice.grade("Как разрешить интернет поиск",
+                         "Попроси ещё раз", "bad",
+                         "После подтверждения выполняй ранее предложенный поиск",
+                         actor_id="actor-a")
+        relevant=apprentice.context("Как разрешить интернет поиск",
+                                   speaker={"id":"actor-a","display_name":"Дима"})
+        self.assertEqual(relevant["teacher_feedback"][0]["rating"],"bad")
+        self.assertIn("ранее предложенный",relevant["teacher_feedback"][0]["correction"])
+        other=apprentice.context("Как разрешить интернет поиск",
+                                speaker={"id":"actor-b","display_name":"Надя"})
+        self.assertFalse(other["teacher_feedback"])
+        self.assertEqual(ApprenticeMemory(self.engine).context(
+            "Как разрешить интернет поиск",speaker={"id":"actor-a"})["teacher_feedback"][0]["rating"],"bad")
 
     def test_spoken_approval_scoped_to_pending_operation(self):
         self.teach()
