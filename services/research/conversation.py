@@ -251,7 +251,7 @@ class DialogueMemory:
         )
         return pattern.sub(lambda match: mapping.get(key_for(match.group(0)), match.group(0)), text)
 
-    def prepare(self, raw):
+    def prepare(self, raw, speaker=None):
         taught = None
         match = TEACH_CORRECTION.search(raw.strip())
         if match:
@@ -267,7 +267,14 @@ class DialogueMemory:
         text = self.normalize_speech(raw)
         intent_info=classify(text)
         routing=intent_info["normalized"]
-        roles=self.state()["roles"]
+        roles=dict(self.state()["roles"])
+        if speaker is not None:
+            # A selected per-turn profile supersedes the legacy global role.
+            # 'unselected' never inherits another person on a shared device.
+            if speaker.get("display_name"):
+                roles["user"]=speaker["display_name"]
+            else:
+                roles.pop("user",None)
         compact=routing.strip()
         # Only respond from SQLite when the utterance is a question.
         # Otherwise "меня зовут Дима" must be treated as a statement.
@@ -292,13 +299,28 @@ class DialogueMemory:
                 if asks_user:
                     name=roles.get("user")
                     answers.append(f"Тебя зовут {name}." if name else
-                                   "Ты ещё не представился.")
+                         ("Сейчас не выбран собеседник. Выбери профиль перед вопросом об имени."
+                          if speaker is not None else "Ты ещё не представился."))
                 if asks_assistant:
                     answers.append(f"Меня зовут {roles.get('assistant','JARVIS')}.")
                 return {"text":text,"roles":roles,"direct_reply":" ".join(answers),
                         "intent_info":intent_info,"intent":"question",
                         "is_question":True}
         new_name=extract_name(text)
+        if new_name and speaker is not None:
+            known=speaker.get("display_name")
+            if not known:
+                reply=(f"Я услышал имя «{new_name}», но не знаю, кто говорит. "
+                       "Выбери или создай профиль. Подтверждённую память не менял.")
+            elif key_for(known)==key_for(new_name):
+                reply=f"Ты выбрал профиль «{known}». Подтверждённые знания не изменены."
+            else:
+                reply=(f"Сейчас выбран профиль «{known}», а ты назвался «{new_name}». "
+                       "Я не переименовываю человека по одной реплике: "
+                       "сначала переключи профиль или подтверди изменение отдельно.")
+            return {"text":text,"direct_reply":reply,"roles":roles,
+                    "intent_info":intent_info,"intent":"statement",
+                    "is_question":False,"identity_source":"selected_profile_unverified"}
         if new_name:
             with self.engine.connect() as con:
                 con.execute("""INSERT INTO dialogue_roles(role,display_name,source)
