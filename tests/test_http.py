@@ -50,7 +50,12 @@ class WebTests(unittest.TestCase):
             r=client.get('/')
             self.assertEqual(r.status_code,200)
             self.assertIn('JARVIS',r.text)
+            self.assertIn('id="voice"',r.text)
+            self.assertIn('id="voice-language"',r.text)
+            self.assertIn('id="voice-status"',r.text)
             js=client.get('/static/app.js')
             self.assertEqual(js.status_code,200)
+            self.assertIn('webkitSpeechRecognition',js.text)
+            self.assertIn('chatForm.requestSubmit()',js.text)
 
 if __name__=='__main__':unittest.main()

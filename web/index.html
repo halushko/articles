@@ -50,8 +50,16 @@
     </div>
     <form id="chat-form" class="composer">
       <input id="message" autocomplete="off" placeholder="Поговори с Джарвисом или научи чему-нибудь…" maxlength="3000" required />
-      <button id="send" type="submit">Отправить</button>
+      <div class="composer-tools">
+        <select id="voice-language" class="voice-language" aria-label="Язык распознавания речи" title="Язык распознавания речи">
+          <option value="ru-RU">RU</option>
+          <option value="uk-UA">UA</option>
+        </select>
+        <button id="voice" type="button" class="voice-button secondary" aria-label="Начать голосовой ввод" aria-pressed="false" title="Продиктовать сообщение">🎤</button>
+        <button id="send" type="submit">Отправить</button>
+      </div>
     </form>
+    <div id="voice-status" class="voice-status" role="status" aria-live="polite" hidden></div>
     <div class="foot-actions">
       <button id="show-learning" type="button" class="secondary">Показать все знания</button>
       <button id="run-ab" type="button" class="secondary">A/B: чистая LLM / старый Hybrid</button>

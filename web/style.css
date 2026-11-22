@@ -39,3 +39,19 @@
 .grade-controls{display:flex;gap:6px;align-items:center;flex-wrap:wrap;
  margin-top:12px;padding-top:8px;border-top:1px solid #4a5769;font-size:11px;color:#aebdd0}
 .grade-controls button{padding:4px 7px;font-weight:500;font-size:11px}
+
+/* Compact dictation controls, including on small screens. */
+.composer-tools{display:flex;align-items:stretch;gap:8px}
+.composer-tools .voice-language{width:65px;min-width:65px;padding:9px 7px;text-align:center}
+.voice-button{min-width:45px;font-size:20px;line-height:1;padding:8px 10px}
+.voice-button.is-listening{background:#843345;border-color:#e57487;
+  box-shadow:0 0 0 3px #e5748730;animation:voice-pulse 1.25s ease-in-out infinite}
+@keyframes voice-pulse{50%{box-shadow:0 0 0 8px #e5748711}}
+.voice-status{font-size:12px;color:#b7d9ff;padding:7px 3px 0;min-height:18px}
+.voice-status[hidden]{display:none}
+.voice-status.error{color:#ffc3c1}
+@media(max-width:620px){
+ .composer-tools{width:100%}
+ .composer-tools #send{flex:1}
+}
+@media(prefers-reduced-motion:reduce){.voice-button.is-listening{animation:none}}
