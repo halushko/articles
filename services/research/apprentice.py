@@ -118,6 +118,10 @@ class ApprenticeMemory:
         self.engine = engine
         with engine.connect() as con:
             con.executescript(SCHEMA)
+        with engine.connect() as con:
+            columns={row["name"] for row in con.execute("PRAGMA table_info(apprentice_grades)")}
+            if "actor_id" not in columns:
+                con.execute("ALTER TABLE apprentice_grades ADD COLUMN actor_id TEXT NOT NULL DEFAULT ''")
         self.dialogue = DialogueMemory(engine)
         self.graph = KnowledgeGraph(engine)
         self.changes = KnowledgeChanges(engine,self.graph)
@@ -281,16 +285,16 @@ class ApprenticeMemory:
         return {"id":proposal_id,"status":status,"kind":row["kind"],"name":new_name,
                 "executed":False}
 
-    def grade(self, question, answer, rating, teacher_note=""):
+    def grade(self, question, answer, rating, teacher_note="", actor_id=""):
         """Teacher-scored answer: evaluation evidence, NOT a knowledge update."""
         if rating not in {"good","bad"} or not question.strip() or not answer.strip():
             raise ValueError("Invalid graded answer")
         with self.engine.connect() as con:
             cur = con.execute("""INSERT INTO apprentice_grades
-                (question,answer,rating,teacher_note) VALUES(?,?,?,?)""",
-                (question[:3000],answer[:3000],rating,teacher_note[:1200]))
+                (question,answer,rating,teacher_note,actor_id) VALUES(?,?,?,?,?)""",
+                (question[:3000],answer[:3000],rating,teacher_note[:1200],str(actor_id or "")[:36]))
         return {"saved":True,"id":cur.lastrowid,"rating":rating,
-                "note":"Feedback recorded for evaluation, not used to train Qwen",
+                "note":"Feedback recorded; relevant corrections are retrieved on future turns. Qwen weights unchanged.",
                 "executed":False}
 
     def forget(self, kind, item_id):
@@ -420,6 +424,27 @@ class ApprenticeMemory:
             pending_count = con.execute(
                 "SELECT COUNT(*) FROM apprentice_proposals WHERE status='pending'").fetchone()[0]
         rows.sort(key=lambda item:item["relevance"],reverse=True)
+        # Corrections are evidence about assistant behavior, not world facts.
+        # Retrieve only relevant teacher notes for this selected speaker.
+        actor_id=(speaker or {}).get("id") or ""
+        with self.engine.connect() as con:
+            examples=con.execute("""SELECT id,question,answer,rating,teacher_note
+                 FROM apprentice_grades WHERE actor_id=? ORDER BY id DESC LIMIT 150""",
+                 (actor_id,)).fetchall()
+        feedback=[]
+        for item in examples:
+            if item["rating"]=="bad" and not item["teacher_note"].strip():
+                continue
+            prompt_terms=set(normalize(item["question"]).split())
+            overlap=len(tokens & prompt_terms)/max(1,len(tokens | prompt_terms))
+            if overlap>=0.16:
+                feedback.append({
+                    "question":item["question"][:300], "previous_answer":item["answer"][:600],
+                    "rating":item["rating"],
+                    "correction":item["teacher_note"][:900],
+                    "relevance":round(overlap,3),
+                })
+        feedback.sort(key=lambda x:x["relevance"],reverse=True)
         # "What have I taught you?" is an overview request, not a lexical
         # match against a particular concept. Include recent confirmed items.
         overview = any(word in text for word in
@@ -453,6 +478,7 @@ class ApprenticeMemory:
         return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
                 "normalized_text":normalized_text, "direct_reply":direct,
                 "utterance_intent":intent_info,
+                "teacher_feedback":feedback[:5],
                 "unavailable_operation":request_without_executor(normalized_text),
                 "change_proposal":change_proposal, 
                 "pending_changes":self.changes.snapshot(6)["pending"],
