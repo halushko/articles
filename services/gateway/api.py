@@ -22,14 +22,15 @@ async def lifespan(app):
         raise RuntimeError("Non-loopback access needs JARVIS_TOKEN length >= 16")
     yield
 
-app = FastAPI(title="JARVIS Research Workbench", version="0.3.2", lifespan=lifespan, docs_url=None)
+app = FastAPI(title="JARVIS Research Workbench", version="0.4.0", lifespan=lifespan, docs_url=None)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parents[2]/"web")), name="static")
 
 class ChatIn(BaseModel):
     text: str = Field(min_length=1,max_length=3000)
-    experiment: str = Field(default="hybrid", pattern="^(hybrid|research_only|llm_only)$")
+    experiment: str = Field(default="hybrid", pattern="^(apprentice|hybrid|research_only|llm_only)$")
     profile: str = Field(default="fast",pattern="^(fast|deep)$")
     ablation: str = Field(default="combined",pattern="^(exact|online|combined)$")
+    history: list[dict] = Field(default_factory=list,max_length=8)
 
 class LearnIn(BaseModel):
     phrase: str = Field(min_length=1,max_length=500)
@@ -42,6 +43,12 @@ class ConceptIn(BaseModel):
     domain: str = Field(default="general",max_length=120)
     description: str = Field(default="",max_length=400)
     aliases: list[str] = Field(default_factory=list,max_length=20)
+
+class ApprenticeReviewIn(BaseModel):
+    proposal_id: int = Field(gt=0)
+    decision: str = Field(pattern="^(confirm|reject)$")
+    name: str | None = Field(default=None,max_length=120)
+    description: str | None = Field(default=None,max_length=1200)
 
 class FeedbackIn(BaseModel):
     decision_id: int
@@ -92,7 +99,7 @@ async def root():
 
 @app.get("/api/health", dependencies=[Depends(auth)])
 async def health():
-    result = {"version":"0.3.2", "gateway":"ok", "research":None,"llm":None}
+    result = {"version":"0.4.0", "gateway":"ok", "research":None,"llm":None}
     async with httpx.AsyncClient(timeout=6) as client:
         for key,url in (("research",RESEARCH_URL),("llm",LLM_URL)):
             try:
@@ -123,10 +130,42 @@ async def concepts(data: ConceptIn):
 async def feedback(data: FeedbackIn):
     return await forward(RESEARCH_URL+"/feedback","POST",data.model_dump())
 
+
+@app.get("/api/apprentice/state", dependencies=[Depends(auth)])
+async def apprentice_state():
+    return await forward(RESEARCH_URL+"/apprentice/state")
+
+@app.post("/api/apprentice/review", dependencies=[Depends(auth)])
+async def apprentice_review(data: ApprenticeReviewIn):
+    return await forward(RESEARCH_URL+"/apprentice/review","POST",data.model_dump())
+
+async def apprentice_chat(data: ChatIn, start: float):
+    # Only confirmed knowledge is given to the interpreter; guesses stay pending.
+    memory = await forward(RESEARCH_URL+"/apprentice/context","POST",{"query":data.text})
+    parsed = await forward(LLM_URL+"/analyze","POST",
+                           {"text":data.text,"profile":data.profile,
+                            "history":data.history,"memory":memory})
+    proposals = []
+    if parsed.get("proposals"):
+        stored = await forward(RESEARCH_URL+"/apprentice/propose","POST",
+                               {"source_text":data.text,"proposals":parsed["proposals"]})
+        proposals = stored.get("proposals",[])
+    return {"answer":parsed.get("reply",""),"route":"apprentice_tutor",
+            "intent":parsed.get("intent","chat"),
+            "missing":parsed.get("missing",""),
+            "parse_warning":parsed.get("parse_warning"),
+            "proposals":proposals,"model":parsed.get("model"),
+            "tokens":parsed.get("tokens",0),
+            "prompt_tokens":parsed.get("prompt_tokens",0),
+            "executed":False,
+            "total_ms":round((time.perf_counter()-start)*1000,2)}
+
 @app.post("/api/chat", dependencies=[Depends(auth)])
 async def chat(data: ChatIn):
     start = time.perf_counter()
     text = data.text.strip()
+    if data.experiment == "apprentice":
+        return await apprentice_chat(data,start)
     if data.experiment != "llm_only":
         if is_memory_query(text):
             mem = await forward(RESEARCH_URL+"/memory")
