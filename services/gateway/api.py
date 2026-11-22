@@ -441,7 +441,7 @@ def proposed_web_query(text: str, parsed: dict) -> str:
         # The search engine wants the subject, not the spoken instruction.
         terms = text[request.end():].strip(" .,;:-")
         terms = re.sub(r"(?iu)^(?:(?:в\s+интернете|в\s+сети|мне|"
-                       r"пожалуйста)(?:[\\s,;:-]+|$))+","",terms).strip(" .,;:-")
+                       r"пожалуйста)(?:\s+|[,;:-]\s*|$))+","",terms).strip(" .,;:-")
         return (terms if len(terms) >= 3 else text)[:240]
     return ""
 
