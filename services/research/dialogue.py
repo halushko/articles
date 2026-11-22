@@ -181,10 +181,20 @@ class DialogueCoordinator:
             return (last["route"] in ("apprentice_web_permission","apprentice_tutor")
                     and isinstance(offer,dict) and offer.get("id")==pending["id"])
         if pending["kind"]=="knowledge.review":
-            offer=provenance.get("voice_review") or {}
+            # The most recent assistant turn must have offered *this* set of
+            # review IDs. A stale review from an earlier turn must not be
+            # confirmed just because it is still in the queue.
+            offered=set()
             change=provenance.get("change_proposal") or {}
-            return (isinstance(offer,dict) and offer.get("ready") is True
-                    or isinstance(change,dict) and change.get("id") is not None)
+            if isinstance(change,dict) and isinstance(change.get("id"),int):
+                offered.add(("change",change["id"]))
+            for proposal in provenance.get("proposals") or ():
+                if isinstance(proposal,dict) and isinstance(proposal.get("id"),int):
+                    offered.add(("proposal",proposal["id"]))
+            queued=pending["payload"].get("reviews") or []
+            return (last["route"] in ("apprentice_tutor","apprentice_confirmed_context")
+                    and bool(offered)
+                    and all((item.get("kind"),item.get("id")) in offered for item in queued))
         return False
 
     def resolve(self, session_id, text, actor_id="", web_enabled=True):
