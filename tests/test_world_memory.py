@@ -78,6 +78,24 @@ class WorldMemoryTests(unittest.TestCase):
         self.assertEqual(self.dialogue.context(self.next,self.b["id"])["history"],[])
 
 
+class WorldSearchPolicyTests(unittest.TestCase):
+    def test_implicit_search_reuses_previous_user_question_not_model_reply(self):
+        previous={"dialogue":{"history":[
+            {"role":"user","content":"Какие инструменты нужны для замены люстры"},
+            {"role":"assistant","content":"Непроверенный ответ про молоток"},
+            {"role":"user","content":"Откуда такая информация"},
+            {"role":"assistant","content":"Это был мой непроверенный ответ"}
+        ],"state":{}}}
+        query=gateway.proposed_web_query("поищи в интернете",{})
+        self.assertEqual(gateway.contextual_search_query(
+            "поищи в интернете",query,previous),
+            "Какие инструменты нужны для замены люстры")
+        self.assertEqual(gateway.contextual_search_query(
+            "поищи в интернете",query,{"dialogue":{"history":[],"state":{}}}),"")
+        self.assertEqual(gateway.contextual_search_query(
+            "поищи в интернете рецепт пюре","рецепт пюре",previous),"рецепт пюре")
+
+
 class WorldHybridGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def test_hybrid_uses_same_confirmed_identity_without_qwen(self):
         called=[]
