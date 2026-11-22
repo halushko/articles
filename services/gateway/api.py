@@ -406,10 +406,10 @@ async def apprentice_chat(data: ChatIn, start: float):
     # A previous request is bound to this session + exact query, consumed once.
     # Bare "да" does NOT authorize a network request.
     is_web_reply = bool(re.match(
-        r"(?iu)^\\s*(?:(?:команда|приказ)\\s*[:,-]?\\s*)?"
-        r"(?:разрешаю|да\\s+разрешаю|подтверждаю\\s+поиск|"
-        r"разрешить\\s+поиск|не\\s+разрешаю|"
-        r"запрещаю\\s+поиск|отмена\\s+поиска|отмени\\s+поиск)\\b",
+        r"(?iu)^\s*(?:(?:команда|приказ)\s*[:,-]?\s*)?"
+        r"(?:разрешаю|да\s+разрешаю|подтверждаю\s+поиск|"
+        r"разрешить\s+поиск|не\s+разрешаю|"
+        r"запрещаю\s+поиск|отмена\s+поиска|отмени\s+поиск)\b",
         data.text))
     if is_web_reply or data.approval_id or data.allow_web_search:
         if data.web_mode == "off":
