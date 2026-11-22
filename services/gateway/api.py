@@ -291,6 +291,10 @@ async def apprentice_chat(data: ChatIn, start: float):
 def probable_graph_inspection(text: str) -> bool:
     """Cheap gate; Research decides whether it can answer, not this heuristic."""
     q = text.casefold().replace("ё","е")
+    # An explicitly named legacy index is a different experimental dataset.
+    # Do not silently substitute the new apprentice graph for old index metrics.
+    if "индекс" in q and "граф" not in q:
+        return False
     has_verb = any(w in q for w in (
         "сколько","что","какие","перечис","покаж","назови","список",
         "помнишь","помниш","что у меня","які","перелік"))
