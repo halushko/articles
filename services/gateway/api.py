@@ -480,6 +480,68 @@ def contextual_search_query(text: str, candidate: str, memory: dict) -> str:
     return str(state.get("goal") or state.get("topic") or "")[:240]
 
 
+def is_explicit_web_decision(text: str) -> bool:
+    """Whole-utterance speech approval; never substring-match a longer command.
+
+    Research independently checks the same intent, pending operation, actor and
+    TTL. A plain 'да' is intentionally NOT a stand-alone web authorization.
+    """
+    body=re.sub(r"(?iu)^\s*(?:команда|приказ)\s*[:,-]?\s*", "",text.strip())
+    return bool(re.fullmatch(
+        r"(?iu)(?:(?:я\s+)?разрешаю(?:\s+(?:этот\s+)?поиск)?|"
+        r"да\s*,?\s*разрешаю(?:\s+поиск)?|"
+        r"подтверждаю\s+поиск|разрешить\s+поиск|"
+        r"(?:я\s+)?не\s+разрешаю(?:\s+поиск)?|"
+        r"запрещаю\s+поиск|отмена\s+поиска|отмени\s+поиск)\s*[.!]*",body))
+
+
+async def execute_approved_search(data: ChatIn, permission: dict, start: float):
+    """The server, not Qwen, owns the approved->running->finished transition."""
+    op_id=permission.get("operation_id")
+    actor=data.actor_id or ""
+    session=data.session_id or ""
+    started=await forward(RESEARCH_URL+"/research/operations/web/start","POST",{
+        "session_id":session,"actor_id":actor,"operation_id":op_id})
+    if not started.get("started"):
+        return {"answer":"Поиск не запускаю повторно: его состояние — "+
+                         str(started.get("status") or "не подтверждено")+".",
+                "route":"web_execution_not_started","model":"SQLite",
+                "operation_state":started,"approval_id":op_id,
+                "tokens":0,"executed":False}
+    try:
+        result=await answer_from_public_search(data,permission["question"],{},
+                                               permission["query"],start)
+    except Exception as error:
+        # Explicitly record executor errors; never let a pending job silently
+        # become an invented promise of future/background work.
+        result={"answer":"Публичный поиск завершился ошибкой. "
+                         "Проверь доступность поискового сервиса и повтори запрос.",
+                "route":"apprentice_web_failed","search_status":"error",
+                "search_error":type(error).__name__,
+                "sources":[],"model":"SQLite","tokens":0,"executed":False}
+    succeeded=result.get("search_status")=="ok"
+    finished=await forward(RESEARCH_URL+"/research/operations/web/finish","POST",{
+        "session_id":session,"actor_id":actor,"operation_id":op_id,
+        "status":"succeeded" if succeeded else "failed",
+        "answer":result.get("answer","")[:5000],
+        "sources":result.get("sources",[])[:5],
+        "error":"" if succeeded else (result.get("search_error") or
+                                      result.get("search_status") or "no sources")[:400]})
+    result.update({"approval_id":op_id,
+                   "approval_source":"button" if data.approval_id else "voice",
+                   "requested_action":"web.search",
+                   "operation_state":{"status":"succeeded" if succeeded else "failed",
+                                      "saved":finished.get("saved",False),
+                                      "operation_id":op_id},
+                   "utterance_intent":{"intent":"command","reason":"approved_tool_operation",
+                                       "confidence":"high"},
+                   "total_ms":round((time.perf_counter()-start)*1000,2)})
+    if not finished.get("saved"):
+        result["integrity_warning"]="Execution outcome was not persisted"
+        result["answer"]+="\n\n⚠️ Не удалось записать состояние операции в SQLite."
+    return result
+
+
 async def answer_from_public_search(data: ChatIn, text: str,
                                     memory: dict, query: str, start: float):
     progress(data.request_id,"web_fetch","SearXNG: поиск и чтение публичных страниц")
@@ -523,12 +585,7 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Tool permissions are checked before any model call or memory teaching.
     # A previous request is bound to this session + exact query, consumed once.
     # Bare "да" does NOT authorize a network request.
-    is_web_reply = bool(re.match(
-        r"(?iu)^\s*(?:(?:команда|приказ)\s*[:,-]?\s*)?"
-        r"(?:разрешаю|да\s+разрешаю|подтверждаю\s+поиск|"
-        r"разрешить\s+поиск|не\s+разрешаю|"
-        r"запрещаю\s+поиск|отмена\s+поиска|отмени\s+поиск)\b",
-        data.text))
+    is_web_reply=is_explicit_web_decision(data.text)
     if is_web_reply or data.approval_id or data.allow_web_search:
         if data.web_mode == "off":
             return {"answer":"Интернет отключён. Поиск не выполнялся.",
@@ -542,22 +599,18 @@ async def apprentice_chat(data: ChatIn, start: float):
             "source":"button" if data.approval_id and data.allow_web_search else "voice"})
         if resolved.get("handled"):
             if resolved.get("status")=="approved":
-                search=await answer_from_public_search(
-                    data,resolved["question"],{},resolved["query"],start)
-                search.update({"route":"apprentice_web_evidence"
-                               if search.get("search_status")=="ok" else search["route"],
-                               "approval_id":resolved["operation_id"],
-                               "approval_source":"button" if data.approval_id else "voice",
-                               "utterance_intent":{"intent":"command","reason":"approved_tool_operation",
-                                                   "confidence":"high"},
-                               "requested_action":"web.search"})
-                return search
+                return await execute_approved_search(data,resolved,start)
             return {"answer":resolved.get("answer","Поиск не разрешён."),
                     "route":"web_permission_"+resolved.get("status","denied"),
                     "utterance_intent":{"intent":"command","reason":"tool_permission"},
                     "model":"SQLite","tokens":0,"executed":False,
                     "approval_id":resolved.get("operation_id"),
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
+        if is_web_reply:
+            return {"answer":"Нет ожидающего разрешения на поиск. "
+                             "Сначала сформулируй запрос на поиск.",
+                    "route":"web_permission_no_pending_search","model":"SQLite",
+                    "tokens":0,"executed":False}
     # One authoritative coordinator arbitrates between tool approvals,
     # teaching reviews and ordinary conversational replies. A short "да"
     # is NEVER an authorization by itself: the research service validates the
@@ -571,16 +624,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             "text":data.text[:250],"web_enabled":data.web_mode!="off"})
         if routed.get("handled"):
             if routed.get("category")=="web.search" and routed.get("status")=="approved":
-                search=await answer_from_public_search(
-                    data,routed["question"],{},routed["query"],start)
-                search.update({
-                    "approval_id":routed["operation_id"],
-                    "approval_source":"contextual_dialogue",
-                    "requested_action":"web.search",
-                    "utterance_intent":{"intent":"command","confidence":"high",
-                                        "reason":"session_scoped_low_risk_approval"}
-                })
-                return search
+                return await execute_approved_search(data,routed,start)
             if routed.get("category")=="knowledge.review":
                 return {"answer":routed.get("answer","Подтверждение обработано."),
                         "route":"apprentice_voice_review",
