@@ -184,7 +184,7 @@ class ConversationStore:
             "evidence_source","proposals","missing","intent",
             "parse_warning","integrity_warning","normalized_input",
             "external_origin","tool_trace","approval_id","approval_source","speaker","requested_action",
-            "dialogue_frame","context_decision","debug_trace"
+            "dialogue_frame","context_decision","operation_state","debug_trace"
         ) if result.get(key) is not None}
         provenance=_json(provenance)[:60000]
         with self.engine.connect() as con:
