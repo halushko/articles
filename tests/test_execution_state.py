@@ -3,6 +3,7 @@
 No Ollama and no network: an executor can be claimed only after consent and
 the user's latest result/previous context come from SQLite, never model prose.
 """
+import os
 import tempfile
 import unittest
 import json
