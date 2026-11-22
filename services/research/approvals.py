@@ -54,9 +54,10 @@ def spoken_search_decision(phrase):
 
 
 class OperationApprovals:
-    def __init__(self,engine,sessions):
+    def __init__(self,engine,sessions,behavior=None):
         self.engine=engine
         self.sessions=sessions
+        self.behavior=behavior
         with engine.connect() as con:
             con.executescript(SCHEMA)
             if "actor_id" not in {r["name"] for r in con.execute("PRAGMA table_info(pending_operations)")}:
@@ -94,6 +95,10 @@ class OperationApprovals:
 
     def resolve(self,session_id,phrase="",operation_id="",source="voice",actor_id=""):
         decision = spoken_search_decision(phrase) if source=="voice" else None
+        if not decision and source=="voice" and self.behavior is not None:
+            from .adaptive import WEB_CONTEXT
+            learned=self.behavior.decision(phrase, WEB_CONTEXT, actor_id)
+            decision={"approve":"approved","deny":"rejected"}.get(learned)
         if source=="button":
             decision="approved" if operation_id else None
         if not decision:
