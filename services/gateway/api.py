@@ -474,6 +474,24 @@ async def apprentice_chat(data: ChatIn, start: float):
                     "model":"SQLite","tokens":0,"executed":False,
                     "approval_id":resolved.get("operation_id"),
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
+    # Learned approvals are matched by the operation service and require a real,
+    # actor-bound pending search. Try it before clearing outstanding approvals.
+    if data.session_id and data.web_mode != "off" and not (
+            is_web_reply or data.approval_id or data.allow_web_search):
+        learned=await forward(RESEARCH_URL+"/research/operations/web/resolve","POST",{
+            "session_id":data.session_id,"phrase":data.text[:250],
+            "actor_id":data.actor_id,"source":"voice"})
+        if learned.get("handled") and learned.get("status")=="approved":
+            found=await answer_from_public_search(
+                data,learned["question"],{},learned["query"],start)
+            found["approval_id"]=learned["operation_id"]
+            found["approval_source"]="learned_voice"
+            found["utterance_intent"]={"intent":"command","reason":"learned_operation_approval"}
+            return found
+        if learned.get("handled"):
+            return {"answer":learned.get("answer","Поиск не разрешён."),
+                    "route":"web_permission_"+learned.get("status","denied"),
+                    "model":"SQLite","tokens":0,"executed":False}
     # Only confirmed knowledge is given to the interpreter; guesses stay pending.
     progress(data.request_id,"memory","SQLite: проверяю знания и изменения")
     # Voice confirmation is scoped to the last review shown in this session,
@@ -623,6 +641,32 @@ async def apprentice_chat(data: ChatIn, start: float):
         parsed["proposals"] = []
         parsed["missing"] = "Внешний инструмент подключения с отдельной настройкой доступа"
         parsed["integrity_warning"] = "Model claimed an external action without a tool call"
+    # Explicit teaching changes behavior on future turns, not this turn.
+    # A classifier command is not evidence that a quoted search word is a
+    # search request. The model must identify teaching and ground the proposal.
+    learned_rules=[]
+    if parsed.get("intent")=="teach" and parsed.get("learning"):
+        response=await forward(RESEARCH_URL+"/apprentice/behavior/learn","POST",{
+            "source_text":text,"learning":parsed["learning"],
+            "actor_id":data.actor_id})
+        learned_rules=response.get("rules",[])
+        if learned_rules:
+            descriptions=[]
+            for rule in learned_rules:
+                if rule["kind"]=="interpretation":
+                    descriptions.append(
+                        "«"+rule["trigger"]+"» → "+
+                        ("согласие" if rule["meaning"]=="approve" else "отказ")+
+                        " ("+rule["context"]+")")
+                else:
+                    descriptions.append(rule["instruction"])
+            return {"answer":"Запомнил правило: "+"; ".join(descriptions)+".",
+                    "route":"apprentice_behavior_learned","learning":learned_rules,
+                    "utterance_intent":{"intent":"teach","reason":"model_grounded_instruction"},
+                    "proposals":[],"model":parsed.get("model"),
+                    "tokens":parsed.get("tokens",0),
+                    "total_ms":round((time.perf_counter()-start)*1000,2),
+                    "executed":False,"web_requested":False}
     # Web evidence is only looked up when policy allows it. In ask mode
     # JARVIS can propose a search but must wait for explicit user approval.
     wanted=proposed_web_query(text,parsed)
