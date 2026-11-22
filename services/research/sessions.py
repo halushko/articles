@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS research_sessions (
 CREATE TABLE IF NOT EXISTS research_turns (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  session_id TEXT NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
+ actor_id TEXT NOT NULL DEFAULT '',
  question TEXT NOT NULL,
  answer TEXT NOT NULL,
  experiment TEXT NOT NULL,
@@ -108,6 +109,10 @@ class ConversationStore:
         self.engine=engine
         with self.engine.connect() as con:
             con.executescript(SCHEMA)
+            # Non-destructive migration: old research journals keep all turns.
+            names={row["name"] for row in con.execute("PRAGMA table_info(research_turns)")}
+            if "actor_id" not in names:
+                con.execute("ALTER TABLE research_turns ADD COLUMN actor_id TEXT NOT NULL DEFAULT ''")
 
     def create(self,title=""):
         sid=str(uuid.uuid4())
@@ -150,7 +155,7 @@ class ConversationStore:
                 events.append(item)
         return {**session,"turns":turns,"events":events}
 
-    def save_turn(self,sid,question,answer,experiment,profile,ablation,web_mode,result):
+    def save_turn(self,sid,question,answer,experiment,profile,ablation,web_mode,result,actor_id=""):
         if not self.exists(sid):
             raise ValueError("Диалог не найден")
         question=str(question)[:3000]
@@ -165,16 +170,16 @@ class ConversationStore:
             "conflict_detected","retrieval_trace","knowledge_evidence",
             "evidence_source","proposals","missing","intent",
             "parse_warning","integrity_warning","normalized_input",
-            "external_origin","tool_trace"
+            "external_origin","tool_trace","approval_id","approval_source","speaker","requested_action"
         ) if result.get(key) is not None}
         provenance=_json(provenance)[:60000]
         with self.engine.connect() as con:
             con.execute("BEGIN IMMEDIATE")
             cur=con.execute("""INSERT INTO research_turns(
-                session_id,question,answer,experiment,profile,ablation,web_mode,
+                session_id,actor_id,question,answer,experiment,profile,ablation,web_mode,
                 route,model,tokens,prompt_tokens,total_ms,provenance
-              ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (sid,question,answer,experiment,profile,ablation,web_mode,
+              ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (sid,actor_id or "",question,answer,experiment,profile,ablation,web_mode,
                  str(result.get("route") or "")[:90],str(result.get("model") or "")[:90],
                  int(result.get("tokens") or 0),int(result.get("prompt_tokens") or 0),
                  float(result.get("total_ms") or 0),provenance))
