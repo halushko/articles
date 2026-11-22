@@ -14,6 +14,7 @@ from .embedding import embed
 from .sessions import ConversationStore, markdown
 from .review_voice import VoiceReviews
 from .approvals import OperationApprovals
+from .adaptive import BehaviorMemory, WEB_CONTEXT
 from .actors import ActorRegistry
 from .utterance import classify
 from .web_research import FreeWebResearch
@@ -25,15 +26,17 @@ web_research: FreeWebResearch | None = None
 voice_reviews: VoiceReviews | None = None
 operation_approvals: OperationApprovals | None = None
 actors: ActorRegistry | None = None
+behavior: BehaviorMemory | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors
+    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors, behavior
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
     sessions = ConversationStore(engine)
     voice_reviews = VoiceReviews(engine,apprentice,sessions)
-    operation_approvals = OperationApprovals(engine,sessions)
+    behavior = BehaviorMemory(engine)
+    operation_approvals = OperationApprovals(engine,sessions,behavior)
     actors = ActorRegistry(engine)
     web_research = FreeWebResearch(engine)
     yield
@@ -198,6 +201,7 @@ def apprentice_context(req: ApprenticeContextIn):
     if speaker is None and len(actors.list()["people"])>1:
         speaker={"id":None,"display_name":None,"origin":"unselected"}
     result=apprentice.context(req.query,speaker=speaker)
+    result["behavior_rules"] = behavior.context(req.actor_id)
     result["speaker"] = speaker
     if req.session_id and sessions.exists(req.session_id):
         change=result.get("change_proposal")
@@ -297,6 +301,36 @@ def apprentice_propose(req: ApprenticeProposalsIn):
 def apprentice_review(req: ApprenticeReviewIn):
     try:
         return apprentice.review(req.proposal_id,req.decision,req.name,req.description,req.details)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+
+class BehaviorLearnIn(BaseModel):
+    source_text: str = Field(min_length=1,max_length=3000)
+    learning: list[dict] = Field(default_factory=list,max_length=3)
+    actor_id: str = Field(default="",max_length=36)
+
+class BehaviorForgetIn(BaseModel):
+    rule_id: int = Field(gt=0)
+    actor_id: str = Field(default="",max_length=36)
+
+@app.post("/apprentice/behavior/learn")
+def behavior_learn(req: BehaviorLearnIn):
+    if req.actor_id and not actors.find(req.actor_id):
+        raise HTTPException(422,"Unknown speaker")
+    return {"rules": behavior.learn(req.source_text, req.learning, req.actor_id),
+            "executed": False}
+
+@app.get("/apprentice/behavior")
+def behavior_state(actor_id: str = ""):
+    if actor_id and not actors.find(actor_id):
+        raise HTTPException(422,"Unknown speaker")
+    return behavior.snapshot(actor_id)
+
+@app.post("/apprentice/behavior/forget")
+def behavior_forget(req: BehaviorForgetIn):
+    try:
+        return behavior.forget(req.rule_id, req.actor_id)
     except ValueError as error:
         raise HTTPException(422,str(error))
 
