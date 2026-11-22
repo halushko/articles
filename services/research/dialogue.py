@@ -207,6 +207,23 @@ class DialogueCoordinator:
             return {"handled":False}
         active,stale=self._pending(session_id)
         last=self._last_offer(session_id)
+        speaker_pending=[item for item in active if item["actor_id"]==actor_id]
+        # An acknowledgement to a physical/destructive proposal is never
+        # sufficient to authorize anything, even if another low-risk tool is
+        # also pending. The executor must require a separate exact grant.
+        if basic and any(
+                POLICIES.get(item["kind"],{}).get("risk") in ("physical","destructive","unknown")
+                for item in speaker_pending):
+            return {"handled":True,"status":"not_authorized","executed":False,
+                    "answer":"Одного «да» недостаточно для управления устройствами "
+                             "или другой опасной операции. Ничего не выполняю."}
+        # Do not silently choose the newest operation when the speaker has
+        # more than one pending item (e.g. a lesson and a search).
+        if basic and len(speaker_pending)>1:
+            return {"handled":True,"status":"ambiguous","executed":False,
+                    "answer":"Сейчас ожидается несколько разных подтверждений. "
+                             "Укажи конкретное действие: «Разрешаю поиск» "
+                             "или «Подтверди первое знание»."}
 
         # A plain answer must refer to the latest prompt. A specific learned
         # search phrase is still bound to the originally offered operation.
