@@ -111,6 +111,20 @@ memory.graph.nodes — проверенные канонические сущн�
 «я знаю объект, но не имею подтверждённой связи», а не выдумывай её.
 Результаты поиска могут быть неполными; не утверждай отсутствие знаний,
 если память не была запрошена по соответствующему вопросу.
+memory.dialogue.state и memory.dialogue.history — сохранённый в SQLite
+контекст ТЕКУЩЕГО разговора и выбранного собеседника. Он важнее
+пунктуации расшифровки или догадок по отдельным словам. Короткий ответ
+«да» может относиться к вопросу из предыдущего сообщения, но сам по
+себе НЕ разрешает новое действие. Односложное согласие на устройство,
+нагреватель, питание или удаление НЕ является авторизацией.
+Любой реальный инструмент вызывается только независимым исполнителем
+с точной проверкой полномочий и ожидающей операции. Твой reply никогда
+не является командой исполнителю. Если человек спрашивает
+«найти рецепт или включить духовку», а затем говорит «да», уточни,
+какой вариант он имеет в виду. НЕ подменяй текущую цель другой задачей.
+В dialogue_frame возвращай тему и текущую цель разговора, а также
+точный вопрос, если сам просишь уточнить. Это описательный контекст,
+никогда не подтверждение и не разрешение.
 memory.teacher_feedback содержит оценённые учителем прошлые ответы и
 корректировки по похожим вопросам. Если есть исправление с рейтингом bad,
 избегай повторения прежней ошибки и учитывай teacher_feedback.correction,
@@ -203,6 +217,9 @@ new_name должен буквально присутствовать в про�
  "reply":"твой ответ по-русски",
  "intent":"teach|ask|request|chat",
  "needs_web":false,
+ "dialogue_frame":{"topic":"текущая тема или пусто",
+   "goal":"цель пользователя или пусто",
+   "assistant_question":"заданный вопрос пользователю или пусто"},
  "learning":[{"kind":"interpretation|preference|correction",
    "context":"pending:web.search|dialogue",
    "trigger":"дословная фраза или пусто",
@@ -238,9 +255,16 @@ async def analyze(req: AnalyzeIn):
     cfg = load()
     profile = cfg["profiles"][req.profile]
     # A compact trusted context is supplied by the research service via gateway.
-    context = json.dumps(req.memory,ensure_ascii=False,default=str)[:12000]
+    # The research service supplies actor-scoped, persisted history. Never
+    # prefer client-provided history when a saved session context is present.
+    memory=dict(req.memory)
+    dialogue=memory.get("dialogue") if isinstance(memory.get("dialogue"),dict) else {}
+    persisted=dialogue.get("history") if isinstance(dialogue.get("history"),list) else None
+    if persisted is not None:
+        memory["dialogue"]={k:v for k,v in dialogue.items() if k!="history"}
+    context = json.dumps(memory,ensure_ascii=False,default=str)[:12000]
     history = []
-    for item in req.history[-12:]:
+    for item in (persisted if persisted is not None else req.history)[-12:]:
         if not isinstance(item,dict) or item.get("role") not in ("user","assistant"):
             continue
         content = str(item.get("content") or "")[:1200]
@@ -291,6 +315,14 @@ async def analyze(req: AnalyzeIn):
                 ("kind",32),("context",100),("trigger",120),("meaning",30),
                 ("instruction",500),("evidence",600))
         })
+    frame=parsed.get("dialogue_frame")
+    if not isinstance(frame,dict):
+        frame={}
+    cleaned_frame={
+        "topic":str(frame.get("topic") or "")[:160],
+        "goal":str(frame.get("goal") or "")[:260],
+        "assistant_question":str(frame.get("assistant_question") or "")[:260]
+    }
     changes=parsed.get("changes",[])
     if not isinstance(changes,list):
         changes=[]
@@ -319,6 +351,7 @@ async def analyze(req: AnalyzeIn):
     return {"reply":parsed["reply"][:3000],
             "changes":clean_changes,
             "learning":cleaned_learning,
+            "dialogue_frame":cleaned_frame,
             "needs_web":parsed.get("needs_web") is True,
             "web_query":str(parsed.get("web_query") or "")[:240],
             "intent":parsed.get("intent") if parsed.get("intent") in
