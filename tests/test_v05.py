@@ -10,6 +10,8 @@ from fastapi.testclient import TestClient
 from services.research.engine import Engine
 from services.research.settings import load
 from services.research.sessions import ConversationStore, markdown
+from services.research.apprentice import ApprenticeMemory
+from fastapi import HTTPException
 from services.research.web_research import FreeWebResearch, VisibleText, public_https
 from services.research.api import app as research_app
 from services.gateway import api as gateway
@@ -67,6 +69,21 @@ class ConversationJournalTests(unittest.TestCase):
             self.store.read("not-a-uuid")
 
 
+class CapabilityEvidenceTests(unittest.TestCase):
+    def test_actions_answer_is_from_runtime_tools_not_model_imagination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine=Engine(str(Path(tmp)/"tools.sqlite3"),load())
+            apprentice=ApprenticeMemory(engine)
+            data=apprentice.context("Какие действия Ты можешь выполнять?")
+            self.assertIn("SearXNG",data["direct_reply"])
+            self.assertIn("external.action",data["direct_reply"])
+            self.assertNotIn("Я могу управлять",data["direct_reply"])
+            with patch.dict(os.environ,{"WEB_SEARCH_ENABLED":"false"}):
+                disabled=ApprenticeMemory(engine)
+                tools={v["name"]:v["status"] for v in disabled.context(
+                    "Какие действия ты можешь выполнять?")["capabilities"]}
+                self.assertEqual(tools["web.search"],"unavailable")
+
 class PublicWebSafetyTests(unittest.TestCase):
     def test_restricts_private_networks_and_unsafe_urls(self):
         unsafe=["http://example.com","https://localhost","https://127.0.0.1",
@@ -110,7 +127,8 @@ class WebProviderTests(unittest.IsolatedAsyncioTestCase):
             http.__aexit__=AsyncMock(return_value=None)
             with patch.dict(os.environ,{"WEB_SEARCH_ENABLED":"true"}),patch(
                 "services.research.web_research.httpx.AsyncClient",return_value=http
-            ),patch.object(provider,"_page",new=AsyncMock(return_value=("Текст документа","read"))):
+            ),patch.object(provider,"_page",new=AsyncMock(return_value=("Текст документа","read"))),patch(
+                "services.research.web_research.checked_url",new=AsyncMock(return_value=True)):
                 result=await provider.search("python documentation","my-session")
             self.assertTrue(result["available"])
             self.assertEqual(len(result["sources"]),1)
@@ -221,6 +239,24 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
             result=await gateway.chat(gateway.ChatIn(
                 experiment="llm_only",web_mode="auto",text="Найди в интернете"))
         self.assertEqual(result["answer"],"Контрольный ответ")
+
+    async def test_http_failure_is_recorded_if_possible(self):
+        calls=[]
+        async def fake(url,method="GET",payload=None):
+            calls.append(url)
+            if url.endswith("/chat"):
+                raise HTTPException(503,"Model service unavailable")
+            if url.endswith("/turns"):
+                self.assertEqual(payload["result"]["route"],"chat_error")
+                self.assertIn("Model service unavailable",payload["answer"])
+                return {"turn_id":13}
+            raise AssertionError(url)
+        with patch.object(gateway,"forward",fake):
+            with self.assertRaises(HTTPException):
+                await gateway.chat(gateway.ChatIn(
+                    text="Проблемный вопрос",experiment="llm_only",
+                    session_id="session-1"))
+        self.assertEqual(len(calls),2)
 
     async def test_turn_is_logged_if_session_selected(self):
         calls=[]

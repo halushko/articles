@@ -113,7 +113,10 @@ function setupCorrection(container,phrase) {
 async function send(text,experiment,extras={}) {
   const mode=experiment||$('experiment').value;
   const sessions=window.JarvisResearchUI;
-  await sessions?.ready();
+  try { await sessions?.ready(); }
+  catch(error) {
+    putMessage('⚠️ Журнал недоступен — ответ может не сохраниться: '+error.message,'system');
+  }
   const options={text,experiment:mode,profile:$('profile').value,
                  ablation:$('ablation').value,
                  history:mode==='apprentice'?turnHistory.slice(-12):[],

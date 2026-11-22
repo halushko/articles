@@ -184,6 +184,9 @@ class FreeWebResearch:
                 sources.append({"title":title,"url":url,"snippet":snippet,
                                 "page_text":"","status":"search_snippet"})
                 if len(sources)>=4:break
+            # Validate resolved public addresses even for snippet-only links.
+            verified=await asyncio.gather(*(checked_url(s["url"]) for s in sources))
+            sources=[source for source,is_public in zip(sources,verified) if is_public]
             # Read just two URLs; other results retain clearly labeled snippets.
             reads=await asyncio.gather(*(self._page(s["url"]) for s in sources[:2]))
             for source,(content,reason) in zip(sources,reads):

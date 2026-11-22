@@ -322,7 +322,7 @@ async def answer_from_public_search(data: ChatIn, text: str,
         "memory":memory,"origin":"searxng"})
     grounded.update({"sources":[{"title":v.get("title"),"url":v.get("url"),
                                    "snippet":v.get("snippet"),"status":v.get("status"),
-                                   "page_text":v.get("page_text","")[:1500]}
+                                   "page_text":v.get("page_text","")[:4000]}
                                   for v in evidence],
                      "search_query":query[:240],"search_status":"ok",
                      "tool_trace":{"tool":"public_web.search",
@@ -367,12 +367,17 @@ async def apprentice_chat(data: ChatIn, start: float):
             "memory":memory,"origin":"google_ai_manual"})
         grounded.update({"sources":[{"title":source["title"],"url":"",
                                       "status":source["status"],
-                                      "snippet":source["text"][:1600]}],
+                                      "snippet":source["text"][:4000]}],
                          "external_origin":"google_ai_manual",
                          "tool_trace":{"tool":"google.ai_mode",
                                        "status":"teacher_pasted_not_api"},
                          "executed":False,"proposals":[],
                          "total_ms":round((time.perf_counter()-start)*1000,2)})
+        if unverified_external_activity(grounded.get("answer","")):
+            grounded["answer"]=("Вставленный ответ Google AI — это материал "
+                "для анализа, а не свидетельство моего доступа к внешним "
+                "сервисам или устройствам. Он сохранён как непроверенный источник.")
+            grounded["integrity_warning"]="Blocked unsupported external action claim"
         return grounded
     if data.allow_web_search and data.web_mode != "off":
         return await answer_from_public_search(
@@ -422,6 +427,15 @@ async def apprentice_chat(data: ChatIn, start: float):
     if wanted and data.web_mode=="ask":
         parsed["web_approval"]={"query":wanted,"question":text}
         parsed["web_requested"]=True
+        parsed["reply"]=(
+            "Для точного ответа нужно проверить публичные источники. "
+            f"Предлагаю поиск: «{wanted}». До твоего разрешения "
+            "запрос в интернет не отправлялся.")
+    if wanted and data.web_mode=="off":
+        parsed["reply"]=(
+            "Для актуального ответа мне нужен публичный поиск, но "
+            "интернет отключён в этом эксперименте. "
+            "Я не буду выдавать непроверенную информацию за найденную.")
     # Do not turn information requests or model guesses into confirmed
     # teaching proposals: only explicit teaching can create candidates.
     if (parsed.get("intent") in ("ask","request")
@@ -527,7 +541,24 @@ async def chat_core(data: ChatIn):
 @app.post("/api/chat", dependencies=[Depends(auth)])
 async def chat(data: ChatIn):
     """Persist a complete model/retrieval turn without affecting control modes."""
-    result=await chat_core(data)
+    try:
+        result=await chat_core(data)
+    except HTTPException as error:
+        if data.session_id:
+            try:
+                await forward(
+                    RESEARCH_URL+"/research/sessions/"+data.session_id+"/turns",
+                    "POST",{
+                        "question":data.text,
+                        "answer":"[Не удалось получить ответ: "+str(error.detail)[:500]+"]",
+                        "experiment":data.experiment,"profile":data.profile,
+                        "ablation":data.ablation,"web_mode":data.web_mode,
+                        "result":{"route":"chat_error","model":"none",
+                                  "error_status":error.status_code,
+                                  "search_status":"upstream_error"}})
+            except HTTPException:
+                pass
+        raise
     if data.session_id:
         try:
             saved=await forward(

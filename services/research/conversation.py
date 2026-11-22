@@ -3,6 +3,7 @@
 The research service records explicit user teaching in SQLite, not in model weights.
 A candidate skill never becomes a runnable tool simply because the model says so.
 """
+import os
 import re
 
 # Only these routes actually exist in the current gateway/research services.
@@ -83,6 +84,14 @@ def key_for(value):
     return " ".join(value.casefold().split())
 
 
+CAPABILITY_QUERY = re.compile(
+    r"(?iu)\b(?:что\s+ты\s+(?:умеешь|можешь\s+делать)|"
+    r"какие\s+действия\s+(?:ты\s+)?можешь\s+выполнять|"
+    r"какие\s+у\s+тебя\s+(?:возможности|инструменты)|"
+    r"на\s+что\s+ты\s+способен|what\s+can\s+you\s+do)\b"
+)
+
+
 class DialogueMemory:
     def __init__(self, engine):
         self.engine = engine
@@ -92,11 +101,17 @@ class DialogueMemory:
                 VALUES('assistant','JARVIS','app_identity')""")
             # This describes actual available routes. A saved lesson cannot enable one.
             for tool in REAL_CAPABILITIES:
+                status=tool["status"]
+                if (tool["name"].startswith("web.")
+                        and os.getenv("WEB_SEARCH_ENABLED","true").lower()
+                        not in ("1","true","yes")):
+                    status="unavailable"
                 con.execute("""INSERT INTO runtime_capabilities(name,status,description,executor)
                     VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET
                     status=excluded.status, description=excluded.description,
                     executor=excluded.executor""",
-                    (tool["name"], tool["status"], tool["description"], tool["executor"]))
+                    (tool["name"], status, tool["description"],
+                     tool["executor"] if status=="available" else None))
             # Preserve correctly confirmed introductions from earlier versions.
             exists = con.execute("SELECT 1 FROM dialogue_roles WHERE role='user'").fetchone()
             if not exists:
@@ -199,4 +214,15 @@ class DialogueMemory:
         if len(compact) < 100 and ASSISTANT_NAME_QUERY.search(compact):
             return {"text":text,"roles":roles,
                     "direct_reply":f"Меня зовут {roles.get('assistant','JARVIS')}."}
+        if len(compact)<180 and CAPABILITY_QUERY.search(compact):
+            tools=self.state()["capabilities"]
+            active=[t["description"] for t in tools if t["status"]=="available"]
+            restricted=[t["name"] for t in tools if t["status"]=="unavailable"]
+            answer="Мои доступные инструменты: "+(
+                "; ".join(active) if active else "пока нет доступных инструментов"
+            )+"."
+            answer+=(" Не умею выполнять произвольные команды или управлять "
+                     "устройствами: "+", ".join(restricted)+".")
+            answer+=" Подтверждать новые знания может только учитель."
+            return {"text":text,"roles":roles,"direct_reply":answer}
         return {"text":text,"roles":roles,"direct_reply":None}
