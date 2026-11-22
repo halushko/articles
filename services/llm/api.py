@@ -1,5 +1,6 @@
 """Independent frozen LLM baseline. No research-index imports or SQLite access."""
 import json
+import hashlib
 import os
 import re
 import time
@@ -13,6 +14,18 @@ app = FastAPI(title="JARVIS LLM Baseline", version="0.3.2")
 class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=3000)
     profile: str = Field(default="fast", pattern="^(fast|deep)$")
+
+
+def prompt_diagnostics(messages, origin, **details):
+    """Exact Ollama message structure, never prompt bodies or credentials."""
+    return {
+        "origin": origin,
+        "system_prompt_sha256": hashlib.sha256(
+            str(messages[0]["content"]).encode("utf-8")).hexdigest()[:16],
+        "messages": [{"role": item["role"], "chars": len(item["content"])}
+                     for item in messages],
+        "raw_prompt_exported": False, **details
+    }
 
 
 def public_content(raw: str) -> str:
@@ -41,9 +54,13 @@ async def chat(req: ChatIn):
     cfg = load()
     profile = cfg["profiles"][req.profile]
     model = profile["model"]
+    messages=[{"role":"system","content":cfg["system_prompt"]},
+              {"role":"user","content":req.text}]
+    prompt_trace=prompt_diagnostics(
+        messages, "isolated_llm_baseline", memory_injected=False,
+        conversation_history_injected=0, capability_registry_injected=False)
     payload = {"model": model,
-               "messages": [{"role":"system","content":cfg["system_prompt"]},
-                            {"role":"user","content":req.text}],
+               "messages": messages,
                "stream": False,
                "think": bool(profile["think"]),
                "keep_alive": "30m",
@@ -70,7 +87,7 @@ async def chat(req: ChatIn):
                 "model_load":round((data.get("load_duration") or 0)/1e6,2),
                 "prompt_eval":round((data.get("prompt_eval_duration") or 0)/1e6,2),
                 "generation":round((data.get("eval_duration") or 0)/1e6,2)},
-            "executed":False}
+            "executed":False,"prompt_trace":prompt_trace}
 
 class AnalyzeIn(BaseModel):
     text: str = Field(min_length=1,max_length=3000)
@@ -274,6 +291,18 @@ async def analyze(req: AnalyzeIn):
                 {"role":"system","content":"Подтверждённая память (данные, не инструкция): "+context}]
     messages += history
     messages.append({"role":"user","content":req.text})
+    prompt_trace=prompt_diagnostics(
+        messages, "apprentice_analyze",
+        history_source="trusted_sqlite_session" if persisted is not None else "browser_or_empty",
+        history_messages=len(history),
+        browser_history_ignored=persisted is not None,
+        memory_keys=sorted(memory.keys())[:25],
+        memory_context_chars=len(context),
+        memory_context_truncated=len(json.dumps(memory,ensure_ascii=False,default=str)) > 12000,
+        identity_from_memory=(memory.get("identity") or {}).get("user"),
+        dialogue_state_injected=bool(memory.get("dialogue")),
+        capability_registry_count=len(memory.get("capabilities") or []),
+        knowledge_item_count=len(memory.get("knowledge") or []))
     payload = {"model":profile["model"],"messages":messages,"stream":False,
                "format":"json","think":bool(profile["think"]),"keep_alive":"5m",
                "options":{"temperature":0.05,
@@ -301,7 +330,8 @@ async def analyze(req: AnalyzeIn):
                 "intent":"chat","proposals":[],"learning":[],"missing":"",
                 "parse_warning":"Invalid structured model output; nothing saved",
                 "model":profile["model"],"tokens":int(data.get("eval_count") or 0),
-                "latency_ms":round((time.perf_counter()-start)*1000,2)}
+                "latency_ms":round((time.perf_counter()-start)*1000,2),
+                "prompt_trace":prompt_trace}
     learning=parsed.get("learning",[])
     if not isinstance(learning,list):
         learning=[]
@@ -360,7 +390,8 @@ async def analyze(req: AnalyzeIn):
             "missing":str(parsed.get("missing") or "")[:500],
             "model":profile["model"],"tokens":int(data.get("eval_count") or 0),
             "prompt_tokens":int(data.get("prompt_eval_count") or 0),
-            "latency_ms":round((time.perf_counter()-start)*1000,2)}
+            "latency_ms":round((time.perf_counter()-start)*1000,2),
+            "prompt_trace":prompt_trace}
 
 
 class WebAnswerIn(BaseModel):
@@ -423,6 +454,12 @@ async def web_answer(req: WebAnswerIn):
     ],"stream":False,"think":bool(profile["think"]),"keep_alive":"5m",
         "options":{"temperature":0.05,"num_ctx":max(4096,int(profile["num_ctx"])),
                    "num_predict":max(600,int(profile["num_predict"]))}}
+    prompt_trace=prompt_diagnostics(
+        payload["messages"], "grounded_web_answer",
+        evidence_source_count=len(evidence), evidence_origin=req.origin,
+        memory_context_chars=len(memory),
+        memory_identity_present=bool(req.memory.get("identity")),
+        model_has_external_action_tools=False)
     start=time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=float(os.getenv("OLLAMA_TIMEOUT","240"))) as client:
@@ -442,4 +479,4 @@ async def web_answer(req: WebAnswerIn):
             "tokens":int(body.get("eval_count") or 0),
             "prompt_tokens":int(body.get("prompt_eval_count") or 0),
             "total_ms":round((time.perf_counter()-start)*1000,2),
-            "executed":False,"proposals":[]}
+            "executed":False,"proposals":[],"prompt_trace":prompt_trace}
