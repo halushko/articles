@@ -111,7 +111,72 @@ GROUNDED_SYSTEM = """Ты JARVIS, разговорный помощник с д�
 Никогда не заявляй, что уже проверил веб, изменил БД или устройство
 без реального результата исполнителя. Объясняй неопределённость прямо.
 Отвечай естественно, кратко, на языке собеседника. Не генерируй JSON.
+Если перечисляешь предметы или шаги, ограничься несколькими конкретными
+пунктами. Не повторяй словосочетания, не придумывай специальные инструменты.
+Если сомневаешься в техническом совете — скажи об этом и предложи проверить
+его через разрешённый серверный поиск; не имитируй работу поискового сервиса.
 """
+
+
+def compact_world_context(memory):
+    """Prioritize *usable* facts and dialogue state in a complete JSON document.
+
+    Never truncate serialized JSON midway through a graph node: that used to
+    hide answer provenance and break small-model attention on routine prompts.
+    """
+    dialogue=memory.get("dialogue") if isinstance(memory.get("dialogue"),dict) else {}
+    graph=memory.get("graph") if isinstance(memory.get("graph"),dict) else {}
+    operations=memory.get("operations") if isinstance(memory.get("operations"),dict) else {}
+    current=operations.get("current") or {}
+    latest=operations.get("last_result") or {}
+    compact={
+        "identity":memory.get("identity") or {},
+        "speaker":{k:v for k,v in (memory.get("speaker") or {}).items()
+                   if k in ("id","display_name","origin")},
+        "dialogue_state":dialogue.get("state") or {},
+        "last_response_evidence":dialogue.get("last_response_evidence") or {},
+        "previous_topic":dialogue.get("previous_topic") or {},
+        "operation_state":{
+            "approval":current.get("approval_status"),
+            "execution":current.get("execution_status"),
+            "query":str(current.get("query") or "")[:160],
+            "last_execution":latest.get("execution_status")},
+        "experiences":(memory.get("experiences") or [])[:3],
+        "knowledge":(memory.get("knowledge") or [])[:4],
+        "graph":{"nodes":(graph.get("nodes") or [])[:5],
+                 "edges":(graph.get("edges") or [])[:7],
+                 "counts":graph.get("counts") or {}},
+        "capabilities":[{"name":v.get("name"),"status":v.get("status")}
+                        for v in (memory.get("capabilities") or [])],
+        "teacher_feedback":(memory.get("teacher_feedback") or [])[:2],
+        "utterance_intent":memory.get("utterance_intent") or {},
+    }
+    def encode():
+        return json.dumps(compact,ensure_ascii=False,default=str)
+    serialized=encode()
+    # Lowest-priority materials are reduced first. Identity, current dialogue,
+    # last-answer provenance, operation state and intent are never discarded.
+    if len(serialized)>4600:
+        compact["graph"]["edges"]=compact["graph"]["edges"][:3]
+        compact["graph"]["nodes"]=compact["graph"]["nodes"][:3]
+        compact["teacher_feedback"]=[]
+        serialized=encode()
+    if len(serialized)>4600:
+        compact["knowledge"]=compact["knowledge"][:2]
+        compact["experiences"]=compact["experiences"][:1]
+        compact["graph"]={"nodes":[],"edges":[],"counts":compact["graph"]["counts"]}
+        serialized=encode()
+    if len(serialized)>4600:
+        compact["knowledge"]=[]
+        compact["experiences"]=[]
+        compact["dialogue_state"]={}
+        # A full prior evidence source list can itself exceed the model budget.
+        evidence=compact["last_response_evidence"]
+        if isinstance(evidence,dict):
+            compact["last_response_evidence"]={
+                k:v for k,v in evidence.items() if k in ("route","model","source_kind")}
+        serialized=encode()
+    return serialized
 
 
 @app.post("/grounded-chat")
@@ -122,28 +187,14 @@ async def grounded_chat(req: AnalyzeIn):
     memory=req.memory
     dialogue=memory.get("dialogue") if isinstance(memory.get("dialogue"),dict) else {}
     persisted=dialogue.get("history") if isinstance(dialogue.get("history"),list) else None
-    compact={
-        "identity":memory.get("identity",{}),
-        "speaker":{k:v for k,v in (memory.get("speaker") or {}).items()
-                   if k in ("id","display_name","origin")},
-        "world_model":memory.get("world_model",{}),
-        "knowledge":(memory.get("knowledge") or [])[:6],
-        "graph":memory.get("graph",{}),
-        "experiences":(memory.get("experiences") or [])[:4],
-        "teacher_feedback":(memory.get("teacher_feedback") or [])[:3],
-        "capabilities":[{"name":v.get("name"),"status":v.get("status")}
-                         for v in (memory.get("capabilities") or [])],
-        "dialogue_state":dialogue.get("state") or {},
-        "last_response_evidence":dialogue.get("last_response_evidence") or {},
-        "utterance_intent":memory.get("utterance_intent",{}),
-    }
-    compact_text=json.dumps(compact,ensure_ascii=False,default=str)[:7000]
+    compact_text=compact_world_context(memory)
+    compact=json.loads(compact_text)
     transcript=persisted if persisted is not None else req.history
     history=[]
-    for item in transcript[-10:]:
+    for item in transcript[-8:]:
         if not isinstance(item,dict) or item.get("role") not in ("user","assistant"):
             continue
-        content=str(item.get("content") or "")[:700]
+        content=str(item.get("content") or "")[:450]
         if content:
             history.append({"role":item["role"],"content":content})
     messages=[
@@ -166,7 +217,8 @@ async def grounded_chat(req: AnalyzeIn):
              "stream":False,"think":bool(profile["think"]),"keep_alive":"30m",
              "options":{"temperature":0.2,
                         "num_ctx":max(4096,int(profile["num_ctx"])),
-                        "num_predict":min(450,max(220,int(profile["num_predict"])))}}
+                        "num_predict":min(300,max(180,int(profile["num_predict"]))),
+                        "repeat_penalty":1.16,"repeat_last_n":128}}
     start=time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=float(os.getenv("OLLAMA_TIMEOUT","240"))) as client:
