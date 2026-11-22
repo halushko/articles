@@ -492,45 +492,46 @@ async def apprentice_chat(data: ChatIn, start: float):
                     "model":"SQLite","tokens":0,"executed":False,
                     "approval_id":resolved.get("operation_id"),
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
-    # Learned approvals are matched by the operation service and require a real,
-    # actor-bound pending search. Try it before clearing outstanding approvals.
-    if (data.session_id and data.web_mode != "off"
-            and len(data.text.split()) <= 6
+    # One authoritative coordinator arbitrates between tool approvals,
+    # teaching reviews and ordinary conversational replies. A short "да"
+    # is NEVER an authorization by itself: the research service validates the
+    # last offered operation, speaker, TTL, action policy and ambiguity.
+    if (data.session_id and len(data.text.split()) <= 4
+            and len(data.text) <= 130
             and not proposed_web_query(data.text,{})
             and not (is_web_reply or data.approval_id or data.allow_web_search)):
-        learned=await forward(RESEARCH_URL+"/research/operations/web/resolve","POST",{
-            "session_id":data.session_id,"phrase":data.text[:250],
-            "actor_id":data.actor_id,"source":"voice"})
-        if learned.get("handled") and learned.get("status")=="approved":
-            found=await answer_from_public_search(
-                data,learned["question"],{},learned["query"],start)
-            found["approval_id"]=learned["operation_id"]
-            found["approval_source"]="learned_voice"
-            found["utterance_intent"]={"intent":"command","reason":"learned_operation_approval"}
-            return found
-        if learned.get("handled"):
-            return {"answer":learned.get("answer","Поиск не разрешён."),
-                    "route":"web_permission_"+learned.get("status","denied"),
-                    "model":"SQLite","tokens":0,"executed":False}
-    # Only confirmed knowledge is given to the interpreter; guesses stay pending.
-    progress(data.request_id,"memory","SQLite: проверяю знания и изменения")
-    # Voice confirmation is scoped to the last review shown in this session,
-    # and is never interpreted as a device command.
-    voice_cue=bool(re.match(
-        r"(?iu)^\s*(?:(?:команда|вопрос)\s*[:,-]?\s*)?"
-        r"(?:да\b|нет\b|ага\b|угу\b|подтвер\w*|отклон\w*|"
-        r"отмен\w*|применяй\b|согласен\b|согласна\b|сохрани\b)",data.text))
-    if voice_cue:
-        voice=await forward(RESEARCH_URL+"/apprentice/voice/resolve","POST",
-                            {"text":data.text[:250],"session_id":data.session_id or "",
-                              "actor_id":data.actor_id})
-        if voice.get("handled"):
-            return {"answer":voice["answer"],"route":"apprentice_voice_review",
-                    "intent":"review","utterance_intent":{"intent":"command",
-                    "confidence":"high","reason":"session_scoped_voice_review"},
-                    "voice_review_result":voice,"proposals":[],"tokens":0,
-                    "model":"SQLite","executed":False,
+        routed=await forward(RESEARCH_URL+"/research/dialogue/resolve","POST",{
+            "session_id":data.session_id,"actor_id":data.actor_id,
+            "text":data.text[:250],"web_enabled":data.web_mode!="off"})
+        if routed.get("handled"):
+            if routed.get("category")=="web.search" and routed.get("status")=="approved":
+                search=await answer_from_public_search(
+                    data,routed["question"],{},routed["query"],start)
+                search.update({
+                    "approval_id":routed["operation_id"],
+                    "approval_source":"contextual_dialogue",
+                    "requested_action":"web.search",
+                    "utterance_intent":{"intent":"command","confidence":"high",
+                                        "reason":"session_scoped_low_risk_approval"}
+                })
+                return search
+            if routed.get("category")=="knowledge.review":
+                return {"answer":routed.get("answer","Подтверждение обработано."),
+                        "route":"apprentice_voice_review",
+                        "intent":"review","utterance_intent":{"intent":"command",
+                        "confidence":"high","reason":"session_scoped_knowledge_review"},
+                        "voice_review_result":routed,"proposals":[],"tokens":0,
+                        "model":"SQLite","executed":False,
+                        "total_ms":round((time.perf_counter()-start)*1000,2)}
+            return {"answer":routed.get("answer","Ничего не выполняю."),
+                    "route":"apprentice_context_"+routed.get("status","clarification"),
+                    "utterance_intent":{"intent":"unknown",
+                                        "reason":"contextual_operation_policy"},
+                    "model":"SQLite","tokens":0,"executed":False,
+                    "context_decision":routed,
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
+    # No pending approval? "да" is an ordinary conversational reply, not a
+    # failed memory-review command. Continue with trusted session history.
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",
                            {"query":data.text,"session_id":data.session_id or "",
                              "actor_id":data.actor_id})
