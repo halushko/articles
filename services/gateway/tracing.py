@@ -74,12 +74,17 @@ def output_summary(endpoint, data):
         out["knowledge_items"] = _count(data.get("knowledge"))
         out["graph_items"] = _count(data.get("graph"))
         out["feedback_items"] = _count(data.get("teacher_feedback"))
+        out["episodic_user_turns"] = _count(data.get("experiences"))
         out["capability_count"] = _count(data.get("capabilities"))
         out["operation_blocked"] = bool(data.get("unavailable_operation"))
         out["utterance_intent"] = (data.get("utterance_intent") or {}).get("intent")
         dialogue = data.get("dialogue") or {}
         if isinstance(dialogue, dict):
             out["persisted_history_turns"] = _count(dialogue.get("history"))
+            last=dialogue.get("last_response_evidence") or {}
+            if isinstance(last,dict):
+                out["last_answer_source_kind"] = str(last.get("source_kind") or "")[:50]
+                out["last_answer_route"] = str(last.get("route") or "")[:80]
             state = dialogue.get("state") or {}
             if isinstance(state, dict):
                 out["dialogue_state"] = {
