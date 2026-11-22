@@ -94,6 +94,32 @@ async function send(text,experiment) {
   const card=putMessage(r.answer,'assistant',stamp);
   if(r.parse_warning) putMessage('Не удалось надёжно извлечь структурированное знание. Ничего не добавлено.','system');
   if(mode==='apprentice'){
+    const gradeControls=document.createElement('div');gradeControls.className='grade-controls';
+    const verdict=document.createElement('span');verdict.textContent='Проверка учителя:';
+    const buttons=[];
+    async function grade(rating){
+      let teacherNote='';
+      if(rating==='bad'){
+        const note=window.prompt('Что неправильно? Напиши исправление для будущего урока (необязательно):','');
+        if(note===null)return;
+        teacherNote=note;
+      }
+      buttons.forEach(x=>x.disabled=true);
+      try{
+        await api('/api/apprentice/grade',{method:'POST',
+           body:JSON.stringify({question:text,answer:r.answer,rating,teacher_note:teacherNote})});
+        gradeControls.textContent=rating==='good'?'✓ Ответ оценён как верный':'✕ Ошибка учтена в статистике. Объясни правильный ответ следующим сообщением, чтобы обучить память.';
+        await refresh();
+      }catch(e){
+        putMessage('Ошибка оценки: '+e.message,'system');
+        buttons.forEach(x=>x.disabled=false);
+      }
+    }
+    const good=mkButton('✓ Верно','secondary',()=>grade('good'));
+    const bad=mkButton('✕ Ошибка','secondary',()=>grade('bad'));
+    buttons.push(good,bad);gradeControls.append(verdict,good,bad);card.append(gradeControls);
+  }
+  if(mode==='apprentice'){
     turnHistory.push({role:'user',content:text},{role:'assistant',content:r.answer});
     turnHistory=turnHistory.slice(-8);
     if(r.proposals?.length){
@@ -143,7 +169,7 @@ async function refresh(){
     const counts=memory.counts;
     const grid=$('learning-stats');grid.replaceChildren();
     const labels={entity:'Сущности',action:'Действия (опис.)',fact:'Связи',
-                  lesson:'Уроки',capability:'Идеи навыков',pending:'Гипотезы'};
+                  lesson:'Уроки',capability:'Идеи навыков',pending:'Гипотезы',graded:'Оценено ответов'};
     for(const [key,label] of Object.entries(labels)){
       const box=document.createElement('div');box.className='stat';
       const strong=document.createElement('strong');strong.textContent=counts[key]||0;
