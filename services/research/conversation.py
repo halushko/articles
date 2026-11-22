@@ -93,7 +93,7 @@ QUESTION_OPENERS = re.compile(
     r"знаешь\s+ли|ты\s+можешь\s+ли)\b"
 )
 INTRODUCTION_STATEMENT = re.compile(
-    rf"(?iu)^\s*(?:ну\s+|а\s+)?"
+    rf"(?iu)^\s*(?:(?:привет|здравствуй|здравствуйте)\s*[,!]\s*)?(?:ну\s+|а\s+)?"
     rf"(?:меня\s+зовут|мо[её]\s+имя|зови\s+меня|"
     rf"називай\s+мене|мене\s+звуть)\s+({NAME_CHARS})"
     rf"(?=\s*(?:[.!]|$|,\s*(?:а|и)\s+))"
@@ -110,7 +110,9 @@ def is_question(text):
 def extract_name(text):
     """A declarative, first-person name only. No inferred names from Qwen."""
     intent=classify(text)
-    if intent["intent"]!="statement":
+    # A real introduction may be followed by "а тебя?", but a voice
+    # "Вопрос: ..." prefix must never be accepted as an introduction.
+    if intent["intent"]=="question" and intent["explicit_prefix"]:
         return None
     match=INTRODUCTION_STATEMENT.match(intent["normalized"][:250])
     if not match:

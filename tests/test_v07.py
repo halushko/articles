@@ -177,10 +177,12 @@ class VoiceReviewTests(unittest.TestCase):
         self.assertEqual(self.memory.context("Как тебя зовут")["direct_reply"],"Меня зовут JARVIS.")
 
     def test_voice_rejection_and_two_candidates_require_selection(self):
-        one=self.memory.propose("У меня есть часы",[
-            {"kind":"entity","name":"часы","description":"Наручные часы"}])[0]
-        two=self.memory.propose("У меня есть планшет",[
-            {"kind":"entity","name":"планшет","description":"Планшет"}])[0]
+        one=next(p for p in self.memory.propose("У меня есть часы",[
+            {"kind":"entity","name":"часы","description":"Наручные часы"}])
+            if p["kind"]=="entity")
+        two=next(p for p in self.memory.propose("У меня есть планшет",[
+            {"kind":"entity","name":"планшет","description":"Планшет"}])
+            if p["kind"]=="entity")
         self.voice.queue(self.sid,proposals=[one,two])
         ambiguous=self.voice.resolve(self.sid,"Да")
         self.assertEqual(ambiguous["status"],"ambiguous_review")

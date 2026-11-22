@@ -547,7 +547,7 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Speech transcription omits punctuation. The verified intent classifier
     # gates writes; a model saying "teach" is not a write permission.
     interpreted=memory.get("utterance_intent") or {}
-    if interpreted.get("intent")!="statement":
+    if interpreted and interpreted.get("intent")!="statement":
         parsed["proposals"]=[]
     # Do not turn information requests or model guesses into confirmed
     # teaching proposals: only explicit teaching can create candidates.
