@@ -91,6 +91,9 @@ async function send(text,experiment) {
   const r=await api('/api/chat',{method:'POST',body:JSON.stringify(options)});
   const stamp=[r.route,r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
                r.tokens!=null?`${r.tokens} токенов`:null].filter(Boolean).join(' · ');
+  if(r.normalized_input && r.normalized_input!==text) {
+    putMessage('Словарь произношений: «'+text+'» → «'+r.normalized_input+'»','system');
+  }
   const card=putMessage(r.answer,'assistant',stamp);
   const replay=mkButton('🔊 Повторить','replay-button',()=>voice.speak(r.answer,true));
   replay.setAttribute('aria-label','Повторить ответ голосом');
@@ -124,7 +127,7 @@ async function send(text,experiment) {
     buttons.push(good,bad);gradeControls.append(verdict,good,bad);card.append(gradeControls);
   }
   if(mode==='apprentice'){
-    turnHistory.push({role:'user',content:text},{role:'assistant',content:r.answer});
+    turnHistory.push({role:'user',content:r.normalized_input||text},{role:'assistant',content:r.answer});
     turnHistory=turnHistory.slice(-14);
     if(r.proposals?.length){
       const title=document.createElement('div');title.className='proposal-caption';
@@ -146,6 +149,13 @@ async function send(text,experiment) {
 const voiceButton = $('voice');
 const messageInput = $('message');
 const chatForm = $('chat-form');
+// Browser textarea: Enter sends, Shift+Enter inserts a real newline.
+messageInput.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.shiftKey || event.altKey ||
+      event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  if (!busy && messageInput.value.trim()) chatForm.requestSubmit();
+});
 const voice = window.JarvisVoice.initVoice({
   input: messageInput, button: voiceButton,
   language: $('voice-language'), status: $('voice-status'),
@@ -166,6 +176,21 @@ $('chat-form').addEventListener('submit',async event=>{
   }
 });
 $('experiment').addEventListener('change',()=>{turnHistory=[];});
+$('speech-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const heard=$('speech-heard').value.trim(),correct=$('speech-correct').value.trim();
+  if(!heard || !correct)return;
+  const submit=$('speech-form').querySelector('button[type="submit"]');
+  submit.disabled=true;
+  try{
+    const result=await api('/api/apprentice/speech-corrections',
+      {method:'POST',body:JSON.stringify({heard,correct})});
+    putMessage('Изучил произношение: «'+result.heard+'» → «'+result.correct+'».','system');
+    $('speech-heard').value='';$('speech-correct').value='';
+    await refresh();
+  }catch(e){putMessage('Ошибка обучения произношению: '+e.message,'system');}
+  finally{submit.disabled=false;}
+});
 document.querySelectorAll('[data-example]').forEach(button=>{
   button.addEventListener('click',()=>{$('message').value=button.dataset.example;$('message').focus();});
 });
@@ -217,6 +242,49 @@ async function refresh(){
       }
     }
     if(!any)known.textContent='Пока пусто. Начни с объяснения.';
+    const dialogue=memory.dialogue||{};
+    const roles=dialogue.roles||{};
+    const identity=$('dialogue-roles');
+    identity.replaceChildren();
+    for(const [key,name] of [
+      ['JARVIS',roles.assistant||'JARVIS'],
+      ['Собеседник',roles.user||'имя пока неизвестно']
+    ]){
+      const row=document.createElement('div');row.className='known-row';
+      const left=document.createElement('span');left.textContent=key;
+      const right=document.createElement('strong');right.textContent=name;
+      row.append(left,right);identity.append(row);
+    }
+    const dictionary=$('speech-items');dictionary.replaceChildren();
+    for(const item of dialogue.speech_corrections||[]){
+      const row=document.createElement('div');row.className='speech-row';
+      const words=document.createElement('span');
+      words.textContent=item.heard+' → '+item.correct;
+      const del=mkButton('Удалить','text-button',async()=>{
+        del.disabled=true;
+        try{
+          await api('/api/apprentice/speech-corrections/delete',
+            {method:'POST',body:JSON.stringify({item_id:item.id})});
+          await refresh();
+        }catch(e){putMessage('Ошибка удаления: '+e.message,'system');del.disabled=false;}
+      });
+      row.append(words,del);dictionary.append(row);
+    }
+    if(!dialogue.speech_corrections?.length)
+      dictionary.textContent='Словарь пока пуст.';
+    const register=$('tool-register');register.replaceChildren();
+    const statusLabels={available:'Доступно',teacher_only:'Учитель',unavailable:'Нет доступа'};
+    for(const tool of dialogue.capabilities||[]){
+      const row=document.createElement('div');row.className='tool-row';
+      const details=document.createElement('div');
+      const title=document.createElement('strong');title.textContent=tool.name;
+      const info=document.createElement('small');info.textContent=tool.description;
+      details.append(title,info);
+      const badge=document.createElement('span');
+      badge.className='tool-status '+tool.status;
+      badge.textContent=statusLabels[tool.status]||tool.status;
+      row.append(details,badge);register.append(row);
+    }
     $('pending-count').textContent=String(counts.pending||0);
     const pending=$('pending');pending.replaceChildren();
     for(const entry of memory.pending.slice(0,15))renderProposal(entry,pending);

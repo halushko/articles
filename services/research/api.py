@@ -176,3 +176,25 @@ def apprentice_review(req: ApprenticeReviewIn):
         return apprentice.review(req.proposal_id,req.decision,req.name,req.description)
     except ValueError as error:
         raise HTTPException(422,str(error))
+
+
+class SpeechCorrectionIn(BaseModel):
+    heard: str = Field(min_length=2,max_length=80)
+    correct: str = Field(min_length=2,max_length=100)
+
+class SpeechCorrectionDeleteIn(BaseModel):
+    item_id: int = Field(gt=0)
+
+@app.post("/apprentice/speech-corrections")
+def speech_correction_add(req: SpeechCorrectionIn):
+    try:
+        return apprentice.dialogue.add_correction(req.heard,req.correct)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+@app.post("/apprentice/speech-corrections/delete")
+def speech_correction_delete(req: SpeechCorrectionDeleteIn):
+    try:
+        return apprentice.dialogue.delete_correction(req.item_id)
+    except ValueError as error:
+        raise HTTPException(422,str(error))

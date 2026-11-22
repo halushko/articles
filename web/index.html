@@ -49,7 +49,7 @@
       <div class="message system">Я ещё не знаю твоё окружение. Расскажи мне что-нибудь, как ученику: о доме, программировании или другой области. После ответа появятся предложения для подтверждения.</div>
     </div>
     <form id="chat-form" class="composer">
-      <input id="message" autocomplete="off" placeholder="Поговори с Джарвисом или научи чему-нибудь…" maxlength="3000" required />
+      <textarea id="message" autocomplete="off" placeholder="Поговори с Джарвисом или научи чему-нибудь…" maxlength="3000" rows="2" required aria-label="Сообщение Джарвису"></textarea>
       <div class="composer-tools">
         <select id="voice-language" class="voice-language" aria-label="Язык распознавания речи" title="Язык распознавания речи">
           <option value="ru-RU">RU</option>
@@ -61,7 +61,7 @@
     </form>
     <div class="voice-settings">
       <label class="tts-toggle" for="voice-output"><input id="voice-output" type="checkbox" checked /> 🔊 Озвучивать ответы</label>
-      <span class="voice-tip">🎤 — начать диктовку · ⏹ — закончить и отправить. Паузы не завершают запись.</span>
+      <span class="voice-tip">Enter — отправить · Shift+Enter — новая строка · 🎤/⏹ — диктовка.</span>
     </div>
     <div id="voice-status" class="voice-status" role="status" aria-live="polite" hidden></div>
     <div id="tts-status" class="voice-status" role="status" aria-live="polite"></div>
@@ -84,6 +84,26 @@
       <div class="panel-title"><h2>Нужна проверка</h2><span id="pending-count" class="badge">0</span></div>
       <p class="explain">Предположения Qwen не становятся фактами автоматически. Подтверди, исправь или отклони каждое.</p>
       <div id="pending" class="pending"></div>
+    </section>
+    <section class="panel">
+      <h2>Участники разговора</h2>
+      <div id="dialogue-roles" class="dialogue-roles">Загрузка…</div>
+      <p class="explain">Имена привязаны к ролям. Назови своё имя напрямую, чтобы Джарвис запомнил.</p>
+    </section>
+    <section class="panel">
+      <h2>Словарь произношения</h2>
+      <p class="explain">Учи неправильные распознавания английских слов. Замены применяются перед запросом к Qwen.</p>
+      <form id="speech-form" class="speech-form">
+        <label>Что услышал браузер<input id="speech-heard" maxlength="80" placeholder="хомо сестранте" required /></label>
+        <label>Правильное название<input id="speech-correct" maxlength="100" placeholder="Home Assistant" required /></label>
+        <button type="submit">Запомнить произношение</button>
+      </form>
+      <div id="speech-items" class="speech-items"></div>
+    </section>
+    <section class="panel">
+      <h2>Реальные возможности</h2>
+      <div id="tool-register" class="tool-register"></div>
+      <p class="explain">Изучить API и реально вызвать API — разные вещи. Без подключённого исполнителя сетевые действия запрещены.</p>
     </section>
     <section class="panel">
       <h2>Что ещё не умеет</h2>

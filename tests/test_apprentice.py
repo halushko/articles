@@ -101,6 +101,42 @@ class ApprenticeMemoryTests(unittest.TestCase):
                                (p["id"],)).fetchone()["status"]
         self.assertEqual(status,"retracted")
 
+    def test_dialogue_roles_use_explicit_teacher_introduction(self):
+        self.assertEqual(self.memory.context("Как тебя зовут?")["direct_reply"],
+                         "Меня зовут JARVIS.")
+        self.assertIn("не представился",
+                      self.memory.context("А как зовут меня?")["direct_reply"])
+        first=self.memory.context("Привет, меня зовут Дима, а тебя?")
+        self.assertIn("Дима",first["direct_reply"])
+        self.assertEqual(self.memory.context("А как зовут меня?")["direct_reply"],
+                         "Тебя зовут Дима.")
+        self.assertEqual(self.memory.snapshot()["dialogue"]["roles"]["user"],"Дима")
+        self.assertEqual(self.memory.snapshot()["counts"]["entity"],0)
+
+    def test_learn_pronunciation_with_explicit_correction(self):
+        phrase="Когда я говорю «хомо сестранте», я имею в виду Home Assistant"
+        lesson=self.memory.context(phrase)
+        self.assertIn("Запомнил произношение",lesson["direct_reply"])
+        corrected=self.memory.context("У меня система на хомо сестранте")
+        self.assertEqual(corrected["normalized_text"],
+                         "У меня система на Home Assistant")
+        self.assertEqual(self.memory.snapshot()["dialogue"]["speech_corrections"][0]["correct"],
+                         "Home Assistant")
+        with self.assertRaises(ValueError):
+            self.memory.dialogue.add_correction("секрет","Bearer token")
+        item=self.memory.snapshot()["dialogue"]["speech_corrections"][0]
+        self.memory.dialogue.delete_correction(item["id"])
+        self.assertEqual(self.memory.context("хомо сестранте")["normalized_text"],
+                         "хомо сестранте")
+
+    def test_tool_registry_distinguishes_ideas_from_execution(self):
+        tools={x["name"]:x for x in self.memory.context("Подключись к API")["capabilities"]}
+        self.assertEqual(tools["knowledge.lookup"]["status"],"available")
+        self.assertEqual(tools["knowledge.confirm"]["status"],"teacher_only")
+        self.assertEqual(tools["network.http"]["status"],"unavailable")
+        self.assertIsNone(tools["network.http"]["executor"])
+        self.assertEqual(self.memory.context("Подключись к API")["execution_tools"],[])
+
     def test_teacher_can_edit_model_extraction(self):
         p=self.memory.propose("Млкий",[{"kind":"entity","name":"Млкий",
                                     "description":"Неудачная запись"}])[0]
@@ -111,6 +147,24 @@ class ApprenticeMemoryTests(unittest.TestCase):
 
 
 class ApprenticeApiTests(unittest.TestCase):
+    def test_http_pronunciation_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ,{"DATABASE_PATH":str(Path(tmp)/"speech.sqlite3")}):
+                with TestClient(research_app) as client:
+                    r=client.post("/apprentice/speech-corrections",json={
+                        "heard":"хоум ассистент","correct":"Home Assistant"})
+                    self.assertEqual(r.status_code,200)
+                    state=client.get("/apprentice/state").json()
+                    self.assertEqual(len(state["dialogue"]["speech_corrections"]),1)
+                    self.assertEqual(
+                        client.post("/apprentice/context",json={
+                          "query":"Система хоум ассистент"}).json()["normalized_text"],
+                        "Система Home Assistant")
+                    item=state["dialogue"]["speech_corrections"][0]
+                    r=client.post("/apprentice/speech-corrections/delete",
+                                  json={"item_id":item["id"]})
+                    self.assertEqual(r.status_code,200)
+
     def test_http_review_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ,{"DATABASE_PATH":str(Path(tmp)/"research.sqlite3")}):
@@ -127,6 +181,41 @@ class ApprenticeApiTests(unittest.TestCase):
 
 
 class ApprenticeGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_identity_faq_bypasses_llm(self):
+        calls=[]
+        async def fake_forward(url,method="GET",payload=None):
+            calls.append(url)
+            if "/context" in url:
+                return {"normalized_text":"Как меня зовут",
+                        "direct_reply":"Тебя зовут Дима."}
+            raise AssertionError("No model call should be needed for role identity")
+        with patch.object(gateway,"forward",fake_forward):
+            result=await gateway.chat(gateway.ChatIn(
+                text="Как меня зовут",experiment="apprentice"))
+        self.assertEqual(result["route"],"apprentice_confirmed_context")
+        self.assertEqual(result["answer"],"Тебя зовут Дима.")
+        self.assertEqual(result["tokens"],0)
+        self.assertEqual(len(calls),1)
+
+    async def test_connection_request_reports_missing_tool_without_llm(self):
+        calls=[]
+        async def fake_forward(url,method="GET",payload=None):
+            calls.append(url)
+            if "/context" in url:
+                return {"normalized_text":"Я хочу чтобы ты подключился к Home Assistant",
+                        "capabilities":[
+                            {"name":"network.http","status":"unavailable"},
+                            {"name":"external.action","status":"unavailable"}]}
+            raise AssertionError("No model call needed when HTTP tool is unavailable")
+        with patch.object(gateway,"forward",fake_forward):
+            r=await gateway.chat(gateway.ChatIn(
+                text="Я хочу чтобы ты подключился к Home Assistant",
+                experiment="apprentice"))
+        self.assertEqual(r["route"],"apprentice_capability_boundary")
+        self.assertIn("нет HTTP-инструмента",r["answer"])
+        self.assertEqual(len(calls),1)
+        self.assertFalse(r["executed"])
+
     async def test_fake_api_claim_is_corrected_and_proposal_not_saved(self):
         calls=[]
         async def fake_forward(url,method="GET",payload=None):

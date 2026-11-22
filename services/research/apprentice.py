@@ -8,6 +8,7 @@ import json
 import sqlite3
 from difflib import SequenceMatcher
 from .normalize import normalize
+from .conversation import DialogueMemory
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS apprentice_proposals (
@@ -111,6 +112,7 @@ class ApprenticeMemory:
         self.engine = engine
         with engine.connect() as con:
             con.executescript(SCHEMA)
+        self.dialogue = DialogueMemory(engine)
 
     def propose(self, source_text, proposals):
         if not isinstance(proposals, list):
@@ -304,11 +306,14 @@ class ApprenticeMemory:
             events = [dict(r) for r in con.execute(
                 "SELECT * FROM apprentice_events ORDER BY id DESC LIMIT 20")]
         return {"counts":counts,"pending":proposals,"knowledge":nodes,
+                "dialogue":self.dialogue.state(),
                 "events":events,"note":"Only confirmed teachings are in knowledge. Actions are descriptions, not runnable tools."}
 
     def context(self, query):
         """Retrieve confirmed knowledge only. Similarity is a fast *hint*, not proof."""
-        text = normalize(query)
+        prepared = self.dialogue.prepare(query)
+        normalized_text = prepared["text"]
+        text = normalize(normalized_text)
         tokens = set(text.split())
         with self.engine.connect() as con:
             rows = []
@@ -354,5 +359,11 @@ class ApprenticeMemory:
                         recent.append(item)
             rows = recent[:12]
         # Do not overwhelm a small model with irrelevant facts.
+        state = self.dialogue.state()
         return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
-                "execution_tools":[],"note":"Knowledge is teacher-confirmed. No external execution tools are connected."}
+                "normalized_text":normalized_text,
+                "direct_reply":prepared.get("direct_reply"),
+                "identity":state["roles"],
+                "capabilities":state["capabilities"],
+                "execution_tools":[],
+                "note":"Knowledge is teacher-confirmed. HTTP and external execution are unavailable."}

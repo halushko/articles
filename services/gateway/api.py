@@ -44,6 +44,13 @@ class ConceptIn(BaseModel):
     description: str = Field(default="",max_length=400)
     aliases: list[str] = Field(default_factory=list,max_length=20)
 
+class SpeechCorrectionIn(BaseModel):
+    heard: str = Field(min_length=2,max_length=80)
+    correct: str = Field(min_length=2,max_length=100)
+
+class SpeechCorrectionDeleteIn(BaseModel):
+    item_id: int = Field(gt=0)
+
 class ApprenticeGradeIn(BaseModel):
     question: str = Field(min_length=1,max_length=3000)
     answer: str = Field(min_length=1,max_length=3000)
@@ -145,6 +152,14 @@ async def feedback(data: FeedbackIn):
 async def apprentice_state():
     return await forward(RESEARCH_URL+"/apprentice/state")
 
+@app.post("/api/apprentice/speech-corrections", dependencies=[Depends(auth)])
+async def speech_correction_add(data: SpeechCorrectionIn):
+    return await forward(RESEARCH_URL+"/apprentice/speech-corrections","POST",data.model_dump())
+
+@app.post("/api/apprentice/speech-corrections/delete", dependencies=[Depends(auth)])
+async def speech_correction_delete(data: SpeechCorrectionDeleteIn):
+    return await forward(RESEARCH_URL+"/apprentice/speech-corrections/delete","POST",data.model_dump())
+
 @app.post("/api/apprentice/grade", dependencies=[Depends(auth)])
 async def apprentice_grade(data: ApprenticeGradeIn):
     return await forward(RESEARCH_URL+"/apprentice/grade","POST",data.model_dump())
@@ -179,11 +194,48 @@ def unverified_external_activity(reply: str) -> bool:
     return bool((past_action and external) or unsafe_secret_request)
 
 
+def requests_external_connection(text: str) -> bool:
+    """Specific first-person tool request, not a lesson about network protocols."""
+    wants_connection = re.search(
+        r"(?iu)\b(?:подключ\w+|соединени[ея]|"
+        r"предоставить\s+доступ|дать\s+доступ)\b", text)
+    assistant_target = re.search(
+        r"(?iu)\b(?:ты|тебе|тебя|твой|джарвис|jarvis|вам|вы)\b", text)
+    return bool(wants_connection and assistant_target)
+
+
 async def apprentice_chat(data: ChatIn, start: float):
     # Only confirmed knowledge is given to the interpreter; guesses stay pending.
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",{"query":data.text})
+    text = memory.get("normalized_text", data.text)
+    direct_reply = memory.get("direct_reply")
+    # Names of speakers and explicit pronunciation lessons are resolved in SQLite.
+    # They must never require an LLM guess or create a spurious proposal.
+    if direct_reply:
+        return {"answer":direct_reply, "route":"apprentice_confirmed_context",
+                "intent":"ask", "missing":"", "proposals":[], "model":"SQLite",
+                "tokens":0, "executed":False,
+                "normalized_input":text if text != data.text else None,
+                "total_ms":round((time.perf_counter()-start)*1000,2)}
+    capabilities = {item.get("name"):item.get("status")
+                    for item in memory.get("capabilities",[])}
+    if (requests_external_connection(text)
+            and capabilities.get("network.http") == "unavailable"
+            and capabilities.get("external.action") == "unavailable"):
+        return {"answer":(
+                    "Понимаю: ты хочешь, чтобы я сам подключился к внешней системе. "
+                    "Но у меня пока нет HTTP-инструмента и коннектора для действий "
+                    "в других системах. Поэтому URL сам по себе не позволит мне "
+                    "подключиться, а токен в чат отправлять нельзя. "
+                    "Нужно добавить разрешённый инструмент подключения с отдельным "
+                    "хранилищем доступа. До этого я могу только изучать описания."
+                ), "route":"apprentice_capability_boundary",
+                "intent":"request", "missing":"Отсутствует исполнитель network.http",
+                "proposals":[], "model":"SQLite", "tokens":0,"executed":False,
+                "normalized_input":text if text != data.text else None,
+                "total_ms":round((time.perf_counter()-start)*1000,2)}
     parsed = await forward(LLM_URL+"/analyze","POST",
-                           {"text":data.text,"profile":data.profile,
+                           {"text":text,"profile":data.profile,
                             "history":data.history,"memory":memory})
     # Tool calls cannot be represented as words. Block invented external work
     # before any model-generated "lessons" are proposed to the teacher.
@@ -201,11 +253,16 @@ async def apprentice_chat(data: ChatIn, start: float):
     proposals = []
     if parsed.get("proposals"):
         stored = await forward(RESEARCH_URL+"/apprentice/propose","POST",
-                               {"source_text":data.text,"proposals":parsed["proposals"]})
+                               {"source_text":text,"proposals":parsed["proposals"]})
         proposals = stored.get("proposals",[])
+    missing = parsed.get("missing","")
+    if not isinstance(missing,str) or missing.casefold().startswith(
+        ("конкретный недостающий ресурс", "конкретна недостаюча інформація")):
+        missing = ""
     return {"answer":parsed.get("reply",""),"route":"apprentice_tutor",
+            "normalized_input":text if text != data.text else None,
             "intent":parsed.get("intent","chat"),
-            "missing":parsed.get("missing",""),
+            "missing":missing,
             "parse_warning":parsed.get("parse_warning"),
             "integrity_warning":parsed.get("integrity_warning"),
             "proposals":proposals,"model":parsed.get("model"),

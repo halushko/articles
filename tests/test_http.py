@@ -64,5 +64,11 @@ class WebTests(unittest.TestCase):
             self.assertIn('form.requestSubmit()',voice.text)
             self.assertIn('speechSynthesis',voice.text)
             self.assertIn('id="voice-output"',r.text)
+            self.assertIn('<textarea id="message"',r.text)
+            self.assertIn('Shift+Enter',r.text)
+            self.assertIn('id="speech-form"',r.text)
+            self.assertIn('id="tool-register"',r.text)
+            self.assertIn("event.shiftKey",js.text)
+            self.assertIn("chatForm.requestSubmit()",js.text)
 
 if __name__=='__main__':unittest.main()
