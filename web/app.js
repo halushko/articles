@@ -16,6 +16,86 @@ async function api(path, opts = {}) {
   }
   return data;
 }
+// A profile is a conversational hint, NOT authentication. A tablet can
+// switch speakers on every message. Never auto-switch between two owners.
+const actorSelect=$('actor-select'), actorStatus=$('actor-status');
+let actors=[];
+const deviceId=(()=>{
+  try{
+    let id=localStorage.getItem('jarvis.device.id.v1');
+    if(!id && crypto?.randomUUID){
+      id=crypto.randomUUID();
+      localStorage.setItem('jarvis.device.id.v1',id);
+    }
+    return id||'';
+  }catch(_){return '';}
+})();
+const actorId=()=>actorSelect.value||'';
+async function refreshActors(prefer=''){
+  const data=await api('/api/actors?device_id='+encodeURIComponent(deviceId));
+  actors=data.people||[];
+  actorSelect.replaceChildren();
+  const unknown=document.createElement('option');
+  unknown.value='';unknown.textContent='Неизвестный собеседник';
+  actorSelect.append(unknown);
+  for(const a of actors){
+    const opt=document.createElement('option');
+    opt.value=a.id;opt.textContent=a.display_name;actorSelect.append(opt);
+  }
+  const hints=data.device?.suggested_profiles||[];
+  actorSelect.value=prefer||(hints.length===1?hints[0]:actors.length===1?actors[0].id:'');
+  actorStatus.textContent=actorId()?
+    'Профиль выбран. Это не подтверждение личности.':
+    'Выбери говорящего; нельзя угадывать по предыдущему сообщению.';
+}
+actorSelect.addEventListener('change',()=>{
+  turnHistory=[]; // No previous person's prompt history for Qwen.
+  actorStatus.textContent=actorId()?'Выбран другой профиль (не аутентификация).':
+    'Говорящий не определён.';
+});
+$('actor-add').addEventListener('click',async()=>{
+  const name=window.prompt('Имя нового собеседника');
+  if(!name?.trim())return;
+  try{
+    const p=await api('/api/actors',{method:'POST',
+      body:JSON.stringify({display_name:name.trim()})});
+    await refreshActors(p.id);turnHistory=[];
+    putMessage('Создан профиль «'+p.display_name+
+      '». Подтверждённые знания не менялись.','system');
+  }catch(e){putMessage('Не удалось создать профиль: '+e.message,'system');}
+});
+$('device-link').addEventListener('click',async()=>{
+  if(!actorId()||!deviceId){putMessage('Выбери профиль и открой защищённый контекст браузера.','system');return;}
+  const label=window.prompt('Как назвать устройство?','Моё устройство');
+  if(!label?.trim())return;
+  if(!window.confirm('Связать это устройство с профилем? Это подсказка, не авторизация.'))return;
+  try{
+    await api('/api/actors/device',{method:'POST',
+      body:JSON.stringify({device_id:deviceId,actor_id:actorId(),label:label.trim()})});
+    actorStatus.textContent='Устройство связано как подсказка (без аутентификации).';
+  }catch(e){putMessage('Ошибка привязки устройства: '+e.message,'system');}
+});
+refreshActors().catch(e=>actorStatus.textContent='Профили недоступны: '+e.message);
+
+let previewTimer,previewId=0;
+async function previewIntent(){
+  const text=$('message').value.trim(),seq=++previewId;
+  if(!text){$('intent-preview').textContent='Намерение ещё не определено';return;}
+  try{
+    const r=await api('/api/intent',{method:'POST',body:JSON.stringify({text})});
+    if(seq!==previewId)return;
+    $('intent-preview').textContent=({
+      question:'❓ Вопрос',command:'⚙️ Команда',
+      statement:'🧠 Утверждение',unknown:'❔ Неоднозначно'
+    })[r.intent]||'❔ Неоднозначно';
+    $('intent-preview').dataset.intent=r.intent;
+  }catch(_){$('intent-preview').textContent='Не удалось проверить намерение';}
+}
+$('message').addEventListener('input',()=>{
+  clearTimeout(previewTimer);previewTimer=setTimeout(previewIntent,220);
+});
+$('voice-intent').addEventListener('change',previewIntent);
+
 function putMessage(text, role='assistant', meta='') {
   const box=document.createElement('div');box.className='message '+role;
   const body=document.createElement('div');body.textContent=text;box.append(body);
@@ -185,6 +265,7 @@ async function send(text,experiment,extras={}) {
                  ablation:$('ablation').value,
                  history:mode==='apprentice'?turnHistory.slice(-12):[],
                  session_id:sessions?.id()||undefined,
+                 actor_id:actorId(),
                  web_mode:mode==='apprentice' ? sessions?.webMode()||'ask':'off',
                  ...extras};
   const requestId=window.crypto?.randomUUID?.() ||
@@ -202,13 +283,16 @@ async function send(text,experiment,extras={}) {
   const intentLabels={question:'❓ вопрос',command:'⚙️ команда',
                      statement:'🧠 утверждение',unknown:'❔ неясно'};
   const utterance=r.utterance_intent;
-  const stamp=[r.route,utterance?.intent?intentLabels[utterance.intent]:null,
+  const actor=actors.find(p=>p.id===actorId());
+  const stamp=[r.route,actor?'👤 '+actor.display_name:'👤 неизвестный',
+               utterance?.intent?intentLabels[utterance.intent]:null,
                r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
                r.tokens!=null?`${r.tokens} токенов`:null,
                r.evidence_source==='confirmed_sqlite_graph'?'✓ подтверждено SQLite':null
               ].filter(Boolean).join(' · ');
   if(r.normalized_input && r.normalized_input!==text) {
-    putMessage('Словарь произношений: «'+text+'» → «'+r.normalized_input+'»','system');
+    putMessage((utterance?.explicit_prefix?'Указан режим реплики':'Нормализация речи')+
+      ': «'+text+'» → «'+r.normalized_input+'»','system');
   }
   const card=putMessage(r.answer,'assistant',stamp);
   if(r.route==='apprentice_voice_review' && r.voice_review_result?.review){
