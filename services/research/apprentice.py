@@ -84,6 +84,14 @@ CREATE TABLE IF NOT EXISTS capability_ideas (
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(name_key,domain)
 );
+CREATE TABLE IF NOT EXISTS apprentice_grades (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ question TEXT NOT NULL,
+ answer TEXT NOT NULL,
+ rating TEXT NOT NULL CHECK(rating IN ('good','bad')),
+ teacher_note TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS apprentice_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  event_type TEXT NOT NULL,
@@ -226,6 +234,18 @@ class ApprenticeMemory:
         return {"id":proposal_id,"status":status,"kind":row["kind"],"name":new_name,
                 "executed":False}
 
+    def grade(self, question, answer, rating, teacher_note=""):
+        """Teacher-scored answer: evaluation evidence, NOT a knowledge update."""
+        if rating not in {"good","bad"} or not question.strip() or not answer.strip():
+            raise ValueError("Invalid graded answer")
+        with self.engine.connect() as con:
+            cur = con.execute("""INSERT INTO apprentice_grades
+                (question,answer,rating,teacher_note) VALUES(?,?,?,?)""",
+                (question[:3000],answer[:3000],rating,teacher_note[:1200]))
+        return {"saved":True,"id":cur.lastrowid,"rating":rating,
+                "note":"Feedback recorded for evaluation, not used to train Qwen",
+                "executed":False}
+
     def forget(self, kind, item_id):
         """Retract a confirmed item without destroying the teaching audit."""
         if kind not in TABLES:
@@ -268,6 +288,10 @@ class ApprenticeMemory:
                       for k,table in TABLES.items()}
             counts["pending"] = con.execute(
                 "SELECT COUNT(*) FROM apprentice_proposals WHERE status='pending'").fetchone()[0]
+            counts["graded"] = con.execute(
+                "SELECT COUNT(*) FROM apprentice_grades").fetchone()[0]
+            counts["graded_good"] = con.execute(
+                "SELECT COUNT(*) FROM apprentice_grades WHERE rating='good'").fetchone()[0]
             counts["rejected"] = con.execute(
                 "SELECT COUNT(*) FROM apprentice_proposals WHERE status='rejected'").fetchone()[0]
             proposals = [self._row(r) for r in con.execute(
