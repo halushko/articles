@@ -151,3 +151,25 @@
   .composer-tools #voice-intent{width:120px;min-width:110px}
   .composer-tools #send{flex:1;min-width:90px}
 }
+
+/* v0.8 — speaker and interpreted utterance are visible without opening logs. */
+.actor-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap: .55rem;
+  padding:.65rem .8rem; margin:.5rem 0; border:1px solid var(--border,#384353);
+  border-radius:.7rem; background:rgba(110,145,185,.045); }
+.actor-toolbar label { display:flex; align-items:center; gap:.5rem; font-size:.9rem; }
+.actor-toolbar select { max-width:220px; min-width:125px; }
+.actor-toolbar button { white-space:nowrap; }
+.actor-toolbar small { width:100%; opacity:.78; }
+.voice-settings { gap:.6rem; flex-wrap:wrap; }
+.voice-settings label[for="voice-intent"] { display:flex; align-items:center; gap:.35rem; }
+.voice-settings #voice-intent { max-width:240px; }
+.intent-preview { padding:.2rem .55rem; border-radius:.5rem; font-size:.85rem;
+  border:1px solid var(--border,#384353); }
+.intent-preview[data-intent="unknown"] { border-color:#9e873f; }
+@media (max-width:650px) {
+  .actor-toolbar { align-items:stretch; }
+  .actor-toolbar label { width:100%; }
+  .actor-toolbar select { flex:1; }
+  .voice-settings label[for="voice-intent"] { width:100%; }
+  .voice-settings #voice-intent { flex:1; max-width:none; }
+}
