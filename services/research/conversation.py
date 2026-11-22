@@ -82,10 +82,51 @@ TEACH_CORRECTION = re.compile(
 )
 
 
+# Name questions often arrive from speech recognition without punctuation.
+# Detect interrogative structure before considering any memory mutation.
+QUESTION_OPENERS = re.compile(
+    r"(?iu)^\s*(?:а\s+|ну\s+|скажи\s+|подскажи\s+|"
+    r"вопрос\s*[:,-]?\s*)*"
+    r"(?:как|кто|что|где|когда|почему|зачем|сколько|какой|какая|"
+    r"какие|чей|чья|чьё|можно\s+ли|умеешь\s+ли|"
+    r"знаешь\s+ли|ты\s+можешь\s+ли)\b"
+)
+INTRODUCTION_STATEMENT = re.compile(
+    rf"(?iu)^\s*(?:ну\s+|а\s+)?"
+    rf"(?:меня\s+зовут|мо[её]\s+имя|зови\s+меня|"
+    rf"називай\s+мене|мене\s+звуть)\s+({NAME_CHARS})"
+    rf"(?=\s*(?:[.!]|$|,\s*(?:а|и)\s+))"
+)
+NOT_A_NAME = {"и","а","или","как","кто","что","ты","тебя","меня",
+              "зовут","имя","вопрос","не","это","ли","ну"}
+
+
+def is_question(text):
+    """Semantic question signal; punctuation is optional for voice input."""
+    value=str(text or "").strip()
+    if not value:
+        return False
+    if "?" in value or QUESTION_OPENERS.search(value):
+        return True
+    # Common inversions: 'тебя зовут как', 'меня зовут как'.
+    return bool(re.search(r"(?iu)\b(?:меня|тебя)\s+зовут\s+как\b",value))
+
+
 def extract_name(text):
-    """Only an explicit *first-person* introduction updates the speaker role."""
-    match = INTRODUCTION.search(text[:250])
-    return match.group(1).capitalize() if match else None
+    """Only an explicit declarative introduction may update the user role.
+
+    Do not extract the conjunction 'и' from 'Как меня зовут и тебя зовут'.
+    Speech recognition often omits question marks.
+    """
+    if is_question(text):
+        return None
+    match=INTRODUCTION_STATEMENT.match(str(text or "")[:250])
+    if not match:
+        return None
+    candidate=match.group(1)
+    if candidate.casefold() in NOT_A_NAME:
+        return None
+    return candidate.capitalize()
 
 
 def clean_phrase(value):
@@ -124,6 +165,28 @@ class DialogueMemory:
                     executor=excluded.executor""",
                     (tool["name"], status, tool["description"],
                      tool["executor"] if status=="available" else None))
+            # Repair a known legacy parsing bug: "Как меня зовут и тебя зовут"
+            # was misread as the user introducing themselves as "И".
+            # Do not guess a name: recover only from an explicit, confirmed
+            # previous introduction; otherwise remove the corrupted role.
+            broken=con.execute(
+                "SELECT display_name FROM dialogue_roles WHERE role='user'"
+            ).fetchone()
+            if broken and broken["display_name"].casefold() in NOT_A_NAME:
+                recovered=None
+                for row in con.execute("""SELECT name,source_text FROM apprentice_proposals
+                     WHERE kind='entity' AND status='confirmed' ORDER BY id DESC LIMIT 150"""):
+                    parsed=extract_name(row["source_text"])
+                    if parsed and key_for(parsed)==key_for(row["name"]):
+                        recovered=parsed
+                        break
+                if recovered:
+                    con.execute("""UPDATE dialogue_roles SET display_name=?,
+                         source='recovered_confirmed_introduction',
+                         updated_at=CURRENT_TIMESTAMP WHERE role='user'""",
+                         (recovered,))
+                else:
+                    con.execute("DELETE FROM dialogue_roles WHERE role='user'")
             # Preserve correctly confirmed introductions from earlier versions.
             exists = con.execute("SELECT 1 FROM dialogue_roles WHERE role='user'").fetchone()
             if not exists:
@@ -208,6 +271,26 @@ class DialogueMemory:
                 return {"text":raw,"direct_reply":f"Запомнил произношение: «{heard}» → «{correct}».",
                         "roles":state["roles"],"taught":taught}
         text = self.normalize_speech(raw)
+        roles = self.state()["roles"]
+        compact = text.strip()
+        # Combined questions must be answered together; no writes and no
+        # fallback to the LLM. This works without '?' and with ASR filler.
+        asks_user = bool(SELF_NAME_QUERY.search(compact))
+        asks_assistant = bool(
+            ASSISTANT_NAME_QUERY.search(compact)
+            or ASSISTANT_NAME_CHOICE.search(compact)
+            or (asks_user and re.search(
+                r"(?iu)\b(?:и|а|и\s+как|а\s+как)\s+тебя\s+зовут\b",compact)))
+        if len(compact)<200 and (asks_user or asks_assistant):
+            answers=[]
+            if asks_user:
+                name=roles.get("user")
+                answers.append(f"Тебя зовут {name}." if name else
+                               "Ты ещё не представился.")
+            if asks_assistant:
+                answers.append(f"Меня зовут {roles.get('assistant','JARVIS')}.")
+            return {"text":text,"roles":roles,"direct_reply":" ".join(answers),
+                    "intent":"identity_question","is_question":True}
         new_name = extract_name(text)
         if new_name:
             with self.engine.connect() as con:
@@ -219,20 +302,8 @@ class DialogueMemory:
             return {"text":text,"direct_reply":(
                         f"Приятно познакомиться, {new_name}. "
                         f"Меня зовут {self.state()['roles'].get('assistant','JARVIS')}."),
-                    "roles":self.state()["roles"],"taught_name":new_name}
-        roles = self.state()["roles"]
-        compact = text.strip()
-        # Identity questions are resolved from roles, not similarity-ranked nouns.
-        if len(compact) < 100 and SELF_NAME_QUERY.search(compact):
-            name = roles.get("user")
-            return {"text":text, "roles":roles,
-                    "direct_reply":f"Тебя зовут {name}." if name else
-                    "Ты ещё не представился. Как тебя зовут?"}
-        if len(compact) < 160 and (
-                ASSISTANT_NAME_QUERY.search(compact)
-                or ASSISTANT_NAME_CHOICE.search(compact)):
-            return {"text":text,"roles":roles,
-                    "direct_reply":f"Меня зовут {roles.get('assistant','JARVIS')}."}
+                    "roles":self.state()["roles"],"taught_name":new_name,
+                    "intent":"identity_introduction","is_question":False}
         if len(compact)<180 and CAPABILITY_QUERY.search(compact):
             tools=self.state()["capabilities"]
             active=[t["description"] for t in tools if t["status"]=="available"]
@@ -244,4 +315,5 @@ class DialogueMemory:
                      "устройствами: "+", ".join(restricted)+".")
             answer+=" Подтверждать новые знания может только учитель."
             return {"text":text,"roles":roles,"direct_reply":answer}
-        return {"text":text,"roles":roles,"direct_reply":None}
+        return {"text":text,"roles":roles,"direct_reply":None,
+                "is_question":is_question(text)}

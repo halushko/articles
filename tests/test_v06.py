@@ -56,6 +56,42 @@ class KnowledgeChangeTests(unittest.TestCase):
         self.assertIn(("assistant","JARVIS"),
                       [(x["role"],x["name"]) for x in aliases])
 
+    def test_unpunctuated_compound_identity_question_never_teaches_i(self):
+        self.memory.dialogue.prepare("Меня зовут Дима")
+        self.assertEqual(self.memory.dialogue.state()["roles"]["user"],"Дима")
+        for utterance in (
+            "Как меня зовут и тебя зовут",
+            "вопрос как меня зовут и Как тебя зовут",
+            "Как меня зовут и как тебя зовут?",
+            "скажи как меня зовут",
+            "Как меня зовут"
+        ):
+            result=self.memory.context(utterance)
+            self.assertIn("Тебя зовут Дима.",result["direct_reply"])
+            self.assertNotIn("Приятно познакомиться",result["direct_reply"])
+            self.assertEqual(self.memory.dialogue.state()["roles"]["user"],"Дима")
+        self.assertIn("Меня зовут JARVIS.",
+                      self.memory.context("Как меня зовут и тебя зовут")["direct_reply"])
+
+    def test_unpunctuated_questions_cannot_create_user_identity(self):
+        for question in ("Как меня зовут и тебя зовут",
+                         "вопрос как меня зовут и Как тебя зовут",
+                         "Как меня зовут",
+                         "скажи как меня зовут"):
+            result=self.memory.context(question)
+            self.assertNotIn("Приятно познакомиться",result["direct_reply"])
+            self.assertNotIn("user",self.memory.dialogue.state()["roles"])
+        self.assertEqual(self.memory.dialogue.prepare("Меня зовут Надя")["taught_name"],"Надя")
+        self.assertEqual(self.memory.dialogue.state()["roles"]["user"],"Надя")
+
+    def test_repairs_legacy_corrupt_user_name_from_confirmed_introduction(self):
+        self.memory.dialogue.prepare("Меня зовут Дима")
+        with self.engine.connect() as con:
+            con.execute("UPDATE dialogue_roles SET display_name='И' WHERE role='user'")
+        from services.research.conversation import DialogueMemory
+        DialogueMemory(self.engine)
+        self.assertNotEqual(self.memory.dialogue.state()["roles"].get("user"),"И")
+
     def test_repeated_request_and_rename_back(self):
         proposal=self.memory.context("Я просил переименовать тебя в Домик")["change_proposal"]
         self.assertEqual(proposal["proposed_value"],"Домик")
