@@ -14,6 +14,7 @@ from services.research.review_voice import VoiceReviews
 from services.research.dialogue import DialogueCoordinator
 from services.research.actors import ActorRegistry
 from services.research.world import WorldMemory
+from services.research.utterance import classify
 from services.gateway import api as gateway
 
 
@@ -76,6 +77,14 @@ class WorldMemoryTests(unittest.TestCase):
         self.assertEqual(evidence["model"],"qwen2.5:3b")
         self.assertIn("люстры",ctx["history"][-2]["content"])
         self.assertEqual(self.dialogue.context(self.next,self.b["id"])["history"],[])
+
+
+class IntentTeachingTests(unittest.TestCase):
+    def test_conditional_user_teaching_not_confused_with_question(self):
+        lesson=("Когда ты меня спрашиваешь Нужно ли искать это в интернете "
+                "то фраза Да поищи значит согласие")
+        self.assertEqual(classify(lesson)["intent"],"statement")
+        self.assertEqual(classify("Когда выйдет новая версия?")["intent"],"question")
 
 
 class WorldSearchPolicyTests(unittest.TestCase):
