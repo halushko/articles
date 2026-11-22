@@ -122,7 +122,8 @@ class DialogueCoordinator:
             frame=con.execute("""SELECT topic,goal,assistant_question,last_route,
                 last_intent,last_turn_id FROM dialogue_frames
                 WHERE session_id=? AND actor_id=?""",(session_id,actor_id)).fetchone()
-            turns=con.execute("""SELECT question,answer FROM research_turns
+            turns=con.execute("""SELECT question,answer,route,model,provenance
+                FROM research_turns
                 WHERE session_id=? AND actor_id=?
                 ORDER BY id DESC LIMIT ?""",
                 (session_id,actor_id,min(8,max(1,int(limit))))).fetchall()
@@ -130,7 +131,26 @@ class DialogueCoordinator:
         for row in reversed(turns):
             history.extend(({"role":"user","content":row["question"][:800]},
                             {"role":"assistant","content":row["answer"][:1200]}))
+        # The last server-recorded route is more reliable than the model's
+        # account of where its own earlier answer came from.
+        previous=dict(turns[0]) if turns else {}
+        provenance=_decode(previous.get("provenance") or "{}")
+        sources=provenance.get("sources")
+        if not isinstance(sources,list):
+            sources=[]
+        last_evidence={
+            "route":previous.get("route",""),
+            "model":previous.get("model",""),
+            "source_kind":("external_web" if sources else
+                           "confirmed_sqlite" if previous.get("model")=="SQLite"
+                           else "unverified_model_answer"),
+            "sources":[{"title":str(item.get("title") or "")[:150],
+                        "url":str(item.get("url") or "")[:500],
+                        "status":str(item.get("status") or "")[:40]}
+                       for item in sources[:4] if isinstance(item,dict)],
+        } if previous else {}
         return {"state":dict(frame) if frame else {}, "history":history,
+                "last_response_evidence":last_evidence,
                 "pending":self.pending_summary(session_id,actor_id)}
 
     def _pending(self, session_id):
