@@ -162,7 +162,7 @@ window.JarvisResearchUI = (() => {
       if (turn.provenance?.web_approval) {
         addPermission(card, turn.provenance.web_approval, turn.id);
       }
-      if (turn.experiment === 'apprentice') {
+      if (turn.experiment === 'apprentice' || turn.experiment === 'hybrid') {
         history.push({role:'user',content:turn.question},
                      {role:'assistant',content:turn.answer});
       }
