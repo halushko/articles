@@ -31,6 +31,11 @@ class TracePipelineTests(unittest.IsolatedAsyncioTestCase):
                         "model": "qwen2.5:3b", "tokens": 20,
                         "prompt_trace": {"origin": "isolated_llm_baseline",
                                          "memory_injected": False}}
+            if url.endswith("/grounded-chat"):
+                return {"answer": "Ответ с памятью", "route": "world_grounded_chat",
+                        "model":"qwen2.5:3b", "tokens":18,
+                        "prompt_trace": {"origin":"world_grounded_chat",
+                                         "memory_injected":True}}
             if url.endswith("/apprentice/context"):
                 return {"direct_reply": "", "normalized_text": payload["query"],
                         "identity": {"user": "Дима"},
@@ -67,9 +72,11 @@ class TracePipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(any(u == gateway.RESEARCH_URL + "/resolve" for u in urls),
                                  mode in ("hybrid", "research_only"))
                 self.assertEqual(any(u.endswith("/chat") for u in urls),
-                                 mode in ("hybrid", "llm_only"))
+                                 mode == "llm_only")
+                self.assertEqual(any(u.endswith("/grounded-chat") for u in urls),
+                                 mode in ("hybrid", "apprentice"))
                 self.assertEqual(any(u.endswith("/apprentice/context") for u in urls),
-                                 mode == "apprentice")
+                                 mode in ("hybrid", "apprentice"))
         self.assertEqual(len(saved), 4)
 
     async def test_forward_records_real_http_metadata_without_body(self):
