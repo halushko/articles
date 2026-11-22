@@ -683,6 +683,7 @@ async def apprentice_chat(data: ChatIn, start: float):
                     descriptions.append(rule["instruction"])
             return {"answer":"Запомнил правило: "+"; ".join(descriptions)+".",
                     "route":"apprentice_behavior_learned","learning":learned_rules,
+                    "dialogue_frame":parsed.get("dialogue_frame"),
                     "utterance_intent":{"intent":"teach","reason":"model_grounded_instruction"},
                     "proposals":[],"model":parsed.get("model"),
                     "tokens":parsed.get("tokens",0),
@@ -782,6 +783,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             "change_proposal":change_proposal,
             "utterance_intent":memory.get("utterance_intent"),
             "voice_review":voice_review,
+            "dialogue_frame":parsed.get("dialogue_frame"),
             "integrity_warning":parsed.get("integrity_warning"),
             "web_approval":parsed.get("web_approval"),
             "web_requested":bool(wanted),
