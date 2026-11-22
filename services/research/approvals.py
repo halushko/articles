@@ -232,7 +232,7 @@ class OperationApprovals:
             return d
         with self.engine.connect() as con:
             current=con.execute("""SELECT p.id AS operation_id,p.status AS approval_status,
-                p.created_epoch,e.status AS execution_status,
+                p.created_epoch,e.status AS execution_status,e.started_epoch,
                 e.query,e.answer,e.sources,e.error
                 FROM pending_operations p LEFT JOIN operation_executions e
                 ON p.id=e.operation_id
@@ -245,4 +245,9 @@ class OperationApprovals:
                 AND e.status IN ('succeeded','failed')
                 ORDER BY e.started_epoch DESC LIMIT 1""",
                 (session_id,actor_id)).fetchone()
-        return {"current":expose(current),"last_result":expose(completed)}
+        current_state=expose(current)
+        if (current_state and current_state.get("execution_status")=="running"
+                and time.time()-float(current_state.get("started_epoch") or 0)>900):
+            current_state["execution_status"]="interrupted"
+            current_state["error"]="No completion recorded within 15 minutes"
+        return {"current":current_state,"last_result":expose(completed)}
