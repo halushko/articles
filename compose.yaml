@@ -23,9 +23,9 @@ services:
       - |
         until ollama list >/dev/null 2>&1; do sleep 3; done
         for model in qwen2.5:3b qwen3:4b; do
-          if ! ollama show "$model" >/dev/null 2>&1; then
-            echo "Downloading missing model: $model"
-            ollama pull "$model"
+          if ! ollama show "$$model" >/dev/null 2>&1; then
+            echo "Downloading missing model: $$model"
+            ollama pull "$$model"
           fi
         done
 
