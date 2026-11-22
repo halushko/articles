@@ -134,6 +134,19 @@ class ApprenticeReviewIn(BaseModel):
 class ApprenticeContextIn(BaseModel):
     query: str = Field(min_length=1,max_length=3000)
 
+class ApprenticeGradeIn(BaseModel):
+    question: str = Field(min_length=1,max_length=3000)
+    answer: str = Field(min_length=1,max_length=3000)
+    rating: str = Field(pattern="^(good|bad)$")
+    teacher_note: str = Field(default="",max_length=1200)
+
+@app.post("/apprentice/grade")
+def apprentice_grade(req: ApprenticeGradeIn):
+    try:
+        return apprentice.grade(req.question,req.answer,req.rating,req.teacher_note)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
 class ApprenticeForgetIn(BaseModel):
     kind: str = Field(pattern="^(entity|action|fact|lesson|capability)$")
     item_id: int = Field(gt=0)
