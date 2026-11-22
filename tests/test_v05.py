@@ -181,6 +181,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
                         "proposals":[{"kind":"fact","name":"ошибка","description":"не факт",
                                       "details":{"subject":"X","predicate":"Y","object":"Z"}}],
                         "tokens":24}
+            if "/research/sessions/" in url and url.endswith("/turns"):
+                return {"turn_id":5}
             raise AssertionError(url)
         with patch.object(gateway,"forward",fake):
             result=await gateway.chat(gateway.ChatIn(
@@ -209,6 +211,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(payload["origin"],"searxng")
                 return {"answer":"Результат [1]","route":"apprentice_web_evidence",
                         "model":"qwen2.5:3b","tokens":42,"executed":False}
+            if "/research/sessions/" in url and url.endswith("/turns"):
+                return {"turn_id":5}
             raise AssertionError(url)
         with patch.object(gateway,"forward",fake):
             result=await gateway.chat(gateway.ChatIn(
@@ -219,7 +223,7 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["answer"],"Результат [1]")
         self.assertEqual(result["sources"][0]["url"],"https://example.org/info")
         self.assertEqual(result["proposals"],[])
-        self.assertEqual(len(calls),3)
+        self.assertEqual(len(calls),4)
 
     async def test_auto_search_uses_model_plan(self):
         calls=[]
@@ -232,6 +236,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
                         "web_query":"документация к API","tokens":12,"model":"qwen2.5:3b"}
             if url.endswith("/research/web/search"):
                 return {"available":False,"status":"searxng_unavailable","reason":"отключён"}
+            if "/research/sessions/" in url and url.endswith("/turns"):
+                return {"turn_id":5}
             raise AssertionError(url)
         with patch.object(gateway,"forward",fake):
             result=await gateway.chat(gateway.ChatIn(
@@ -260,6 +266,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(payload["result"]["route"],"chat_error")
                 self.assertIn("Model service unavailable",payload["answer"])
                 return {"turn_id":13}
+            if "/research/sessions/" in url and url.endswith("/turns"):
+                return {"turn_id":5}
             raise AssertionError(url)
         with patch.object(gateway,"forward",fake):
             with self.assertRaises(HTTPException):
@@ -279,6 +287,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(payload["experiment"],"llm_only")
                 self.assertEqual(payload["web_mode"],"off")
                 return {"turn_id":23,"saved":True}
+            if "/research/sessions/" in url and url.endswith("/turns"):
+                return {"turn_id":5}
             raise AssertionError(url)
         with patch.object(gateway,"forward",fake):
             result=await gateway.chat(gateway.ChatIn(
