@@ -314,11 +314,13 @@ def speech_correction_delete(req: SpeechCorrectionDeleteIn):
 
 class SearchApprovalIn(BaseModel):
     session_id: str = Field(min_length=36,max_length=36)
+    actor_id: str = Field(default="",max_length=36)
     query: str = Field(min_length=3,max_length=240)
     question: str = Field(default="",max_length=3000)
 
 class SearchApprovalDecisionIn(BaseModel):
     session_id: str = Field(min_length=36,max_length=36)
+    actor_id: str = Field(default="",max_length=36)
     phrase: str = Field(default="",max_length=250)
     approval_id: str = Field(default="",max_length=36)
     source: str = Field(default="voice",pattern="^(voice|button)$")
@@ -329,13 +331,13 @@ class SearchApprovalClearIn(BaseModel):
 @app.post("/research/operations/web/propose")
 def web_operation_propose(req: SearchApprovalIn):
     try:
-        return operation_approvals.propose_search(req.session_id,req.query,req.question)
+        return operation_approvals.propose_search(req.session_id,req.query,req.question,req.actor_id)
     except ValueError as error:
         raise HTTPException(422,str(error))
 
 @app.post("/research/operations/web/resolve")
 def web_operation_resolve(req: SearchApprovalDecisionIn):
-    return operation_approvals.resolve(req.session_id,req.phrase,req.approval_id,req.source)
+    return operation_approvals.resolve(req.session_id,req.phrase,req.approval_id,req.source,req.actor_id)
 
 @app.post("/research/operations/web/clear")
 def web_operation_clear(req: SearchApprovalClearIn):
