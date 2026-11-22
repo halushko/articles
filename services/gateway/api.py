@@ -480,8 +480,10 @@ async def apprentice_chat(data: ChatIn, start: float):
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
     # Learned approvals are matched by the operation service and require a real,
     # actor-bound pending search. Try it before clearing outstanding approvals.
-    if data.session_id and data.web_mode != "off" and not (
-            is_web_reply or data.approval_id or data.allow_web_search):
+    if (data.session_id and data.web_mode != "off"
+            and len(data.text.split()) <= 6
+            and not proposed_web_query(data.text,{})
+            and not (is_web_reply or data.approval_id or data.allow_web_search)):
         learned=await forward(RESEARCH_URL+"/research/operations/web/resolve","POST",{
             "session_id":data.session_id,"phrase":data.text[:250],
             "actor_id":data.actor_id,"source":"voice"})
