@@ -259,6 +259,7 @@ function setupCorrection(container,phrase) {
 }
 async function send(text,experiment,extras={}) {
   const mode=experiment||$('experiment').value;
+  const usesWorld=(mode==='apprentice'||mode==='hybrid');
   const sessions=window.JarvisResearchUI;
   try { await sessions?.ready(); }
   catch(error) {
@@ -266,10 +267,10 @@ async function send(text,experiment,extras={}) {
   }
   const options={text,experiment:mode,profile:$('profile').value,
                  ablation:$('ablation').value,
-                 history:mode==='apprentice'?turnHistory.slice(-12):[],
+                 history:usesWorld?turnHistory.slice(-12):[],
                  session_id:sessions?.id()||undefined,
                  actor_id:actorId(),
-                 web_mode:mode==='apprentice' ? sessions?.webMode()||'ask':'off',
+                 web_mode:usesWorld ? sessions?.webMode()||'ask':'off',
                  ...extras};
   const requestId=window.crypto?.randomUUID?.() ||
     '00000000-0000-4000-8000-'+String(Date.now()).slice(-12).padStart(12,'0');
@@ -308,10 +309,10 @@ async function send(text,experiment,extras={}) {
   card.append(replay);
   voice.speak(r.answer);
   if(r.parse_warning) putMessage('Не удалось надёжно извлечь структурированное знание. Ничего не добавлено.','system');
-  if(mode==='apprentice' && r.change_proposal?.id){
+  if(usesWorld && r.change_proposal?.id){
     renderChangeProposal(r.change_proposal,card,r.turn_id);
   }
-  if(mode==='apprentice'){
+  if(usesWorld){
     const gradeControls=document.createElement('div');gradeControls.className='grade-controls';
     const verdict=document.createElement('span');verdict.textContent='Проверка учителя:';
     const buttons=[];
@@ -338,7 +339,7 @@ async function send(text,experiment,extras={}) {
     const bad=mkButton('✕ Ошибка','secondary',()=>grade('bad'));
     buttons.push(good,bad);gradeControls.append(verdict,good,bad);card.append(gradeControls);
   }
-  if(mode==='apprentice'){
+  if(usesWorld){
     turnHistory.push({role:'user',content:r.normalized_input||text},{role:'assistant',content:r.answer});
     turnHistory=turnHistory.slice(-14);
     if(r.proposals?.length){
@@ -398,8 +399,8 @@ function renderMode(){
   const explanation=$('mode-explanation');
   const notes={
     llm_only:'⚠️ Контрольный эксперимент: Qwen не получает SQLite, не знает подтверждённые сущности и может выдумывать ответы о своей памяти. Для общения с обученным JARVIS выбери «Ученик».',
-    hybrid:'Старый Hybrid: команды обрабатывает старый индекс, но вопросы о графе знаний читаются из общей подтверждённой памяти.',
-    research_only:'Индекс без LLM: отвечает на запросы к подтверждённой памяти и изученные команды. Свободный диалог намеренно отсутствует.'
+    hybrid:'Общий мир JARVIS: старый индекс распознаёт известные команды, обычные вопросы и поиск обслуживает общий диалоговый движок с памятью и опытом.',
+    research_only:'Экспериментальный старый индекс команд без LLM и общего диалога. Это не полноценный JARVIS.'
   };
   explanation.textContent=notes[mode]||'';
   explanation.hidden=!notes[mode];
@@ -448,7 +449,7 @@ $('run-ab').onclick=async()=>{
   putMessage('Сравнение: '+text,'user');
   try{
     putMessage('LLM baseline','system');await send(text,'llm_only');
-    putMessage('Legacy hybrid','system');await send(text,'hybrid');
+    putMessage('World-backed Index → LLM','system');await send(text,'hybrid');
   }catch(e){putMessage('Ошибка сравнения: '+e.message,'system');}
   finally{busy=false;$('run-ab').disabled=false;}
 };
