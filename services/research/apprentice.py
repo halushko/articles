@@ -294,6 +294,21 @@ class ApprenticeMemory:
             pending_count = con.execute(
                 "SELECT COUNT(*) FROM apprentice_proposals WHERE status='pending'").fetchone()[0]
         rows.sort(key=lambda item:item["relevance"],reverse=True)
+        # "What have I taught you?" is an overview request, not a lexical
+        # match against a particular concept. Include recent confirmed items.
+        overview = any(word in text for word in
+                       ("научил", "научился", "знаешь", "знаєш", "умеешь",
+                        "вмієш", "запомнил", "памят", "знан", "remember",
+                        "learned", "knowledge"))
+        if overview:
+            with self.engine.connect() as con:
+                recent = []
+                for kind, table in TABLES.items():
+                    for row in con.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT 3"):
+                        item = self._row(row)
+                        item["kind"] = kind
+                        recent.append(item)
+            rows = recent[:12]
         # Do not overwhelm a small model with irrelevant facts.
-        return {"knowledge":rows[:9],"counts":counts,"pending_count":pending_count,
+        return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
                 "execution_tools":[],"note":"Knowledge is teacher-confirmed. No external execution tools are connected."}
