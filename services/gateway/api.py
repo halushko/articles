@@ -44,6 +44,10 @@ class ConceptIn(BaseModel):
     description: str = Field(default="",max_length=400)
     aliases: list[str] = Field(default_factory=list,max_length=20)
 
+class ApprenticeForgetIn(BaseModel):
+    kind: str = Field(pattern="^(entity|action|fact|lesson|capability)$")
+    item_id: int = Field(gt=0)
+
 class ApprenticeReviewIn(BaseModel):
     proposal_id: int = Field(gt=0)
     decision: str = Field(pattern="^(confirm|reject)$")
@@ -134,6 +138,10 @@ async def feedback(data: FeedbackIn):
 @app.get("/api/apprentice/state", dependencies=[Depends(auth)])
 async def apprentice_state():
     return await forward(RESEARCH_URL+"/apprentice/state")
+
+@app.post("/api/apprentice/forget", dependencies=[Depends(auth)])
+async def apprentice_forget(data: ApprenticeForgetIn):
+    return await forward(RESEARCH_URL+"/apprentice/forget","POST",data.model_dump())
 
 @app.post("/api/apprentice/review", dependencies=[Depends(auth)])
 async def apprentice_review(data: ApprenticeReviewIn):
