@@ -166,7 +166,7 @@ class DialogueCoordinator:
         # The journal is reliable episodic memory even if Qwen cannot recall it.
         preceding=None
         for pos,turn in enumerate(timeline):
-            m=re.search(r"(?iu)\\b(?:забудем|забудь|забыли)\\s+про\\s+([^.!?]{2,90})",
+            m=re.search(r"(?iu)\b(?:забудем|забудь|забыли)\s+про\s+([^.!?]{2,90})",
                         turn["question"])
             if not m:
                 continue
