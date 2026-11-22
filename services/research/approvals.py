@@ -13,6 +13,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS pending_operations (
  id TEXT PRIMARY KEY,
  session_id TEXT NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
+ actor_id TEXT NOT NULL DEFAULT '',
  kind TEXT NOT NULL,
  payload TEXT NOT NULL,
  status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','expired','superseded')),
@@ -58,8 +59,10 @@ class OperationApprovals:
         self.sessions=sessions
         with engine.connect() as con:
             con.executescript(SCHEMA)
+            if "actor_id" not in {r["name"] for r in con.execute("PRAGMA table_info(pending_operations)")}:
+                con.execute("ALTER TABLE pending_operations ADD COLUMN actor_id TEXT NOT NULL DEFAULT ''")
 
-    def propose_search(self,session_id,query,question):
+    def propose_search(self,session_id,query,question,actor_id=""):
         if not self.sessions.exists(session_id):
             raise ValueError("Для согласия на поиск нужна сохранённая сессия")
         query=str(query or "").strip()[:240]
@@ -73,9 +76,10 @@ class OperationApprovals:
                 resolved_epoch=? WHERE session_id=? AND status='pending'""",
                         (time.time(),session_id))
             con.execute("""INSERT INTO pending_operations
-                (id,session_id,kind,payload,status,created_epoch)
-                VALUES(?,?, 'web.search',?, 'pending',?)""",
-                (operation_id,session_id,json.dumps(payload,ensure_ascii=False),time.time()))
+                (id,session_id,actor_id,kind,payload,status,created_epoch)
+                VALUES(?,?,?, 'web.search',?, 'pending',?)""",
+                (operation_id,session_id,actor_id or "",
+                 json.dumps(payload,ensure_ascii=False),time.time()))
         return {"id":operation_id,"kind":"web.search","query":query,
                 "question":payload["question"],"risk":"external_network",
                 "expires_seconds":TTL,"status":"pending"}
@@ -88,7 +92,7 @@ class OperationApprovals:
                  resolved_epoch=? WHERE session_id=? AND status='pending'""",
                 (time.time(),session_id))
 
-    def resolve(self,session_id,phrase="",operation_id="",source="voice"):
+    def resolve(self,session_id,phrase="",operation_id="",source="voice",actor_id=""):
         decision = spoken_search_decision(phrase) if source=="voice" else None
         if source=="button":
             decision="approved" if operation_id else None
@@ -110,6 +114,9 @@ class OperationApprovals:
             if not row or row["status"]!="pending":
                 return {"handled":True,"status":"no_pending_search","executed":False,
                         "answer":"Нет ожидающего разрешения на поиск. Сначала попроси найти информацию."}
+            if row["actor_id"]!=(actor_id or ""):
+                return {"handled":True,"status":"wrong_speaker","executed":False,
+                        "answer":"Разрешение запрашивал другой собеседник. Повтори поиск от своего профиля."}
             if row["kind"]!="web.search":
                 return {"handled":True,"status":"unsupported_operation","executed":False,
                         "answer":"Для этой операции нет разрешённого исполнителя."}
