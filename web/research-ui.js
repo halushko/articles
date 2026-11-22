@@ -81,6 +81,15 @@ window.JarvisResearchUI = (() => {
 
   function addPermission(card, permission, originTurnId) {
     if (!permission?.query) return;
+    // Old exports contain a query but no durable approval ID. They cannot
+    // authorize new tool calls. Ask for a fresh request instead.
+    if (!permission.id) {
+      const warning=document.createElement('p');
+      warning.className='explain';
+      warning.textContent='Это старое предложение без действующего разрешения. Повтори запрос.';
+      card.append(warning);
+      return;
+    }
     const panel = document.createElement('div');
     panel.className = 'web-permission';
     const label = document.createElement('p');
@@ -104,7 +113,7 @@ window.JarvisResearchUI = (() => {
         client.setBusy(true);
         await client.send(question, 'apprentice', {
           web_mode: 'ask', allow_web_search: true,
-          approved_web_query: permission.query
+          approval_id: permission.id
         });
         panel.remove();
       } catch (error) {
