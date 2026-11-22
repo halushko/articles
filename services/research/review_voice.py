@@ -14,6 +14,7 @@ from .utterance import classify
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS voice_review_queue (
  session_id TEXT PRIMARY KEY,
+ actor_id TEXT NOT NULL DEFAULT '',
  reviews TEXT NOT NULL,
  created_epoch REAL NOT NULL
 );
@@ -77,8 +78,10 @@ class VoiceReviews:
         self.sessions=sessions
         with engine.connect() as con:
             con.executescript(SCHEMA)
+            if "actor_id" not in {r["name"] for r in con.execute("PRAGMA table_info(voice_review_queue)")}:
+                con.execute("ALTER TABLE voice_review_queue ADD COLUMN actor_id TEXT NOT NULL DEFAULT ''")
 
-    def queue(self,session_id,changes=(),proposals=()):
+    def queue(self,session_id,changes=(),proposals=(),actor_id=""):
         if not self.sessions.exists(session_id):
             raise ValueError("Сессия для голосового подтверждения не найдена")
         reviews=[]
@@ -101,10 +104,11 @@ class VoiceReviews:
             reviews=list({(x["kind"],x["id"]):x for x in reviews}.values())
             if reviews:
                 con.execute("""INSERT INTO voice_review_queue
-                         (session_id,reviews,created_epoch) VALUES(?,?,?)
+                         (session_id,actor_id,reviews,created_epoch) VALUES(?,?,?,?)
                          ON CONFLICT(session_id) DO UPDATE SET
+                         actor_id=excluded.actor_id,
                          reviews=excluded.reviews,created_epoch=excluded.created_epoch""",
-                         (session_id,json.dumps(reviews),time.time()))
+                         (session_id,actor_id or "",json.dumps(reviews),time.time()))
             else:
                 con.execute("DELETE FROM voice_review_queue WHERE session_id=?",
                             (session_id,))
@@ -124,7 +128,7 @@ class VoiceReviews:
             con.execute("DELETE FROM voice_review_queue WHERE session_id=?",
                         (session_id,))
 
-    def resolve(self,session_id,text):
+    def resolve(self,session_id,text,actor_id=""):
         decision,index=speech_intent(text)
         if not decision:
             self.clear(session_id)
@@ -139,6 +143,10 @@ class VoiceReviews:
             self.clear(session_id)
             return {"handled":True,"status":"no_active_review","executed":False,
                     "answer":"Сейчас нет свежего предложения для голосового подтверждения. Повтори просьбу."}
+        if row["actor_id"]!=(actor_id or ""):
+            return {"handled":True,"status":"wrong_speaker","executed":False,
+                    "answer":"Предложение ожидает подтверждения другого собеседника. "
+                             "Переключи профиль и повтори просьбу."}
         reviews=json.loads(row["reviews"])
         # The teacher may have clicked a button for one item. Remove already
         # reviewed records without extending the original voice-review TTL.
