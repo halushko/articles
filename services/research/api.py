@@ -17,6 +17,7 @@ from .approvals import OperationApprovals
 from .dialogue import DialogueCoordinator
 from .adaptive import BehaviorMemory, WEB_CONTEXT
 from .actors import ActorRegistry
+from .world import WorldMemory
 from .utterance import classify
 from .web_research import FreeWebResearch
 
@@ -29,10 +30,11 @@ operation_approvals: OperationApprovals | None = None
 actors: ActorRegistry | None = None
 behavior: BehaviorMemory | None = None
 dialogue: DialogueCoordinator | None = None
+world: WorldMemory | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors, behavior, dialogue
+    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors, behavior, dialogue, world
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
     sessions = ConversationStore(engine)
@@ -41,6 +43,7 @@ async def lifespan(app):
     operation_approvals = OperationApprovals(engine,sessions,behavior)
     dialogue = DialogueCoordinator(engine,sessions,operation_approvals,voice_reviews,behavior)
     actors = ActorRegistry(engine)
+    world = WorldMemory(engine,apprentice,dialogue,behavior)
     web_research = FreeWebResearch(engine)
     yield
 
@@ -198,26 +201,26 @@ def apprentice_forget(req: ApprenticeForgetIn):
 def apprentice_state():
     return apprentice.snapshot()
 
+@app.post("/world/context")
 @app.post("/apprentice/context")
 def apprentice_context(req: ApprenticeContextIn):
+    """Shared world read model for hybrid and apprentice; same source of truth."""
     speaker=actors.find(req.actor_id)
     if req.actor_id and not speaker:
         raise HTTPException(422,"Неизвестный профиль говорящего")
-    # Shared devices never silently inherit a legacy singleton identity.
+    # A shared device never silently inherits another person's identity.
     if speaker is None and len(actors.list()["people"])>1:
         speaker={"id":None,"display_name":None,"origin":"unselected"}
-    result=apprentice.context(req.query,speaker=speaker)
-    result["behavior_rules"] = behavior.context(req.actor_id)
-    result["dialogue"] = dialogue.context(req.session_id,req.actor_id)
-    result["speaker"] = speaker
+    result=world.context(req.query,speaker=speaker,
+                         actor_id=req.actor_id,session_id=req.session_id)
     if req.session_id and sessions.exists(req.session_id):
         change=result.get("change_proposal")
         if change and change.get("id"):
             result["voice_review"]=voice_reviews.queue(req.session_id,changes=[change],actor_id=req.actor_id)
         else:
-            # Any unrelated utterance closes the short "yes/no" window.
             voice_reviews.clear(req.session_id)
     return result
+
 
 class GraphAliasIn(BaseModel):
     alias: str = Field(min_length=2,max_length=120)
