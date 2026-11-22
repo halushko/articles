@@ -82,6 +82,10 @@
     }
     function renderText(includeInterim) {
       input.value = join(draft, committed, segmentFinal, includeInterim ? segmentInterim : '');
+      // Let the live intent preview react to browser ASR updates.
+      if(typeof root.Event==='function' && typeof input.dispatchEvent==='function'){
+        input.dispatchEvent(new root.Event('input',{bubbles:true}));
+      }
     }
     function updateMic() {
       button.textContent = recording ? '⏹' : '🎤';
