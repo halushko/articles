@@ -77,6 +77,21 @@ class ApprenticeMemoryTests(unittest.TestCase):
             {"kind":"bad","name":"F","description":"not a type"}])
         self.assertEqual(r,[])
 
+    def test_explicit_retraction_preserves_audit(self):
+        p=self.memory.propose("Z объект",[
+            {"kind":"entity","name":"Z","description":"Объект для забвения"}])[0]
+        self.memory.review(p["id"],"confirm")
+        self.assertEqual(self.memory.snapshot()["counts"]["entity"],1)
+        self.memory.forget("entity",1)
+        state=self.memory.snapshot()
+        self.assertEqual(state["counts"]["entity"],0)
+        self.assertFalse(self.memory.context("Z")["knowledge"])
+        self.assertEqual(state["events"][0]["event_type"],"retracted")
+        with self.engine.connect() as con:
+            status=con.execute("SELECT status FROM apprentice_proposals WHERE id=?",
+                               (p["id"],)).fetchone()["status"]
+        self.assertEqual(status,"retracted")
+
     def test_teacher_can_edit_model_extraction(self):
         p=self.memory.propose("Млкий",[{"kind":"entity","name":"Млкий",
                                     "description":"Неудачная запись"}])[0]
