@@ -82,6 +82,16 @@
       <div class="legend">Граф: канонические названия объединяются независимо от домена. Связи — только подтверждённые факты.</div>
       <h3 class="graph-heading">Уникальные сущности</h3>
       <div id="graph-nodes" class="graph-list"></div>
+      <details class="raw-knowledge">
+        <summary>Объединить разные написания одного объекта</summary>
+        <p class="explain">Только по твоему решению. Исходные подтверждения остаются в базе.</p>
+        <form id="graph-alias-form" class="speech-form">
+          <label>Синоним или второе название<input id="graph-alias-from" maxlength="120" placeholder="Джарвис" required /></label>
+          <label>Существующая каноническая сущность<input id="graph-alias-to" maxlength="120" placeholder="JARVIS" required /></label>
+          <button type="submit">Объединить названия</button>
+        </form>
+        <div id="graph-alias-items" class="speech-items"></div>
+      </details>
       <h3 class="graph-heading">Связи между сущностями</h3>
       <div id="graph-edges" class="graph-list"></div>
       <details class="raw-knowledge">

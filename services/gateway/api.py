@@ -68,6 +68,13 @@ class ApprenticeReviewIn(BaseModel):
     description: str | None = Field(default=None,max_length=1200)
     details: dict | None = None
 
+class GraphAliasIn(BaseModel):
+    alias: str = Field(min_length=2,max_length=120)
+    canonical: str = Field(min_length=2,max_length=120)
+
+class GraphAliasDeleteIn(BaseModel):
+    item_id: int = Field(gt=0)
+
 class MemoryInspectIn(BaseModel):
     query: str = Field(min_length=1,max_length=3000)
 
@@ -155,6 +162,14 @@ async def feedback(data: FeedbackIn):
 @app.get("/api/apprentice/state", dependencies=[Depends(auth)])
 async def apprentice_state():
     return await forward(RESEARCH_URL+"/apprentice/state")
+
+@app.post("/api/apprentice/graph/aliases", dependencies=[Depends(auth)])
+async def apprentice_graph_alias(data: GraphAliasIn):
+    return await forward(RESEARCH_URL+"/apprentice/graph/aliases","POST",data.model_dump())
+
+@app.post("/api/apprentice/graph/aliases/delete", dependencies=[Depends(auth)])
+async def apprentice_graph_alias_delete(data: GraphAliasDeleteIn):
+    return await forward(RESEARCH_URL+"/apprentice/graph/aliases/delete","POST",data.model_dump())
 
 @app.post("/api/apprentice/inspect", dependencies=[Depends(auth)])
 async def apprentice_inspect(req: "MemoryInspectIn"):

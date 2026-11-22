@@ -213,6 +213,23 @@ function renderMode(){
 }
 $('experiment').addEventListener('change',()=>{turnHistory=[];renderMode();});
 renderMode();
+$('graph-alias-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const alias=$('graph-alias-from').value.trim();
+  const canonical=$('graph-alias-to').value.trim();
+  if(!alias||!canonical)return;
+  const button=$('graph-alias-form').querySelector('button[type="submit"]');
+  if(!window.confirm(`Объединить «${alias}» и «${canonical}» как одну сущность?`))return;
+  button.disabled=true;
+  try{
+    const result=await api('/api/apprentice/graph/aliases',
+      {method:'POST',body:JSON.stringify({alias,canonical})});
+    putMessage(`Подтверждён синоним: «${result.alias}» → «${result.canonical}». Источники сохранены.`,'system');
+    $('graph-alias-from').value='';$('graph-alias-to').value='';
+    await refresh();
+  }catch(error){putMessage('Не удалось объединить сущности: '+error.message,'system');}
+  finally{button.disabled=false;}
+});
 $('speech-form').addEventListener('submit',async event=>{
   event.preventDefault();
   const heard=$('speech-heard').value.trim(),correct=$('speech-correct').value.trim();
@@ -272,6 +289,22 @@ async function refresh(){
       row.append(label,meta);graphNodes.append(row);
     }
     if(!graph.nodes?.length)graphNodes.textContent='Подтверждённых объектов пока нет.';
+    const aliasItems=$('graph-alias-items');aliasItems.replaceChildren();
+    for(const link of graph.equivalences||[]){
+      const row=document.createElement('div');row.className='speech-row';
+      const label=document.createElement('span');
+      label.textContent=link.alias+' → '+link.canonical_name;
+      const remove=mkButton('Отменить','text-button',async()=>{
+        remove.disabled=true;
+        try{
+          await api('/api/apprentice/graph/aliases/delete',
+            {method:'POST',body:JSON.stringify({item_id:link.id})});
+          await refresh();
+        }catch(error){putMessage('Ошибка отмены: '+error.message,'system');remove.disabled=false;}
+      });
+      row.append(label,remove);aliasItems.append(row);
+    }
+    if(!graph.equivalences?.length)aliasItems.textContent='Объединений пока нет.';
     if((graph.nodes||[]).length>80){
       const more=document.createElement('p');more.className='explain';
       more.textContent='Показаны первые 80. Для полного списка используй запрос к памяти.';

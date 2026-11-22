@@ -32,6 +32,44 @@ class CanonicalGraphTests(unittest.TestCase):
             self.memory.review(proposal["id"],"confirm")
         return proposals
 
+    def test_teacher_approved_equivalence_merges_spellings_and_can_be_revoked(self):
+        self._confirm("Джарвис и JARVIS — имена ассистента",[
+            {"kind":"entity","name":"JARVIS","domain":"имена",
+             "description":"Имя ассистента"},
+            {"kind":"entity","name":"Джарвис","domain":"общение",
+             "description":"То же имя в речи"}])
+        self.assertEqual(self.memory.snapshot()["graph"]["counts"]["canonical_entities"],2)
+        self.memory.graph.add_equivalence("Джарвис","JARVIS")
+        state=self.memory.snapshot()
+        self.assertEqual(state["counts"]["entity"],2)
+        self.assertEqual(state["graph"]["counts"]["canonical_entities"],1)
+        node=state["graph"]["nodes"][0]
+        self.assertEqual(node["name"],"JARVIS")
+        self.assertIn("Джарвис",node["aliases"])
+        self.assertEqual(len(node["evidence"]),2)
+        link=state["graph"]["equivalences"][0]
+        with self.assertRaises(ValueError):
+            self.memory.graph.add_equivalence("JARVIS","JARVIS")
+        self.memory.graph.delete_equivalence(link["id"])
+        self.assertEqual(self.memory.snapshot()["graph"]["counts"]["canonical_entities"],2)
+        self.assertEqual(self.memory.snapshot()["counts"]["entity"],2)
+        self.assertIn("graph_alias_retracted",
+                      [e["event_type"] for e in self.memory.snapshot()["events"]])
+
+    def test_role_alias_keeps_owner_relation_queryable(self):
+        self.memory.context("Меня зовут Дима")
+        self._confirm("Дмитрий — полное имя",[
+            {"kind":"entity","name":"Дмитрий","description":"Собеседник"}])
+        p=self.memory.propose("У меня есть холодильник",[])
+        for item in p:
+            self.memory.review(item["id"],"confirm")
+        self.memory.graph.add_equivalence("Дима","Дмитрий")
+        graph=self.memory.snapshot()["graph"]
+        self.assertEqual(graph["counts"]["confirmed_relations"],1)
+        self.assertEqual(graph["edges"][0]["subject"],"Дмитрий")
+        self.assertIn("холодильник",
+                      self.memory.context("Что у меня есть дома?")["direct_reply"])
+
     def test_legacy_duplicate_names_deduplicate_without_deleting_evidence(self):
         self._confirm("Дима – человек в проекте",[
             {"kind":"entity","name":"Дима","domain":"личное","description":"Человек"},
@@ -146,6 +184,16 @@ class GraphHttpTests(unittest.TestCase):
                     client.post("/apprentice/review",json={"proposal_id":p["id"],"decision":"confirm"})
                     now=client.post("/apprentice/inspect",json=query).json()
                     self.assertIn("Кот",now["inspection"]["answer"])
+                    alias=client.post("/apprentice/graph/aliases",json={
+                        "alias":"Котик","canonical":"Кот"})
+                    self.assertEqual(alias.status_code,200)
+                    self.assertTrue(alias.json()["saved"])
+                    state=client.get("/apprentice/state").json()
+                    self.assertIn("Котик",state["graph"]["nodes"][0]["aliases"])
+                    link=state["graph"]["equivalences"][0]
+                    deleted=client.post("/apprentice/graph/aliases/delete",
+                                        json={"item_id":link["id"]})
+                    self.assertEqual(deleted.status_code,200)
                     state=client.get("/apprentice/state").json()
                     self.assertEqual(state["graph"]["counts"]["canonical_entities"],1)
 

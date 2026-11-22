@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS graph_edges (
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_graph_edges_subject ON graph_edges(subject_id);
+CREATE TABLE IF NOT EXISTS graph_equivalences (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ alias_key TEXT NOT NULL UNIQUE,
+ alias TEXT NOT NULL,
+ canonical_key TEXT NOT NULL,
+ canonical_name TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # Transparent, limited intent parsing. For general questions Qwen gets the
@@ -80,21 +88,80 @@ class KnowledgeGraph:
             con.executescript(SCHEMA)
         self.rebuild()
 
-    def rebuild(self):
-        """Idempotent projection: canonical name independent of legacy domain.
+    def equivalences(self):
+        with self.engine.connect() as con:
+            return [dict(r) for r in con.execute(
+                "SELECT id,alias_key,alias,canonical_key,canonical_name FROM graph_equivalences ORDER BY id")]
 
-        Identity resolution by normalized surface form is intentionally
-        conservative: differing spellings are NOT auto-merged. Confirmed
-        world_aliases participate in lexical retrieval but not destructive merges.
+    def add_equivalence(self, alias, canonical):
+        """Explicit teacher decision; never infer identity from model similarity."""
+        alias = str(alias or "").strip()
+        canonical = str(canonical or "").strip()
+        a,b=key(alias),key(canonical)
+        if not (2 <= len(alias) <= 120 and 2 <= len(canonical) <= 120) or a==b:
+            raise ValueError("Укажи два разных названия, не длиннее 120 символов")
+        # Only alias an actual confirmed node, not an imaginary capability.
+        graph=self.snapshot()
+        target=next((n for n in graph["nodes"] if
+                     key(n["name"])==b or b in (key(x) for x in n["aliases"])),None)
+        if target is None:
+            raise ValueError("Каноническая сущность должна быть подтверждена")
+        final_key=key(target["name"])
+        if a==final_key:
+            raise ValueError("Нельзя направить синоним на самого себя")
+        with self.engine.connect() as con:
+            con.execute("""INSERT INTO graph_equivalences(alias_key,alias,canonical_key,canonical_name)
+                VALUES(?,?,?,?) ON CONFLICT(alias_key) DO UPDATE SET
+                alias=excluded.alias,canonical_key=excluded.canonical_key,
+                canonical_name=excluded.canonical_name""",
+                (a,alias,final_key,target["name"]))
+            con.execute("""INSERT INTO apprentice_events(event_type,proposal_id,note)
+                VALUES('graph_alias_confirmed',NULL,?)""",
+                (f"{alias} → {target['name']}"[:300],))
+        self.rebuild()
+        return {"saved":True,"alias":alias,"canonical":target["name"],"executed":False}
+
+    def delete_equivalence(self, item_id):
+        with self.engine.connect() as con:
+            row=con.execute("DELETE FROM graph_equivalences WHERE id=? RETURNING id,alias,canonical_name",
+                            (item_id,)).fetchone()
+            if row:
+                con.execute("""INSERT INTO apprentice_events(event_type,proposal_id,note)
+                    VALUES('graph_alias_retracted',NULL,?)""",
+                    (f"{row['alias']} → {row['canonical_name']}"[:300],))
+        if not row:
+            raise ValueError("Синоним для объединения не найден")
+        self.rebuild()
+        return {"deleted":True,"id":item_id,"executed":False}
+
+    @staticmethod
+    def _resolve(value, mapping):
+        k=key(value)
+        label=str(value)
+        seen=set()
+        while k in mapping and k not in seen:
+            seen.add(k)
+            canonical_key,canonical_name=mapping[k]
+            k,label=canonical_key,canonical_name
+        return k,label
+
+    def rebuild(self):
+        """Idempotent, teacher-audited projection.
+
+        Same normalized text merges across legacy domains. Different spellings
+        merge only when the teacher explicitly approves an equivalence.
         """
         with self.engine.connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            mapping={r["alias_key"]:(r["canonical_key"],r["canonical_name"])
+                     for r in con.execute(
+                      "SELECT alias_key,canonical_key,canonical_name FROM graph_equivalences")}
             con.execute("UPDATE graph_nodes SET active=0")
             con.execute("DELETE FROM graph_edges")
             cache = {}
             def node(value):
                 label = str(value or "").strip()[:160]
-                k = key(label)
+                k,label = self._resolve(label,mapping)
                 if not k:
                     return None
                 if k not in cache:
@@ -125,6 +192,9 @@ class KnowledgeGraph:
     def snapshot(self):
         self.rebuild()
         with self.engine.connect() as con:
+            mapping={r["alias_key"]:(r["canonical_key"],r["canonical_name"])
+                     for r in con.execute(
+                      "SELECT alias_key,canonical_key,canonical_name FROM graph_equivalences")}
             nodes = [dict(row) for row in con.execute(
                 """SELECT id,name,name_key FROM graph_nodes WHERE active=1 ORDER BY id""")]
             edges = [dict(row) for row in con.execute(
@@ -137,22 +207,34 @@ class KnowledgeGraph:
                    ORDER BY e.id""")]
             evidence = {}
             for row in con.execute("SELECT id,name,domain,description FROM world_entities"):
-                k=key(row["name"])
+                k=self._resolve(row["name"],mapping)[0]
                 evidence.setdefault(k,[]).append(
                     {"table":"world_entities","id":row["id"],"domain":row["domain"],
                      "description":row["description"]})
             aliases = {}
             for row in con.execute("""SELECT e.name,a.alias FROM world_aliases a
                                       JOIN world_entities e ON e.id=a.entity_id"""):
-                aliases.setdefault(key(row["name"]),set()).add(row["alias"])
+                k=self._resolve(row["name"],mapping)[0]
+                aliases.setdefault(k,set()).add(row["alias"])
+            equivalences=[dict(r) for r in con.execute(
+                "SELECT id,alias_key,alias,canonical_key,canonical_name FROM graph_equivalences ORDER BY id")]
+            for row in equivalences:
+                target_key=self._resolve(row["canonical_name"],mapping)[0]
+                aliases.setdefault(target_key,set()).add(row["alias"])
+            # The original label is also a useful approved alias when it was merged.
+            for row in con.execute("SELECT name FROM world_entities"):
+                target_key=self._resolve(row["name"],mapping)[0]
+                if target_key != key(row["name"]):
+                    aliases.setdefault(target_key,set()).add(row["name"])
         for n in nodes:
             n["evidence"]=evidence.get(n["name_key"],[])
             n["aliases"]=sorted(aliases.get(n["name_key"],set()))
             n.pop("name_key",None)
         return {"nodes":nodes, "edges":edges,
+                "equivalences":equivalences,
                 "counts":{"canonical_entities":len(nodes),"confirmed_relations":len(edges)},
-                "identity_resolution":"normalized name only; aliases don't silently merge nodes",
-                "provenance":"world_entities/world_facts confirmed records only"}
+                "identity_resolution":"normalized names plus teacher-approved equivalences",
+                "provenance":"confirmed world_entities/world_facts and explicit teacher aliases"}
 
     def lookup(self, query, graph=None, limit=12):
         graph = graph or self.snapshot()
@@ -194,7 +276,7 @@ class KnowledgeGraph:
             else:
                 shown=nodes[:LIST_LIMIT]
                 answer=(f"В подтверждённой памяти {len(nodes)} уникальных сущностей "
-                        f"(по нормализованному имени): "+
+                        f"(по нормализованным именам и одобренным синонимам): "+
                         "; ".join(f"{n['name']} (#{n['id']})" for n in shown)+".")
                 if len(nodes)>len(shown):
                     answer+=f" Показаны первые {len(shown)}; полный список смотри в карте знаний."
@@ -212,6 +294,9 @@ class KnowledgeGraph:
         elif kind=="personal_home":
             roles=roles or {}
             username=key(roles.get("user") or "пользователь")
+            teacher_aliases={a["alias_key"]:(a["canonical_key"],a["canonical_name"])
+                             for a in graph.get("equivalences",[])}
+            username=self._resolve(username,teacher_aliases)[0]
             owned=[e for e in edges
                    if key(e["subject"])==username and
                    key(e["predicate"]) in HAS_PREDICATE]

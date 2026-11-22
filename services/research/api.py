@@ -167,6 +167,27 @@ def apprentice_state():
 def apprentice_context(req: ApprenticeContextIn):
     return apprentice.context(req.query)
 
+class GraphAliasIn(BaseModel):
+    alias: str = Field(min_length=2,max_length=120)
+    canonical: str = Field(min_length=2,max_length=120)
+
+class GraphAliasDeleteIn(BaseModel):
+    item_id: int = Field(gt=0)
+
+@app.post("/apprentice/graph/aliases")
+def apprentice_graph_alias(req: GraphAliasIn):
+    try:
+        return apprentice.graph.add_equivalence(req.alias,req.canonical)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+@app.post("/apprentice/graph/aliases/delete")
+def apprentice_graph_alias_delete(req: GraphAliasDeleteIn):
+    try:
+        return apprentice.graph.delete_equivalence(req.item_id)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
 @app.post("/apprentice/inspect")
 def apprentice_inspect(req: ApprenticeContextIn):
     # Pure read: no lesson extraction, no model calls, no dialogue mutation.
