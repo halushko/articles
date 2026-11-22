@@ -15,6 +15,7 @@ from .sessions import ConversationStore, markdown
 from .review_voice import VoiceReviews
 from .approvals import OperationApprovals
 from .actors import ActorRegistry
+from .utterance import classify
 from .web_research import FreeWebResearch
 
 engine: Engine | None = None
@@ -136,6 +137,14 @@ def feedback(req: FeedbackIn):
 
 # The apprenticeship index is domain-independent: it knows no Home Assistant
 # entity IDs, network endpoints, shell commands, or executable code.
+class IntentIn(BaseModel):
+    text: str = Field(min_length=1,max_length=3000)
+
+@app.post("/apprentice/intent")
+def apprentice_intent(req: IntentIn):
+    # Pure parser. No model latency, no teaching and no operation approval.
+    return classify(req.text)
+
 class ApprenticeProposalsIn(BaseModel):
     source_text: str = Field(min_length=1,max_length=3000)
     proposals: list[dict] = Field(default_factory=list,max_length=5)
