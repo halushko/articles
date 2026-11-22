@@ -85,6 +85,9 @@ def markdown(session):
                 f"- Интернет: `{turn['web_mode']}`; токены: {turn['tokens']} / prompt {turn['prompt_tokens']}; задержка: {turn['total_ms']} мс",
                 f"- Оценка: {turn['rating'] or 'не поставлена'}"
                 + (f"; пояснение: {turn['teacher_note']}" if turn["teacher_note"] else "")]
+        if turn.get("actor_id"):
+            lines.append("- Собеседник (выбранный профиль, не аутентификация): `"+
+                         str(turn["actor_id"])+"`")
         evidence=turn["provenance"]
         if evidence.get("sources"):
             lines+=["", "Источники внешнего поиска (не подтверждены учителем):"]
@@ -93,6 +96,16 @@ def markdown(session):
                              f"— {src.get('status','search_result')}")
         if evidence.get("retrieval_trace"):
             lines.append("Retrieval trace: `"+_json(evidence["retrieval_trace"])[:1800]+"`")
+        if isinstance(evidence.get("debug_trace"),dict):
+            trace=evidence["debug_trace"]
+            # Preserve structured step-by-step diagnostics in the existing .md
+            # download, not in a separate log requiring server access.
+            raw=json.dumps(trace,ensure_ascii=False,indent=2,default=str)
+            raw=raw.replace("```","\\u0060\\u0060\\u0060")
+            lines+=["", "### 🔬 Трассировка выполнения",
+                    "", "Диагностика маршрута, памяти, вызовов и промпта "
+                    "(метаданные без сырых секретов и системных инструкций).",
+                    "", "```json",raw,"```",""]
         for ev in indexed.get(turn["id"],[]):
             lines.append(f"- Событие {ev['created_at']} UTC: {ev['event_type']}; {_json(ev['data'])[:2000]}")
         lines.append("")
@@ -171,7 +184,7 @@ class ConversationStore:
             "evidence_source","proposals","missing","intent",
             "parse_warning","integrity_warning","normalized_input",
             "external_origin","tool_trace","approval_id","approval_source","speaker","requested_action",
-            "dialogue_frame","context_decision"
+            "dialogue_frame","context_decision","debug_trace"
         ) if result.get(key) is not None}
         provenance=_json(provenance)[:60000]
         with self.engine.connect() as con:
