@@ -29,7 +29,7 @@ class DurableOperationTests(unittest.TestCase):
 
     def test_speech_requires_explicit_named_permission(self):
         for phrase in ("разрешаю","Разрешаю поиск","команда разрешаю поиск",
-                       "да разрешаю","подтверждаю поиск"):
+                       "да разрешаю","я разрешаю","я разрешаю поиск","подтверждаю поиск"):
             self.assertEqual(spoken_search_decision(phrase),"approved")
         for phrase in ("не разрешаю","отмени поиск"):
             self.assertEqual(spoken_search_decision(phrase),"rejected")
@@ -84,6 +84,11 @@ class GatewayWebApprovalTests(unittest.IsolatedAsyncioTestCase):
                 return {"handled":True,"status":"approved",
                         "operation_id":"permit1","question":"Найди рецепт",
                         "query":"рецепт голубцов"}
+            if url.endswith("/research/operations/web/start"):
+                return {"started":True,"status":"running"}
+            if url.endswith("/research/operations/web/finish"):
+                self.assertEqual(payload["status"],"failed")
+                return {"saved":True,"status":"failed"}
             if url.endswith("/research/web/search"):
                 self.assertEqual(payload["query"],"рецепт голубцов")
                 return {"available":False,"status":"unavailable",
@@ -95,7 +100,7 @@ class GatewayWebApprovalTests(unittest.IsolatedAsyncioTestCase):
                 session_id="b312050f-5ae1-4b20-86bc-4ea463dcc4ae"),0)
         self.assertEqual(result["approval_id"],"permit1")
         self.assertEqual(result["route"],"apprentice_web_unavailable")
-        self.assertEqual(len(calls),2)
+        self.assertEqual(len(calls),4)
 
     async def test_explicit_search_skips_qwen_and_queues_approval(self):
         calls=[]
