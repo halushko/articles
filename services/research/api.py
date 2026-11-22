@@ -134,6 +134,17 @@ class ApprenticeReviewIn(BaseModel):
 class ApprenticeContextIn(BaseModel):
     query: str = Field(min_length=1,max_length=3000)
 
+class ApprenticeForgetIn(BaseModel):
+    kind: str = Field(pattern="^(entity|action|fact|lesson|capability)$")
+    item_id: int = Field(gt=0)
+
+@app.post("/apprentice/forget")
+def apprentice_forget(req: ApprenticeForgetIn):
+    try:
+        return apprentice.forget(req.kind,req.item_id)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
 @app.get("/apprentice/state")
 def apprentice_state():
     return apprentice.snapshot()
