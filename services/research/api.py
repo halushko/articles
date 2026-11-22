@@ -14,6 +14,7 @@ from .embedding import embed
 from .sessions import ConversationStore, markdown
 from .review_voice import VoiceReviews
 from .approvals import OperationApprovals
+from .dialogue import DialogueCoordinator
 from .adaptive import BehaviorMemory, WEB_CONTEXT
 from .actors import ActorRegistry
 from .utterance import classify
@@ -27,16 +28,18 @@ voice_reviews: VoiceReviews | None = None
 operation_approvals: OperationApprovals | None = None
 actors: ActorRegistry | None = None
 behavior: BehaviorMemory | None = None
+dialogue: DialogueCoordinator | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors, behavior
+    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors, behavior, dialogue
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
     sessions = ConversationStore(engine)
     voice_reviews = VoiceReviews(engine,apprentice,sessions)
     behavior = BehaviorMemory(engine)
     operation_approvals = OperationApprovals(engine,sessions,behavior)
+    dialogue = DialogueCoordinator(engine,sessions,operation_approvals,voice_reviews,behavior)
     actors = ActorRegistry(engine)
     web_research = FreeWebResearch(engine)
     yield
@@ -205,6 +208,7 @@ def apprentice_context(req: ApprenticeContextIn):
         speaker={"id":None,"display_name":None,"origin":"unselected"}
     result=apprentice.context(req.query,speaker=speaker)
     result["behavior_rules"] = behavior.context(req.actor_id)
+    result["dialogue"] = dialogue.context(req.session_id,req.actor_id)
     result["speaker"] = speaker
     if req.session_id and sessions.exists(req.session_id):
         change=result.get("change_proposal")
@@ -360,6 +364,24 @@ def speech_correction_delete(req: SpeechCorrectionDeleteIn):
         raise HTTPException(422,str(error))
 
 
+class DialogueResolveIn(BaseModel):
+    session_id: str = Field(min_length=36,max_length=36)
+    text: str = Field(min_length=1,max_length=250)
+    actor_id: str = Field(default="",max_length=36)
+
+@app.post("/research/dialogue/resolve")
+def dialogue_resolve(req: DialogueResolveIn):
+    if req.actor_id and not actors.find(req.actor_id):
+        raise HTTPException(422,"Unknown speaker")
+    return dialogue.resolve(req.session_id,req.text,req.actor_id)
+
+@app.get("/research/dialogue/context/{sid}")
+def dialogue_context(sid: str,actor_id: str = ""):
+    if actor_id and not actors.find(actor_id):
+        raise HTTPException(422,"Unknown speaker")
+    return dialogue.context(sid,actor_id)
+
+
 class SearchApprovalIn(BaseModel):
     session_id: str = Field(min_length=36,max_length=36)
     actor_id: str = Field(default="",max_length=36)
@@ -472,6 +494,8 @@ def research_session_turn(sid: str, req: SessionTurnIn):
         result=sessions.save_turn(sid,req.question,req.answer,req.experiment,
                                   req.profile,req.ablation,req.web_mode,req.result,
                                   actor_id=req.actor_id)
+        dialogue.record(sid,result["turn_id"],req.actor_id,req.question,
+                        req.answer,req.result)
         if speaker:
             actors.record_turn_speaker(sid,req.actor_id)
         return result
