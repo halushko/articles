@@ -42,6 +42,9 @@ class ChatIn(BaseModel):
     external_context: str = Field(default="",max_length=8000)
     request_id: str | None = Field(default=None,pattern=r"^[a-f0-9-]{36}$")
 
+class IntentIn(BaseModel):
+    text: str = Field(min_length=1,max_length=3000)
+
 class LearnIn(BaseModel):
     phrase: str = Field(min_length=1,max_length=500)
     target_id: str = Field(min_length=1,max_length=100)
@@ -221,6 +224,10 @@ async def health():
 @app.post("/api/sessions", dependencies=[Depends(auth)])
 async def create_session(req: SessionCreateIn):
     return await forward(RESEARCH_URL+"/research/sessions","POST",req.model_dump())
+
+@app.post("/api/intent", dependencies=[Depends(auth)])
+async def preview_intent(req: IntentIn):
+    return await forward(RESEARCH_URL+"/apprentice/intent","POST",req.model_dump())
 
 @app.get("/api/actors", dependencies=[Depends(auth)])
 async def list_actors(device_id: str = ""):
