@@ -1,5 +1,6 @@
 """Cross-mode diagnostics: independent of model, search and database connectivity."""
 import tempfile
+import httpx
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -70,6 +71,37 @@ class TracePipelineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(any(u.endswith("/apprentice/context") for u in urls),
                                  mode == "apprentice")
         self.assertEqual(len(saved), 4)
+
+    async def test_forward_records_real_http_metadata_without_body(self):
+        original=httpx.AsyncClient
+        seen=[]
+        def handler(request):
+            seen.append(str(request.url))
+            return httpx.Response(200,json={
+                "status":"needs_confirmation", "is_command":False,
+                "candidates":[{"target_name":"PRIVATE"}],
+                "answer":"SECRET ANSWER"
+            })
+        def fake_client(**kwargs):
+            return original(transport=httpx.MockTransport(handler))
+
+        trace=ChatTrace(gateway.ChatIn(text="SECRET QUERY",experiment="hybrid"))
+        token=CURRENT_TRACE.set(trace)
+        try:
+            with patch.object(gateway.httpx,"AsyncClient",side_effect=fake_client):
+                result=await gateway.forward("http://research:8000/resolve",
+                                             "POST",{"text":"SECRET QUERY","ablation":"combined"})
+        finally:
+            CURRENT_TRACE.reset(token)
+        self.assertEqual(result["status"],"needs_confirmation")
+        stages=[s["stage"] for s in trace.steps]
+        self.assertIn("service.request",stages)
+        self.assertIn("service.response",stages)
+        self.assertIn("/resolve",seen[0])
+        self.assertIn("needs_confirmation",str(trace.result()))
+        self.assertNotIn("SECRET QUERY",str(trace.result()))
+        self.assertNotIn("SECRET ANSWER",str(trace.result()))
+        self.assertNotIn("PRIVATE",str(trace.result()))
 
     async def test_upstream_failure_still_persists_trace(self):
         saved = []
