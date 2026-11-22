@@ -30,7 +30,7 @@ class ChatIn(BaseModel):
     experiment: str = Field(default="hybrid", pattern="^(apprentice|hybrid|research_only|llm_only)$")
     profile: str = Field(default="fast",pattern="^(fast|deep)$")
     ablation: str = Field(default="combined",pattern="^(exact|online|combined)$")
-    history: list[dict] = Field(default_factory=list,max_length=8)
+    history: list[dict] = Field(default_factory=list,max_length=14)
 
 class LearnIn(BaseModel):
     phrase: str = Field(min_length=1,max_length=500)
@@ -157,12 +157,47 @@ async def apprentice_forget(data: ApprenticeForgetIn):
 async def apprentice_review(data: ApprenticeReviewIn):
     return await forward(RESEARCH_URL+"/apprentice/review","POST",data.model_dump())
 
+def unverified_external_activity(reply: str) -> bool:
+    """Reject model claims of tool calls when no external execution tool exists."""
+    past_action = re.search(
+        r"(?iu)\bя\s+(?:(?:уже|успешно|только что)\s+)?"
+        r"(?:запросил|подключился|подключила|подключил|проверил|"
+        r"настроил|получил\s+доступ|отправил\s+запрос|выполнил\s+запрос)\b",
+        reply,
+    )
+    external = re.search(
+        r"(?iu)\b(?:api|url|http|сервер|сайт|сеть|доступ|устройств|"
+        r"интерфейс|соединени|smart.?home|home.?assistant|подключени)\w*",
+        reply,
+    )
+    unsafe_secret_request = re.search(
+        r"(?iu)(?:предоставьте|предоставь|пришли|пришлите|отправь|"
+        r"отправьте|вставьте|вставь)\s+(?:мне\s+)?(?:свой\s+)?"
+        r"(?:токен|пароль|api.?ключ|секрет)\b",
+        reply,
+    )
+    return bool((past_action and external) or unsafe_secret_request)
+
+
 async def apprentice_chat(data: ChatIn, start: float):
     # Only confirmed knowledge is given to the interpreter; guesses stay pending.
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",{"query":data.text})
     parsed = await forward(LLM_URL+"/analyze","POST",
                            {"text":data.text,"profile":data.profile,
                             "history":data.history,"memory":memory})
+    # Tool calls cannot be represented as words. Block invented external work
+    # before any model-generated "lessons" are proposed to the teacher.
+    if unverified_external_activity(parsed.get("reply","")):
+        parsed["reply"] = (
+            "Вижу информацию, которую ты прислал, но не подключался и не "
+            "запрашивал доступ. В этой версии у меня нет HTTP-инструмента "
+            "или внешнего коннектора, поэтому я не могу проверить адрес "
+            "и получить токен. Не отправляй секреты в чат: для реального "
+            "подключения разработчик должен предоставить защищённый инструмент."
+        )
+        parsed["proposals"] = []
+        parsed["missing"] = "Внешний инструмент подключения с отдельной настройкой доступа"
+        parsed["integrity_warning"] = "Model claimed an external action without a tool call"
     proposals = []
     if parsed.get("proposals"):
         stored = await forward(RESEARCH_URL+"/apprentice/propose","POST",
@@ -172,6 +207,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             "intent":parsed.get("intent","chat"),
             "missing":parsed.get("missing",""),
             "parse_warning":parsed.get("parse_warning"),
+            "integrity_warning":parsed.get("integrity_warning"),
             "proposals":proposals,"model":parsed.get("model"),
             "tokens":parsed.get("tokens",0),
             "prompt_tokens":parsed.get("prompt_tokens",0),

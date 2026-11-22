@@ -59,7 +59,12 @@
         <button id="send" type="submit">Отправить</button>
       </div>
     </form>
+    <div class="voice-settings">
+      <label class="tts-toggle" for="voice-output"><input id="voice-output" type="checkbox" checked /> 🔊 Озвучивать ответы</label>
+      <span class="voice-tip">🎤 — начать диктовку · ⏹ — закончить и отправить. Паузы не завершают запись.</span>
+    </div>
     <div id="voice-status" class="voice-status" role="status" aria-live="polite" hidden></div>
+    <div id="tts-status" class="voice-status" role="status" aria-live="polite"></div>
     <div class="foot-actions">
       <button id="show-learning" type="button" class="secondary">Показать все знания</button>
       <button id="run-ab" type="button" class="secondary">A/B: чистая LLM / старый Hybrid</button>
@@ -94,6 +99,7 @@
     </section>
   </aside>
 </main>
+<script defer src="/static/voice.js"></script>
 <script defer src="/static/app.js"></script>
 </body>
 </html>

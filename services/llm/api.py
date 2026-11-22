@@ -76,7 +76,7 @@ class AnalyzeIn(BaseModel):
     text: str = Field(min_length=1,max_length=3000)
     profile: str = Field(default="fast",pattern="^(fast|deep)$")
     memory: dict = Field(default_factory=dict)
-    history: list[dict] = Field(default_factory=list,max_length=8)
+    history: list[dict] = Field(default_factory=list,max_length=14)
 
 # This prompt describes *general* learning behavior, not a home-automation or
 # programming curriculum. Specific domains are only discovered in dialogue.
@@ -100,7 +100,16 @@ APPRENTICE_SYSTEM = """
 Предложения будут показаны учителю для проверки, не говори «уже запомнил».
 Если пользователь просит выполнить действие без инструмента, объясни
 ограничение и задай ОДИН конкретный вопрос, необходимый для обучения.
-Никогда не выдумывай выполнение действий.
+У тебя НЕТ HTTP-клиента и НЕТ коннектора к любой внешней системе.
+URL, переданный в чате, — только текст, а не результат подключения.
+НИКОГДА не говори, что ты запросил доступ, открыл URL, проверил API,
+настроил соединение, подключился, получил токен или выполнил команду.
+Ты не можешь самостоятельно получать токены доступа. НЕ проси прислать
+токен, пароль или секрет в чат; после появления защищённого коннектора
+пользователь сможет настроить секреты отдельно от языковой модели.
+Если URL уже присутствует в истории диалога, не проси повторить его.
+Когда не хватает именно сетевого инструмента, сообщай об этом прямо,
+вместо видимости выполненной работы. Никогда не выдумывай выполнение действий.
 Верни ОДИН JSON-объект, без markdown и пояснений за пределами JSON:
 {
  "reply":"твой ответ по-русски",
@@ -128,7 +137,7 @@ async def analyze(req: AnalyzeIn):
     # A compact trusted context is supplied by the research service via gateway.
     context = json.dumps(req.memory,ensure_ascii=False,default=str)[:12000]
     history = []
-    for item in req.history[-6:]:
+    for item in req.history[-12:]:
         if not isinstance(item,dict) or item.get("role") not in ("user","assistant"):
             continue
         content = str(item.get("content") or "")[:1200]

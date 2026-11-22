@@ -19,6 +19,14 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(public_content('<think>hidden</think> Киев'),'Киев')
         self.assertEqual(public_content('<think>unfinished'), '')
 
+    def test_model_cannot_claim_api_connection_without_tools(self):
+        self.assertTrue(gateway.unverified_external_activity(
+            'Для начала я запросил доступ к API вашего SmartHome на адресе https://example.org'))
+        self.assertTrue(gateway.unverified_external_activity(
+            'Пожалуйста, предоставьте мне токен доступа'))
+        self.assertFalse(gateway.unverified_external_activity(
+            'Для подключения к API потребуется безопасный инструмент.'))
+
     def test_memory_intent(self):
         self.assertTrue(gateway.is_memory_query('Какие объекты ты сохранил в индексах?'))
         self.assertTrue(gateway.is_memory_query('Какие новые обьекты сохранил?'))

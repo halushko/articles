@@ -87,11 +87,15 @@ async function send(text,experiment) {
   const mode=experiment||$('experiment').value;
   const options={text,experiment:mode,profile:$('profile').value,
                  ablation:$('ablation').value,
-                 history:mode==='apprentice'?turnHistory.slice(-6):[]};
+                 history:mode==='apprentice'?turnHistory.slice(-12):[]};
   const r=await api('/api/chat',{method:'POST',body:JSON.stringify(options)});
   const stamp=[r.route,r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
                r.tokens!=null?`${r.tokens} токенов`:null].filter(Boolean).join(' · ');
   const card=putMessage(r.answer,'assistant',stamp);
+  const replay=mkButton('🔊 Повторить','replay-button',()=>voice.speak(r.answer,true));
+  replay.setAttribute('aria-label','Повторить ответ голосом');
+  card.append(replay);
+  voice.speak(r.answer);
   if(r.parse_warning) putMessage('Не удалось надёжно извлечь структурированное знание. Ничего не добавлено.','system');
   if(mode==='apprentice'){
     const gradeControls=document.createElement('div');gradeControls.className='grade-controls';
@@ -121,7 +125,7 @@ async function send(text,experiment) {
   }
   if(mode==='apprentice'){
     turnHistory.push({role:'user',content:text},{role:'assistant',content:r.answer});
-    turnHistory=turnHistory.slice(-8);
+    turnHistory=turnHistory.slice(-14);
     if(r.proposals?.length){
       const title=document.createElement('div');title.className='proposal-caption';
       title.textContent='Я заметил новые знания / возможности. Проверь:';
@@ -138,133 +142,27 @@ async function send(text,experiment) {
   }
   return r;
 }
-// Browser Web Speech API: single utterance, live transcript, auto-submit after
-// a final result. Never submit an interim result or retry a failed recognition.
+// Browser speech is implemented by a testable voice controller.
 const voiceButton = $('voice');
-const voiceStatus = $('voice-status');
-const voiceLanguage = $('voice-language');
 const messageInput = $('message');
 const chatForm = $('chat-form');
-const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-let voiceRecognition = null;
-let voiceActive = false;
-let voiceOriginal = '';
-let voiceFinal = '';
-let voiceFailed = false;
-let voiceSkipAutoSend = false;
-
-function voiceNotice(message, isError=false) {
-  voiceStatus.textContent = message;
-  voiceStatus.hidden = !message;
-  voiceStatus.classList.toggle('error', isError);
-}
-function updateVoiceButton(active) {
-  voiceActive = active;
-  voiceButton.classList.toggle('is-listening', active);
-  voiceButton.textContent = active ? '⏹' : '🎤';
-  voiceButton.setAttribute('aria-pressed', String(active));
-  voiceButton.setAttribute('aria-label', active ? 'Завершить запись и отправить' : 'Начать голосовой ввод');
-  voiceButton.title = active ? 'Завершить распознавание' : 'Продиктовать сообщение';
-}
-function voiceText(...parts) {
-  return parts.map(part=>part.trim()).filter(Boolean).join(' ').slice(0, messageInput.maxLength);
-}
-function stopVoiceWithoutAutoSend() {
-  if (!voiceActive || !voiceRecognition) return;
-  voiceSkipAutoSend = true;
-  try { voiceRecognition.stop(); } catch (_) { updateVoiceButton(false); }
-}
-
-if (!Recognition) {
-  voiceButton.disabled = true;
-  voiceButton.title = 'Голосовой ввод не поддерживается браузером';
-  voiceNotice('Голосовой ввод недоступен в этом браузере. Попробуй Chrome или Edge.', true);
-} else {
-  voiceRecognition = new Recognition();
-  voiceRecognition.continuous = false;
-  voiceRecognition.interimResults = true;
-  voiceRecognition.maxAlternatives = 1;
-  voiceButton.addEventListener('click', () => {
-    if (busy) return;
-    if (voiceActive) {
-      voiceNotice('Завершаю распознавание…');
-      try { voiceRecognition.stop(); }
-      catch (_) { updateVoiceButton(false); }
-      return;
-    }
-    voiceOriginal = messageInput.value.trim();
-    voiceFinal = '';
-    voiceFailed = false;
-    voiceSkipAutoSend = false;
-    voiceRecognition.lang = voiceLanguage.value;
-    try {
-      voiceRecognition.start(); // User gesture is required by the browser.
-      updateVoiceButton(true);
-      voiceNotice('Слушаю… После паузы распознанная фраза отправится Джарвису.');
-    } catch (error) {
-      updateVoiceButton(false);
-      voiceNotice('Не удалось запустить микрофон: ' + (error.message || 'ошибка браузера'), true);
-    }
-  });
-  voiceRecognition.onresult = event => {
-    const complete = [], interim = [];
-    for (let i=0; i<event.results.length; i++) {
-      const item=event.results[i];
-      const spoken=String(item[0]?.transcript || '').trim();
-      if (!spoken) continue;
-      if (item.isFinal) complete.push(spoken);
-      else interim.push(spoken);
-    }
-    voiceFinal=complete.join(' ').trim();
-    messageInput.value=voiceText(voiceOriginal,voiceFinal,interim.join(' '));
-    voiceNotice(interim.length ? 'Распознаю речь…' : 'Речь распознана. Завершаю…');
-  };
-  voiceRecognition.onerror = event => {
-    voiceFailed=true;
-    const failures={
-      'not-allowed':'Доступ к микрофону запрещён. Разреши микрофон в настройках сайта.',
-      'service-not-allowed':'Служба распознавания речи недоступна в этом браузере.',
-      'audio-capture':'Микрофон не найден или занят другим приложением.',
-      'no-speech':'Речь не обнаружена. Попробуй ещё раз.',
-      'network':'Ошибка сети службы распознавания. Проверь подключение.',
-      'language-not-supported':'Этот язык не поддерживается службой распознавания.',
-      'aborted':'Распознавание прервано.'
-    };
-    voiceNotice(failures[event.error] || 'Не удалось распознать речь.', true);
-  };
-  voiceRecognition.onend = () => {
-    updateVoiceButton(false);
-    if (voiceSkipAutoSend) return;
-    if (voiceFailed) {
-      messageInput.value=voiceOriginal;
-      return;
-    }
-    if (!voiceFinal) {
-      messageInput.value=voiceOriginal;
-      voiceNotice('Не удалось распознать речь. Попробуй снова.', true);
-      return;
-    }
-    messageInput.value=voiceText(voiceOriginal,voiceFinal);
-    if (busy) {
-      voiceNotice('Речь распознана. Отправь сообщение, когда закончится текущий ответ.');
-      return;
-    }
-    voiceNotice('Речь распознана. Отправляю…');
-    chatForm.requestSubmit();
-  };
-}
+const voice = window.JarvisVoice.initVoice({
+  input: messageInput, button: voiceButton,
+  language: $('voice-language'), status: $('voice-status'),
+  form: chatForm, outputToggle: $('voice-output'),
+  outputStatus: $('tts-status'), isBusy: () => busy
+});
 $('chat-form').addEventListener('submit',async event=>{
   event.preventDefault();if(busy)return;
   const input=$('message'),text=input.value.trim();if(!text)return;
-  // Manual send while dictating must not trigger a second send in onend.
-  if (voiceActive) stopVoiceWithoutAutoSend();
+  voice.stopForManualSend();
+  voice.cancelSpeech();
   input.value='';putMessage(text,'user');busy=true;$('send').disabled=true;
   voiceButton.disabled=true;
   try{await send(text);}catch(e){putMessage('Ошибка: '+e.message,'system');}
   finally{
     busy=false;$('send').disabled=false;
-    voiceButton.disabled=!Recognition;input.focus();
-    if (voiceStatus.textContent==='Речь распознана. Отправляю…') voiceNotice('');
+    voiceButton.disabled=!voice.isSupported;input.focus();
   }
 });
 $('experiment').addEventListener('change',()=>{turnHistory=[];});

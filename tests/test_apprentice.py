@@ -127,6 +127,27 @@ class ApprenticeApiTests(unittest.TestCase):
 
 
 class ApprenticeGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fake_api_claim_is_corrected_and_proposal_not_saved(self):
+        calls=[]
+        async def fake_forward(url,method="GET",payload=None):
+            calls.append(url)
+            if "/context" in url:
+                return {"knowledge":[],"execution_tools":[]}
+            if "/analyze" in url:
+                return {"reply":"Я запросил доступ к API вашего SmartHome по URL.",
+                        "proposals":[{"kind":"lesson","name":"Подключение к API",
+                                      "description":"Я это сделал"}],
+                        "missing":"","tokens":22}
+            raise AssertionError("A hallucinated lesson must never be saved")
+        with patch.object(gateway,"forward",fake_forward):
+            r=await gateway.chat(gateway.ChatIn(
+                text="https://example.org",experiment="apprentice"))
+        self.assertIn("не подключался",r["answer"])
+        self.assertEqual(r["proposals"],[])
+        self.assertFalse(r["executed"])
+        self.assertEqual(len(calls),2)
+        self.assertIsNotNone(r["integrity_warning"])
+
     async def test_pipeline_passes_only_confirmed_memory_and_never_executes(self):
         calls=[]
         async def fake_forward(url,method="GET",payload=None):
