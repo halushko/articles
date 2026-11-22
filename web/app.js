@@ -157,7 +157,17 @@ async function refresh(){
         any=true;const row=document.createElement('div');row.className='known-row';
         const name=document.createElement('strong');name.textContent=item.name||item.title||item.subject;
         const type=document.createElement('span');type.textContent=kindLabels[kind]||kind;
-        row.append(name,type);known.append(row);
+        const forget=mkButton('Забыть','text-button',async()=>{
+          if(!window.confirm(`Отозвать подтверждение: ${name.textContent}?`))return;
+          forget.disabled=true;
+          try{
+            await api('/api/apprentice/forget',{method:'POST',
+              body:JSON.stringify({kind,item_id:item.id})});
+            putMessage(`Знание отозвано: ${name.textContent}. Запись осталась в журнале.`,'system');
+            await refresh();
+          }catch(e){putMessage('Ошибка: '+e.message,'system');forget.disabled=false;}
+        });
+        row.append(name,type,forget);known.append(row);
       }
     }
     if(!any)known.textContent='Пока пусто. Начни с объяснения.';
