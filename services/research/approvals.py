@@ -30,15 +30,29 @@ CREATE TABLE IF NOT EXISTS operation_audit (
  source TEXT NOT NULL,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS operation_executions (
+ operation_id TEXT PRIMARY KEY REFERENCES pending_operations(id),
+ session_id TEXT NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
+ actor_id TEXT NOT NULL DEFAULT '',
+ query TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed')),
+ answer TEXT NOT NULL DEFAULT '',
+ sources TEXT NOT NULL DEFAULT '[]',
+ error TEXT NOT NULL DEFAULT '',
+ started_epoch REAL NOT NULL,
+ finished_epoch REAL
+);
+CREATE INDEX IF NOT EXISTS idx_operation_executions_lookup
+ ON operation_executions(session_id,actor_id,started_epoch);
 """
 TTL = 300
 # Full phrases only, not substrings of a conversation. A generic 'yes'
 # MUST NOT approve internet access, knowledge edits, or device operations.
-ALLOW = re.compile(r"(?iu)^(?:разрешаю(?:\s+(?:этот\s+)?поиск)?|"
-                   r"да\s+разрешаю(?:\s+поиск)?|"
+ALLOW = re.compile(r"(?iu)^(?:(?:я\s+)?разрешаю(?:\s+(?:этот\s+)?поиск)?|"
+                   r"да\s*,?\s*разрешаю(?:\s+поиск)?|"
                    r"подтверждаю\s+поиск|"
                    r"разрешить\s+поиск)\s*[.!]*$")
-DENY = re.compile(r"(?iu)^(?:не\s+разрешаю(?:\s+поиск)?|"
+DENY = re.compile(r"(?iu)^(?:(?:я\s+)?не\s+разрешаю(?:\s+поиск)?|"
                   r"запрещаю\s+поиск|отмена\s+поиска|"
                   r"отмени\s+поиск)\s*[.!]*$")
 
@@ -156,3 +170,79 @@ class OperationApprovals:
         if decision=="rejected":
             result["answer"]="Поиск отменён. Запрос во внешний сервис не отправлен."
         return result
+
+    def execution_start(self,session_id,operation_id,actor_id=""):
+        """Atomically claim exactly one execution for an approved operation."""
+        with self.engine.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            approval=con.execute("""SELECT * FROM pending_operations
+                WHERE id=? AND session_id=? AND actor_id=?
+                  AND kind='web.search' AND status='approved'""",
+                (operation_id,session_id,actor_id or "")).fetchone()
+            if not approval:
+                return {"started":False,"status":"not_approved","executed":False}
+            existing=con.execute("""SELECT status FROM operation_executions
+                WHERE operation_id=?""",(operation_id,)).fetchone()
+            if existing:
+                return {"started":False,"status":existing["status"],
+                        "executed":existing["status"]=="succeeded"}
+            query=json.loads(approval["payload"])["query"]
+            con.execute("""INSERT INTO operation_executions
+                (operation_id,session_id,actor_id,query,status,started_epoch)
+                VALUES(?,?,?,?, 'running', ?)""",
+                (operation_id,session_id,actor_id or "",query,time.time()))
+        return {"started":True,"status":"running","operation_id":operation_id,
+                "query":query,"executed":False}
+
+    def execution_finish(self,session_id,operation_id,actor_id="",status="failed",
+                         answer="",sources=None,error=""):
+        """Persist the real executor result, not Qwen's assertion of progress."""
+        if status not in ("succeeded","failed"):
+            raise ValueError("Invalid operation execution status")
+        sanitized=[]
+        for source in (sources or [])[:5]:
+            if isinstance(source,dict):
+                sanitized.append({"title":str(source.get("title") or "")[:180],
+                                  "url":str(source.get("url") or "")[:500],
+                                  "status":str(source.get("status") or "")[:50]})
+        with self.engine.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            cur=con.execute("""UPDATE operation_executions
+                SET status=?,answer=?,sources=?,error=?,finished_epoch=?
+                WHERE operation_id=? AND session_id=? AND actor_id=?
+                AND status='running'""",
+                (status,str(answer)[:5000],json.dumps(sanitized,ensure_ascii=False),
+                 str(error)[:400],time.time(),operation_id,session_id,actor_id or ""))
+        return {"saved":cur.rowcount==1,"status":status,
+                "operation_id":operation_id,"executed":status=="succeeded"}
+
+    def execution_status(self,session_id,actor_id=""):
+        """Read the real state of the most recent search and its last result."""
+        if not self.sessions.exists(session_id):
+            return {"current":None,"last_result":None}
+        actor_id=actor_id or ""
+        def expose(row):
+            if not row:
+                return None
+            d=dict(row)
+            try:
+                d["sources"]=json.loads(d.get("sources") or "[]")
+            except (TypeError,ValueError):
+                d["sources"]=[]
+            return d
+        with self.engine.connect() as con:
+            current=con.execute("""SELECT p.id AS operation_id,p.status AS approval_status,
+                p.created_epoch,e.status AS execution_status,
+                e.query,e.answer,e.sources,e.error
+                FROM pending_operations p LEFT JOIN operation_executions e
+                ON p.id=e.operation_id
+                WHERE p.session_id=? AND p.actor_id=?
+                ORDER BY p.created_epoch DESC LIMIT 1""",
+                (session_id,actor_id)).fetchone()
+            completed=con.execute("""SELECT e.operation_id,e.status AS execution_status,
+                e.query,e.answer,e.sources,e.error,e.finished_epoch
+                FROM operation_executions e WHERE e.session_id=? AND e.actor_id=?
+                AND e.status IN ('succeeded','failed')
+                ORDER BY e.started_epoch DESC LIMIT 1""",
+                (session_id,actor_id)).fetchone()
+        return {"current":expose(current),"last_result":expose(completed)}
