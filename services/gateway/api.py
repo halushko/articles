@@ -805,9 +805,8 @@ async def apprentice_chat(data: ChatIn, start: float):
             "utterance_intent":intent_info,
             "normalized_input":text if text!=data.text else None,
             "knowledge_evidence":memory.get("graph") or {},
-            "evidence_source":("confirmed_sqlite_context"
-                              if memory.get("knowledge") or memory.get("graph",{}).get("nodes")
-                              else "model_with_dialogue_context"),
+            # Retrieved graph nodes are context, not proof of every Qwen claim.
+            "evidence_source":"model_with_sqlite_context_unverified",
             "experience_count":len(memory.get("experiences") or []),
             "total_ms":round((time.perf_counter()-start)*1000,2)})
         return grounded
