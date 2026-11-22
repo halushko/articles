@@ -91,6 +91,7 @@
       button.title = recording ? 'Закончить диктовку и отправить' : 'Продиктовать команду';
       button.classList.toggle('is-listening', recording);
       language.disabled = recording;
+      if(voiceIntent) voiceIntent.disabled=recording;
     }
     function cancelSpeech() {
       speechEpoch++;

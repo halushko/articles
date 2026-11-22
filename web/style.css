@@ -143,3 +143,11 @@
 .knowledge-change{border-color:#57728f;background:#1a2839}
 .knowledge-change .review-actions{flex-wrap:wrap}
 .knowledge-change p{overflow-wrap:anywhere}
+
+/* v0.7 voice intent: readable selector, also on narrow/mobile screens. */
+.composer-tools #voice-intent{width:125px;min-width:115px;text-align:left;padding:8px}
+@media(max-width:520px){
+  .composer-tools{flex-wrap:wrap;gap:6px}
+  .composer-tools #voice-intent{width:120px;min-width:110px}
+  .composer-tools #send{flex:1;min-width:90px}
+}
