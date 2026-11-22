@@ -159,7 +159,7 @@ class DialogueCoordinatorTests(unittest.TestCase):
             con.execute("UPDATE pending_operations SET created_epoch=? WHERE id=?",
                         (time.time()-400,op["id"]))
         self.assertEqual(self.dialogue.resolve(self.sid,"да",self.actor)["status"],"expired")
-        self.assertEqual(self.approvals.resolve(self.sid,"разрешаю")["status"],"expired")
+        self.assertEqual(self.approvals.resolve(self.sid,"разрешаю",actor_id=self.actor)["status"],"expired")
 
     def test_learned_phrase_is_still_scoped_and_not_a_tool(self):
         text="Когда разрешаешь поиск фраза Можешь приступать значит согласие"
