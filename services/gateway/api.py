@@ -134,6 +134,9 @@ PHASE_TTL = 900
 
 def progress(request_id, phase, detail="", final=False):
     """Actual gateway pipeline stage; no invented completion percentages."""
+    trace=CURRENT_TRACE.get()
+    if trace is not None:
+        trace.add("gateway.phase", phase=phase, detail=detail[:100], final=final)
     if not request_id:
         return
     now=time.monotonic()
@@ -144,9 +147,6 @@ def progress(request_id, phase, detail="", final=False):
         if len(CHAT_PHASES)>300:
             for key in list(CHAT_PHASES)[:100]:
                 CHAT_PHASES.pop(key,None)
-    trace=CURRENT_TRACE.get()
-    if trace is not None:
-        trace.add("gateway.phase", phase=phase, detail=detail[:100], final=final)
     previous=CHAT_PHASES.get(request_id)
     CHAT_PHASES[request_id]={
         "phase":phase,"detail":detail[:140],
