@@ -32,3 +32,6 @@
 .pending .proposal{background:#242320}
 .badge{padding:4px 8px;color:#f9d79f;border-radius:99px;
   background:#4f3924;font-size:12px}
+
+.known-row .text-button{font-size:10px;color:#f5b2ae;flex-shrink:0}
+.known-row .text-button:hover{text-decoration:underline}
