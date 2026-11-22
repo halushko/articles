@@ -107,7 +107,7 @@ class ActorRegistry:
             con.execute("BEGIN IMMEDIATE")
             exists=con.execute("SELECT id FROM actors WHERE name_key=?",(key,)).fetchone()
             if exists:
-                return self.find(exists["id"])
+                return dict(con.execute("SELECT id,display_name,graph_node_id,origin FROM actors WHERE id=?",(exists["id"],)).fetchone())
             # A claimed profile does not automatically become a confirmed
             # fact or a verified user account, even if a graph node exists.
             uid=str(uuid.uuid4())
