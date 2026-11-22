@@ -368,12 +368,13 @@ class DialogueResolveIn(BaseModel):
     session_id: str = Field(min_length=36,max_length=36)
     text: str = Field(min_length=1,max_length=250)
     actor_id: str = Field(default="",max_length=36)
+    web_enabled: bool = True
 
 @app.post("/research/dialogue/resolve")
 def dialogue_resolve(req: DialogueResolveIn):
     if req.actor_id and not actors.find(req.actor_id):
         raise HTTPException(422,"Unknown speaker")
-    return dialogue.resolve(req.session_id,req.text,req.actor_id)
+    return dialogue.resolve(req.session_id,req.text,req.actor_id,req.web_enabled)
 
 @app.get("/research/dialogue/context/{sid}")
 def dialogue_context(sid: str,actor_id: str = ""):
