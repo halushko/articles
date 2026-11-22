@@ -58,7 +58,8 @@ def output_summary(endpoint, data):
     out = {}
     for key in ("route", "status", "search_status", "source", "evidence_source",
                 "model", "intent", "handled", "matched", "is_command", "executed",
-                "available", "needs_web", "web_requested", "normalized_text"):
+                "available", "needs_web", "web_requested", "normalized_text",
+                "confidence", "semantic_status", "score", "threshold"):
         if key in data and isinstance(data[key], (str, bool, int, float)):
             if key == "normalized_text":
                 out["normalization_applied"] = True
@@ -91,6 +92,9 @@ def output_summary(endpoint, data):
         out["index_status"] = data.get("status")
         out["target_found"] = bool(data.get("target_id"))
         out["candidate_count"] = _count(data.get("candidates"))
+        out["semantic_candidate_count"] = _count(data.get("semantic_candidates"))
+        out["selected_target"] = str(data.get("target_id") or "")[:100]
+        out["index_route"] = str(data.get("route") or "")[:60]
     if endpoint == "/research/dialogue/resolve":
         out["operation_category"] = data.get("category")
     if endpoint == "/research/web/search":
@@ -99,6 +103,16 @@ def output_summary(endpoint, data):
         out["prompt_trace"] = _llm_summary(data)
         out["model_intent"] = data.get("intent") if endpoint == "/analyze" else None
         out["model_parse_warning"] = bool(data.get("parse_warning"))
+        if endpoint == "/analyze":
+            out["model_proposed_web_query"] = bool(data.get("web_query"))
+            out["model_proposals_count"] = _count(data.get("proposals"))
+            out["model_changes_count"] = _count(data.get("changes"))
+            frame=data.get("dialogue_frame") or {}
+            if isinstance(frame,dict):
+                out["model_dialogue_frame"] = {
+                    k: str(frame[k])[:120] for k in ("topic","goal","assistant_question")
+                    if frame.get(k)
+                }
     return out
 
 
