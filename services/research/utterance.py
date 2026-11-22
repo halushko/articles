@@ -55,6 +55,13 @@ EXPLICIT_TEACHING = re.compile(
     r"это\s+(?:новый|новая|новое|моя|мой|моё|наша|наш|"
     r"система|устройство|прибор|технология)\b)"
 )
+# Conditional instructions addressed to JARVIS are teaching/behavior rules,
+# not questions about the date of an event. This is syntax, not a topic list.
+CONDITIONAL_TEACHING = re.compile(
+    r"(?isu)^(?:когда|если)\s+(?:ты|вы|джарвис|jarvis)\b.{5,400}"
+    r"\b(?:то|значит|это\s+означает|это\s+будет)\b"
+)
+
 NEGATIVE_CONFIRM = re.compile(
     r"(?iu)^(?:нет|неа|не\s+надо|отмена|отмени|"
     r"отклоняю|отклони|не\s+подтверждаю|"
@@ -81,6 +88,8 @@ def classify(text):
         kind,reason="statement","explicit_spoken_prefix"
     elif not routing:
         kind,reason="unknown","empty"
+    elif CONDITIONAL_TEACHING.search(routing):
+        kind,reason="statement","conditional_teaching"
     elif DIRECTIVE.search(routing) and not QUESTION_START.match(routing):
         kind,reason="command","imperative_verb"
     elif "?" in routing or QUESTION_START.match(
