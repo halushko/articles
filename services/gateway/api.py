@@ -447,6 +447,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             "session_id":data.session_id or "",
             "phrase":data.text[:250],
             "approval_id":data.approval_id,
+            "actor_id":data.actor_id,
             "source":"button" if data.approval_id and data.allow_web_search else "voice"})
         if resolved.get("handled"):
             if resolved.get("status")=="approved":
@@ -523,7 +524,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             return found
         if data.session_id:
             approval=await forward(RESEARCH_URL+"/research/operations/web/propose",
-                 "POST",{"session_id":data.session_id,
+                 "POST",{"session_id":data.session_id,"actor_id":data.actor_id,
                           "query":wanted_direct,"question":text})
             return {"answer":("Могу выполнить публичный поиск по запросу "
                       f"«{approval['query']}». Поиск ещё не запущен. "
@@ -610,7 +611,8 @@ async def apprentice_chat(data: ChatIn, start: float):
     if wanted and data.web_mode=="ask":
         if data.session_id:
             approval=await forward(RESEARCH_URL+"/research/operations/web/propose",
-                 "POST",{"session_id":data.session_id,"query":wanted,"question":text})
+                 "POST",{"session_id":data.session_id,"actor_id":data.actor_id,
+                          "query":wanted,"question":text})
             parsed["web_approval"]=approval
             parsed["reply"]=(
                 "Для проверки нужен публичный поиск. "
