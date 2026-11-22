@@ -5,6 +5,8 @@
 Qwen для понимания речи, **сам предлагает** сущности, действия, связи, уроки и
 гипотезы будущих навыков. Ты проверяешь карточки «Подтвердить / Изменить /
 Отклонить». Только подтверждённые записи доступны в будущих диалогах.
+Кнопки «Верно / Ошибка» фиксируют оценки учителя отдельно от знаний:
+оценка **не** изменяет веса Qwen и сама по себе не записывает правильное решение.
 Это не специализация на HA: никаких домашних устройств или уроков
 программирования в модель мира заранее не заложено.
 
@@ -67,6 +69,7 @@ docker compose up -d
 
 ```text
 GET  /api/apprentice/state
+POST /api/apprentice/grade {"question":"...","answer":"...","rating":"good|bad","teacher_note":"..."}
 POST /api/apprentice/forget {"kind":"entity|action|fact|lesson|capability","item_id":1}
 POST /api/apprentice/review {"proposal_id":1,"decision":"confirm|reject",
                              "name":"необязательно","description":"необязательно"}
