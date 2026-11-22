@@ -24,7 +24,7 @@
           <option value="apprentice" selected>Ученик · свободное обучение</option>
           <option value="hybrid">v0.3 · Индекс → LLM</option>
           <option value="research_only">v0.3 · Только индекс</option>
-          <option value="llm_only">Только LLM · baseline</option>
+          <option value="llm_only">Только LLM · контроль БЕЗ памяти</option>
         </select>
       </label>
       <label>Языковая модель
@@ -36,10 +36,12 @@
       </label>
     </div>
     <div class="learning-hint">
-      <strong>Как это работает:</strong> JARVIS сам предлагает новые сущности, действия, связи,
-      уроки и потенциальные навыки. Ты подтверждаешь или исправляешь предложения.
-      До подтверждения это <em>гипотезы</em>, а не его знания.
+      <strong>Как это работает:</strong> Подтверждённые записи из SQLite доступны ученику через
+      поиск и граф сущностей/связей. Новые гипотезы требуют проверки учителя.
+      Контрольный режим «Только LLM» намеренно <em>изолирован</em> от этой памяти,
+      чтобы можно было сравнивать качество без обучения.
     </div>
+    <div id="mode-explanation" class="mode-explanation" aria-live="polite" hidden></div>
     <div class="quick-examples">
       <button type="button" class="chip" data-example="У меня дома есть аккумулятор по имени Мелкий. Он стоит в гараже.">Познакомить с устройством</button>
       <button type="button" class="chip" data-example="Научиcь сортировке массива: сравниваем соседние элементы и меняем их местами, пока массив не станет отсортированным. Пример: [3,1,2] → [1,2,3].">Провести урок</button>
@@ -77,12 +79,19 @@
     <section class="panel">
       <div class="panel-title"><h2>Карта знаний</h2><button id="refresh" type="button" class="text-button">Обновить</button></div>
       <div id="learning-stats" class="stats"><span>Загрузка…</span></div>
-      <div class="legend">Подтверждено учителем · сохранено в SQLite</div>
-      <div id="known" class="known"></div>
+      <div class="legend">Граф: канонические названия объединяются независимо от домена. Связи — только подтверждённые факты.</div>
+      <h3 class="graph-heading">Уникальные сущности</h3>
+      <div id="graph-nodes" class="graph-list"></div>
+      <h3 class="graph-heading">Связи между сущностями</h3>
+      <div id="graph-edges" class="graph-list"></div>
+      <details class="raw-knowledge">
+        <summary>Исходные подтверждённые записи · история и отзыв</summary>
+        <div id="known" class="known"></div>
+      </details>
     </section>
     <section class="panel">
       <div class="panel-title"><h2>Нужна проверка</h2><span id="pending-count" class="badge">0</span></div>
-      <p class="explain">Предположения Qwen не становятся фактами автоматически. Подтверди, исправь или отклони каждое.</p>
+      <p class="explain">Кандидаты от Qwen и прозрачного языкового анализатора не становятся фактами автоматически. Для связей проверь субъект, отношение и объект.</p>
       <div id="pending" class="pending"></div>
     </section>
     <section class="panel">

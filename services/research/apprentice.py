@@ -9,6 +9,8 @@ import sqlite3
 from difflib import SequenceMatcher
 from .normalize import normalize
 from .conversation import DialogueMemory
+from .graph import KnowledgeGraph
+from .teaching import grounded_candidates
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS apprentice_proposals (
@@ -113,6 +115,7 @@ class ApprenticeMemory:
         with engine.connect() as con:
             con.executescript(SCHEMA)
         self.dialogue = DialogueMemory(engine)
+        self.graph = KnowledgeGraph(engine)
 
     def propose(self, source_text, proposals):
         if not isinstance(proposals, list):
@@ -120,7 +123,13 @@ class ApprenticeMemory:
         saved = []
         with self.engine.connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            for item in proposals[:5]:
+            # Transparent grammar baseline augments (never overrides) the model.
+            # These are all PENDING hypotheses until the teacher confirms them.
+            candidates = grounded_candidates(source_text) + proposals
+            seen_triples = set()
+            for item in candidates[:12]:
+                if len(saved) >= 5:
+                    break
                 if not isinstance(item, dict):
                     continue
                 kind = str(item.get("kind") or "").strip().lower()
@@ -139,6 +148,12 @@ class ApprenticeMemory:
                 if kind == "fact" and not all(str(details.get(k) or "").strip()
                         for k in ("subject","predicate","object")):
                     continue
+                if kind == "fact":
+                    signature = tuple(normalize(str(details.get(k) or ""))
+                                      for k in ("subject","predicate","object"))
+                    if signature in seen_triples:
+                        continue
+                    seen_triples.add(signature)
                 details_text = json.dumps(details, ensure_ascii=False)[:5000]
                 # Identical extraction from the same lesson should not create duplicates.
                 previous = con.execute("""SELECT id,status FROM apprentice_proposals
@@ -146,13 +161,17 @@ class ApprenticeMemory:
                       ORDER BY id DESC LIMIT 1""",
                       (kind,normalize(name),description,source_text[:3000])).fetchone()
                 if previous:
-                    saved.append({"id":previous["id"],"kind":kind,"name":name,"status":previous["status"]})
+                    if previous["status"] == "pending":
+                        saved.append({"id":previous["id"],"kind":kind,"name":name,
+                                      "description":description,"details":details,
+                                      "status":previous["status"]})
                     continue
                 cur = con.execute("""INSERT INTO apprentice_proposals
                   (kind,name,name_key,description,domain,details,source_text)
                   VALUES(?,?,?,?,?,?,?)""",
                   (kind,name,normalize(name),description,domain,details_text,source_text[:3000]))
-                saved.append({"id":cur.lastrowid,"kind":kind,"name":name,"status":"pending"})
+                saved.append({"id":cur.lastrowid,"kind":kind,"name":name,
+                              "description":description,"details":details,"status":"pending"})
                 con.execute("INSERT INTO apprentice_events(event_type,proposal_id,note) VALUES('proposed',?,?)",
                             (cur.lastrowid, f"{kind}: {name}"[:300]))
         return saved
@@ -165,7 +184,7 @@ class ApprenticeMemory:
             return {}
         return value if isinstance(value, dict) else {}
 
-    def review(self, proposal_id, decision, name=None, description=None):
+    def review(self, proposal_id, decision, name=None, description=None, details=None):
         if decision not in {"confirm","reject"}:
             raise ValueError("decision must be confirm or reject")
         with self.engine.connect() as con:
@@ -187,6 +206,20 @@ class ApprenticeMemory:
             if decision == "confirm":
                 data = self._details(row)
                 kind = row["kind"]
+                # A teacher correction to a fact MUST update the actual triple,
+                # not just its title/description. Keep a new audit snapshot.
+                if details is not None:
+                    if kind != "fact" or not isinstance(details,dict):
+                        raise ValueError("Only fact triples may be edited here")
+                    updated = {}
+                    for field in ("subject","predicate","object"):
+                        value = details.get(field)
+                        if not isinstance(value,str) or not value.strip() or len(value)>300:
+                            raise ValueError("Fact requires subject, predicate and object")
+                        updated[field] = value.strip()
+                    data.update(updated)
+                    con.execute("UPDATE apprentice_proposals SET details=? WHERE id=?",
+                                (json.dumps(data,ensure_ascii=False)[:5000],proposal_id))
                 domain = row["domain"]
                 if kind == "entity":
                     con.execute("""INSERT INTO world_entities
@@ -305,7 +338,11 @@ class ApprenticeMemory:
                     f"SELECT * FROM {table} ORDER BY id DESC LIMIT 35")]
             events = [dict(r) for r in con.execute(
                 "SELECT * FROM apprentice_events ORDER BY id DESC LIMIT 20")]
+        graph=self.graph.snapshot()
+        counts["canonical_entities"]=graph["counts"]["canonical_entities"]
+        counts["graph_relations"]=graph["counts"]["confirmed_relations"]
         return {"counts":counts,"pending":proposals,"knowledge":nodes,
+                "graph":graph,
                 "dialogue":self.dialogue.state(),
                 "events":events,"note":"Only confirmed teachings are in knowledge. Actions are descriptions, not runnable tools."}
 
@@ -358,12 +395,18 @@ class ApprenticeMemory:
                         item["kind"] = kind
                         recent.append(item)
             rows = recent[:12]
-        # Do not overwhelm a small model with irrelevant facts.
+        # The graph is a domain-independent projection of confirmed knowledge,
+        # not an alternative unverified source. Query plans and evidence are visible.
         state = self.dialogue.state()
+        graph = self.graph.snapshot()
+        inspection = self.graph.inspect(normalized_text,state["roles"],graph)
+        relevant_graph = self.graph.lookup(normalized_text,graph)
+        direct = prepared.get("direct_reply") or (inspection and inspection["answer"])
         return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
-                "normalized_text":normalized_text,
-                "direct_reply":prepared.get("direct_reply"),
+                "normalized_text":normalized_text, "direct_reply":direct,
+                "inspection":inspection, "graph":relevant_graph,
+                "graph_counts":graph["counts"],
                 "identity":state["roles"],
                 "capabilities":state["capabilities"],
                 "execution_tools":[],
-                "note":"Knowledge is teacher-confirmed. HTTP and external execution are unavailable."}
+                "note":"Graph and knowledge are confirmed teacher records only; unconfirmed proposals excluded."}

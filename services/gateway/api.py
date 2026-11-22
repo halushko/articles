@@ -66,6 +66,10 @@ class ApprenticeReviewIn(BaseModel):
     decision: str = Field(pattern="^(confirm|reject)$")
     name: str | None = Field(default=None,max_length=120)
     description: str | None = Field(default=None,max_length=1200)
+    details: dict | None = None
+
+class MemoryInspectIn(BaseModel):
+    query: str = Field(min_length=1,max_length=3000)
 
 class FeedbackIn(BaseModel):
     decision_id: int
@@ -152,6 +156,10 @@ async def feedback(data: FeedbackIn):
 async def apprentice_state():
     return await forward(RESEARCH_URL+"/apprentice/state")
 
+@app.post("/api/apprentice/inspect", dependencies=[Depends(auth)])
+async def apprentice_inspect(req: "MemoryInspectIn"):
+    return await forward(RESEARCH_URL+"/apprentice/inspect","POST",req.model_dump())
+
 @app.post("/api/apprentice/speech-corrections", dependencies=[Depends(auth)])
 async def speech_correction_add(data: SpeechCorrectionIn):
     return await forward(RESEARCH_URL+"/apprentice/speech-corrections","POST",data.model_dump())
@@ -209,12 +217,16 @@ async def apprentice_chat(data: ChatIn, start: float):
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",{"query":data.text})
     text = memory.get("normalized_text", data.text)
     direct_reply = memory.get("direct_reply")
-    # Names of speakers and explicit pronunciation lessons are resolved in SQLite.
-    # They must never require an LLM guess or create a spurious proposal.
+    # Questions about graph memory have authoritative SQLite responses.
+    # The model must not hallucinate the contents of its own index.
     if direct_reply:
-        return {"answer":direct_reply, "route":"apprentice_confirmed_context",
+        inspection = memory.get("inspection")
+        return {"answer":direct_reply,
+                "route":"apprentice_graph_inspection" if inspection else "apprentice_confirmed_context",
                 "intent":"ask", "missing":"", "proposals":[], "model":"SQLite",
                 "tokens":0, "executed":False,
+                "retrieval_trace":inspection.get("trace") if inspection else None,
+                "evidence_source":inspection.get("source") if inspection else "dialogue_roles",
                 "normalized_input":text if text != data.text else None,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
     capabilities = {item.get("name"):item.get("status")
@@ -251,15 +263,20 @@ async def apprentice_chat(data: ChatIn, start: float):
         parsed["missing"] = "Внешний инструмент подключения с отдельной настройкой доступа"
         parsed["integrity_warning"] = "Model claimed an external action without a tool call"
     proposals = []
-    if parsed.get("proposals"):
+    # The research service also has a transparent language-specific teaching
+    # baseline. Call it for first-person declarations even when Qwen misses
+    # a relationship. All extracted triples remain pending teacher review.
+    declaration = bool(re.search(r"(?iu)\bу\s+меня\b",text)) and "?" not in text
+    if parsed.get("proposals") or declaration:
         stored = await forward(RESEARCH_URL+"/apprentice/propose","POST",
-                               {"source_text":text,"proposals":parsed["proposals"]})
+                               {"source_text":text,"proposals":parsed.get("proposals") or []})
         proposals = stored.get("proposals",[])
     missing = parsed.get("missing","")
     if not isinstance(missing,str) or missing.casefold().startswith(
         ("конкретный недостающий ресурс", "конкретна недостаюча інформація")):
         missing = ""
     return {"answer":parsed.get("reply",""),"route":"apprentice_tutor",
+            "knowledge_evidence":memory.get("graph") or {},
             "normalized_input":text if text != data.text else None,
             "intent":parsed.get("intent","chat"),
             "missing":missing,
@@ -271,6 +288,19 @@ async def apprentice_chat(data: ChatIn, start: float):
             "executed":False,
             "total_ms":round((time.perf_counter()-start)*1000,2)}
 
+def probable_graph_inspection(text: str) -> bool:
+    """Cheap gate; Research decides whether it can answer, not this heuristic."""
+    q = text.casefold().replace("ё","е")
+    has_verb = any(w in q for w in (
+        "сколько","что","какие","перечис","покаж","назови","список",
+        "помнишь","помниш","что у меня","які","перелік"))
+    about_memory = any(w in q for w in (
+        "сущност","сутност","entity","объект","обьект","связ",
+        "отношен","факт","памят","помниш","помнишь","знан",
+        "сохранил","дома","в доме","домашн","вдома"))
+    return bool(has_verb and about_memory)
+
+
 @app.post("/api/chat", dependencies=[Depends(auth)])
 async def chat(data: ChatIn):
     start = time.perf_counter()
@@ -278,6 +308,19 @@ async def chat(data: ChatIn):
     if data.experiment == "apprentice":
         return await apprentice_chat(data,start)
     if data.experiment != "llm_only":
+        # Same authoritative graph can be inspected from all memory-aware modes.
+        # llm_only remains an intentionally isolated frozen-model control.
+        if probable_graph_inspection(text) and data.experiment in ("hybrid","research_only"):
+            checked = await forward(RESEARCH_URL+"/apprentice/inspect",
+                                    "POST",{"query":text})
+            if checked.get("matched") and checked.get("inspection"):
+                inspected = checked["inspection"]
+                return {"answer":inspected["answer"],"route":"sqlite_graph_inspection",
+                        "experiment":data.experiment,"retrieval_trace":inspected["trace"],
+                        "evidence_source":inspected["source"],
+                        "normalized_input":checked.get("normalized_text"),
+                        "model":"SQLite","tokens":0,"executed":False,
+                        "total_ms":round((time.perf_counter()-start)*1000,2)}
         if is_memory_query(text):
             mem = await forward(RESEARCH_URL+"/memory")
             result = {"answer":format_memory(mem),"route":"sqlite_inspection", "research":mem,

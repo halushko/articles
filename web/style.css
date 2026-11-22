@@ -84,3 +84,21 @@
 .tool-status.available{color:#9de1b1;background:#1c4733}
 .tool-status.teacher_only{color:#ffe1a9;background:#57462c}
 .tool-status.unavailable{color:#ffc3c1;background:#562c2f}
+
+/* Grounded graph view: raw proposal history remains available for retraction. */
+.graph-heading{font-size:12px;margin:15px 0 6px;color:#bfd5f7}
+.graph-list{display:flex;flex-direction:column;gap:5px;max-height:300px;overflow:auto}
+.graph-item{display:flex;flex-direction:column;gap:1px;padding:7px 8px;
+ border:1px solid var(--line);border-radius:8px;background:#161d29;
+ overflow-wrap:anywhere;font-size:12px}
+.graph-item strong{font-size:12px}
+.graph-item span,.graph-item small{color:#a5b5cc;font-size:10px}
+.graph-edge{background:#172a29;border-color:#304e4d}
+.raw-knowledge{margin-top:13px;font-size:12px}
+.raw-knowledge summary{cursor:pointer;color:#bdcbde}
+.raw-knowledge .known{max-height:370px}
+.proposal-triple{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;
+ background:#1e2f2c;padding:7px;border:1px solid #436658;border-radius:7px;margin:8px 0}
+.mode-explanation{border:1px solid #816039;background:#2c291f;color:#f2d1a4;
+ padding:10px;border-radius:10px;margin:0 0 13px;font-size:12px}
+.mode-explanation[hidden]{display:none}

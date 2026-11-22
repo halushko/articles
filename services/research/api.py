@@ -130,6 +130,7 @@ class ApprenticeReviewIn(BaseModel):
     decision: str = Field(pattern="^(confirm|reject)$")
     name: str | None = Field(default=None,max_length=120)
     description: str | None = Field(default=None,max_length=1200)
+    details: dict | None = None
 
 class ApprenticeContextIn(BaseModel):
     query: str = Field(min_length=1,max_length=3000)
@@ -166,6 +167,16 @@ def apprentice_state():
 def apprentice_context(req: ApprenticeContextIn):
     return apprentice.context(req.query)
 
+@app.post("/apprentice/inspect")
+def apprentice_inspect(req: ApprenticeContextIn):
+    # Pure read: no lesson extraction, no model calls, no dialogue mutation.
+    normalized = apprentice.dialogue.normalize_speech(req.query)
+    graph = apprentice.graph.snapshot()
+    roles = apprentice.dialogue.state()["roles"]
+    result = apprentice.graph.inspect(normalized,roles,graph)
+    return {"matched":result is not None,"inspection":result,
+            "normalized_text":normalized,"executed":False}
+
 @app.post("/apprentice/propose")
 def apprentice_propose(req: ApprenticeProposalsIn):
     return {"proposals":apprentice.propose(req.source_text,req.proposals),"executed":False}
@@ -173,7 +184,7 @@ def apprentice_propose(req: ApprenticeProposalsIn):
 @app.post("/apprentice/review")
 def apprentice_review(req: ApprenticeReviewIn):
     try:
-        return apprentice.review(req.proposal_id,req.decision,req.name,req.description)
+        return apprentice.review(req.proposal_id,req.decision,req.name,req.description,req.details)
     except ValueError as error:
         raise HTTPException(422,str(error))
 

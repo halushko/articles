@@ -33,6 +33,12 @@ function renderProposal(entry, target, description=entry.description||'') {
   kind.textContent=kindLabels[entry.kind]||entry.kind;
   const name=document.createElement('strong');name.textContent=entry.name;
   const detail=document.createElement('p');detail.textContent=description;
+  const triple = entry.kind==='fact' ? {...(entry.details||{})} : null;
+  const tripleLabel=document.createElement('div');tripleLabel.className='proposal-triple';
+  function showTriple(){
+    if(triple) tripleLabel.textContent=[triple.subject||'?',triple.predicate||'?',triple.object||'?'].join(' → ');
+  }
+  showTriple();
   const actions=document.createElement('div');actions.className='review-actions';
   const confirm=mkButton('✓ Подтвердить','',()=>review('confirm'));
   const reject=mkButton('✕ Отклонить','secondary',()=>review('reject'));
@@ -42,6 +48,19 @@ function renderProposal(entry, target, description=entry.description||'') {
     const newDescription=window.prompt('Уточни смысл записи',detail.textContent);
     if(newDescription===null)return;
     if(!newName.trim()||!newDescription.trim())return;
+    if(triple){
+      const updates={};
+      for(const field of ['subject','predicate','object']){
+        const original=triple[field]||'';
+        const title={subject:'Субъект',predicate:'Отношение',object:'Объект'}[field];
+        const value=window.prompt(title+' — кого/что именно связываем?',original);
+        if(value===null)return;
+        if(!value.trim())return;
+        updates[field]=value.trim();
+      }
+      Object.assign(triple,updates);
+      showTriple();
+    }
     name.textContent=newName.trim();detail.textContent=newDescription.trim();
   });
   async function review(decision){
@@ -49,7 +68,8 @@ function renderProposal(entry, target, description=entry.description||'') {
     try{
       const result=await api('/api/apprentice/review',
         {method:'POST',body:JSON.stringify({proposal_id:entry.id,decision,
-                        name:name.textContent,description:detail.textContent})});
+                        name:name.textContent,description:detail.textContent,
+                        details:triple||undefined})});
       panel.remove();
       putMessage(decision==='confirm'?
         `Подтверждено: ${result.name} · ${kindLabels[result.kind]||result.kind}. Сохранил в память, но никаких действий не выполнял.`:
@@ -60,7 +80,10 @@ function renderProposal(entry, target, description=entry.description||'') {
       for(const b of [confirm,reject,edit])b.disabled=false;
     }
   }
-  actions.append(confirm,reject,edit);panel.append(kind,name,detail,actions);target.append(panel);
+  actions.append(confirm,reject,edit);
+  panel.append(kind,name,detail);
+  if(triple)panel.append(tripleLabel);
+  panel.append(actions);target.append(panel);
   chat.scrollTop=chat.scrollHeight;
 }
 function setupCorrection(container,phrase) {
@@ -90,7 +113,9 @@ async function send(text,experiment) {
                  history:mode==='apprentice'?turnHistory.slice(-12):[]};
   const r=await api('/api/chat',{method:'POST',body:JSON.stringify(options)});
   const stamp=[r.route,r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
-               r.tokens!=null?`${r.tokens} токенов`:null].filter(Boolean).join(' · ');
+               r.tokens!=null?`${r.tokens} токенов`:null,
+               r.evidence_source==='confirmed_sqlite_graph'?'✓ подтверждено SQLite':null
+              ].filter(Boolean).join(' · ');
   if(r.normalized_input && r.normalized_input!==text) {
     putMessage('Словарь произношений: «'+text+'» → «'+r.normalized_input+'»','system');
   }
@@ -175,7 +200,19 @@ $('chat-form').addEventListener('submit',async event=>{
     voiceButton.disabled=!voice.isSupported;input.focus();
   }
 });
-$('experiment').addEventListener('change',()=>{turnHistory=[];});
+function renderMode(){
+  const mode=$('experiment').value;
+  const explanation=$('mode-explanation');
+  const notes={
+    llm_only:'⚠️ Контрольный эксперимент: Qwen не получает SQLite, не знает подтверждённые сущности и может выдумывать ответы о своей памяти. Для общения с обученным JARVIS выбери «Ученик».',
+    hybrid:'Старый Hybrid: команды обрабатывает старый индекс, но вопросы о графе знаний читаются из общей подтверждённой памяти.',
+    research_only:'Индекс без LLM: отвечает на запросы к подтверждённой памяти и изученные команды. Свободный диалог намеренно отсутствует.'
+  };
+  explanation.textContent=notes[mode]||'';
+  explanation.hidden=!notes[mode];
+}
+$('experiment').addEventListener('change',()=>{turnHistory=[];renderMode();});
+renderMode();
 $('speech-form').addEventListener('submit',async event=>{
   event.preventDefault();
   const heard=$('speech-heard').value.trim(),correct=$('speech-correct').value.trim();
@@ -213,14 +250,42 @@ async function refresh(){
     $('health').textContent=`Research: ${health.research?.status||'?'} · Qwen: ${health.llm?.status||'?'}`;
     const counts=memory.counts;
     const grid=$('learning-stats');grid.replaceChildren();
-    const labels={entity:'Сущности',action:'Действия (опис.)',fact:'Связи',
-                  lesson:'Уроки',capability:'Идеи навыков',pending:'Гипотезы',graded:'Оценено ответов'};
+    const labels={canonical_entities:'Уникальные объекты',graph_relations:'Рёбра графа',
+                  entity:'Сырые сущности',action:'Действия (опис.)',
+                  fact:'Сырые связи',lesson:'Уроки',capability:'Идеи навыков',
+                  pending:'Гипотезы',graded:'Оценено ответов'};
     for(const [key,label] of Object.entries(labels)){
       const box=document.createElement('div');box.className='stat';
       const strong=document.createElement('strong');strong.textContent=counts[key]||0;
       const small=document.createElement('small');small.textContent=label;
       box.append(strong,small);grid.append(box);
     }
+    const graph=memory.graph||{nodes:[],edges:[]};
+    const graphNodes=$('graph-nodes');graphNodes.replaceChildren();
+    for(const node of (graph.nodes||[]).slice(0,80)){
+      const row=document.createElement('div');row.className='graph-item';
+      const label=document.createElement('strong');label.textContent=node.name;
+      const meta=document.createElement('span');
+      const original=(node.evidence||[]).map(item=>item.domain).filter(Boolean);
+      meta.textContent='#'+node.id+' · '+(original.length?
+        [...new Set(original)].join(', '):'из подтверждённой связи');
+      row.append(label,meta);graphNodes.append(row);
+    }
+    if(!graph.nodes?.length)graphNodes.textContent='Подтверждённых объектов пока нет.';
+    if((graph.nodes||[]).length>80){
+      const more=document.createElement('p');more.className='explain';
+      more.textContent='Показаны первые 80. Для полного списка используй запрос к памяти.';
+      graphNodes.append(more);
+    }
+    const graphEdges=$('graph-edges');graphEdges.replaceChildren();
+    for(const edge of (graph.edges||[]).slice(0,80)){
+      const row=document.createElement('div');row.className='graph-item graph-edge';
+      row.textContent=edge.subject+' — '+edge.predicate+' → '+edge.object;
+      const source=document.createElement('small');
+      source.textContent='подтверждённый факт #'+edge.source_fact_id;
+      row.append(source);graphEdges.append(row);
+    }
+    if(!graph.edges?.length)graphEdges.textContent='Подтверждённых связей пока нет.';
     const known=$('known');known.replaceChildren();
     let any=false;
     for(const [kind,list] of Object.entries(memory.knowledge)){
@@ -298,7 +363,8 @@ $('refresh').onclick=refresh;
 $('show-learning').onclick=async()=>{
   try{
     const state=await api('/api/apprentice/state');
-    putMessage(JSON.stringify(state.knowledge,null,2),'assistant','Подтверждённые знания · SQLite');
+    putMessage(JSON.stringify({graph:state.graph,raw:state.knowledge},null,2),
+      'assistant','Подтверждённые знания и источники · SQLite');
   }catch(e){putMessage('Ошибка: '+e.message,'system');}
 };
 $('show-memory').onclick=async()=>{
