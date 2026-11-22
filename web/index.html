@@ -65,6 +65,14 @@
     <div id="chat" class="chat" aria-live="polite">
       <div class="message system">Я ещё не знаю твоё окружение. Расскажи мне что-нибудь, как ученику: о доме, программировании или другой области. После ответа появятся предложения для подтверждения.</div>
     </div>
+    <div class="actor-toolbar" aria-label="Собеседник">
+      <label for="actor-select">👤 Сейчас говорит
+        <select id="actor-select"><option value="">Неизвестный собеседник</option></select>
+      </label>
+      <button id="actor-add" type="button" class="secondary">+ Профиль</button>
+      <button id="device-link" type="button" class="secondary">🔗 Это моё устройство</button>
+      <small id="actor-status" role="status">Профиль — подсказка, не подтверждение личности.</small>
+    </div>
     <form id="chat-form" class="composer">
       <textarea id="message" autocomplete="off" placeholder="Поговори с Джарвисом или научи чему-нибудь…" maxlength="3000" rows="2" required aria-label="Сообщение Джарвису"></textarea>
       <div class="composer-tools">
@@ -77,8 +85,17 @@
       </div>
     </form>
     <div class="voice-settings">
+      <label for="voice-intent">🎙️ Тип реплики
+        <select id="voice-intent" aria-label="Тип голосового ввода">
+          <option value="auto">Определить автоматически</option>
+          <option value="question">Вопрос</option>
+          <option value="command">Команда</option>
+          <option value="statement">Утверждение</option>
+        </select>
+      </label>
+      <span id="intent-preview" class="intent-preview" role="status" aria-live="polite">Намерение ещё не определено</span>
       <label class="tts-toggle" for="voice-output"><input id="voice-output" type="checkbox" checked /> 🔊 Озвучивать ответы</label>
-      <span class="voice-tip">Enter — отправить · Shift+Enter — новая строка · 🎤/⏹ — диктовка.</span>
+      <span class="voice-tip">Вопросительный знак не обязателен. Если речь неоднозначна, выбери тип реплики. Enter — отправить · 🎤/⏹ — диктовка.</span>
     </div>
     <div id="voice-status" class="voice-status" role="status" aria-live="polite" hidden></div>
     <div id="tts-status" class="voice-status" role="status" aria-live="polite"></div>
