@@ -14,6 +14,7 @@ from .embedding import embed
 from .sessions import ConversationStore, markdown
 from .review_voice import VoiceReviews
 from .approvals import OperationApprovals
+from .actors import ActorRegistry
 from .web_research import FreeWebResearch
 
 engine: Engine | None = None
@@ -22,15 +23,17 @@ sessions: ConversationStore | None = None
 web_research: FreeWebResearch | None = None
 voice_reviews: VoiceReviews | None = None
 operation_approvals: OperationApprovals | None = None
+actors: ActorRegistry | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals
+    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
     sessions = ConversationStore(engine)
     voice_reviews = VoiceReviews(engine,apprentice,sessions)
     operation_approvals = OperationApprovals(engine,sessions)
+    actors = ActorRegistry(engine)
     web_research = FreeWebResearch(engine)
     yield
 
@@ -147,6 +150,7 @@ class ApprenticeReviewIn(BaseModel):
 class ApprenticeContextIn(BaseModel):
     query: str = Field(min_length=1,max_length=3000)
     session_id: str = Field(default="",max_length=36)
+    actor_id: str = Field(default="",max_length=36)
 
 class ApprenticeGradeIn(BaseModel):
     question: str = Field(min_length=1,max_length=3000)
@@ -178,7 +182,14 @@ def apprentice_state():
 
 @app.post("/apprentice/context")
 def apprentice_context(req: ApprenticeContextIn):
-    result=apprentice.context(req.query)
+    speaker=actors.find(req.actor_id)
+    if req.actor_id and not speaker:
+        raise HTTPException(422,"Неизвестный профиль говорящего")
+    # Shared devices never silently inherit a legacy singleton identity.
+    if speaker is None and len(actors.list()["people"])>1:
+        speaker={"id":None,"display_name":None,"origin":"unselected"}
+    result=apprentice.context(req.query,speaker=speaker)
+    result["speaker"] = speaker
     if req.session_id and sessions.exists(req.session_id):
         change=result.get("change_proposal")
         if change and change.get("id"):
@@ -331,6 +342,33 @@ def web_operation_clear(req: SearchApprovalClearIn):
     operation_approvals.clear(req.session_id)
     return {"cleared":True}
 
+
+class ActorCreateIn(BaseModel):
+    display_name: str = Field(min_length=2,max_length=70)
+
+class ActorDeviceIn(BaseModel):
+    device_id: str = Field(min_length=36,max_length=36)
+    actor_id: str = Field(min_length=36,max_length=36)
+    label: str = Field(min_length=1,max_length=70)
+
+@app.get("/research/actors")
+def actor_list(device_id: str = ""):
+    return actors.list(device_id)
+
+@app.post("/research/actors")
+def actor_create(req: ActorCreateIn):
+    try:
+        return actors.create(req.display_name)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+@app.post("/research/actors/device")
+def actor_device(req: ActorDeviceIn):
+    try:
+        return actors.add_device(req.device_id,req.actor_id,req.label)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
 # Research sessions and free public-web search are independent from the old
 # online-weight index. Every answer's provenance is stored per-turn.
 class SessionCreateIn(BaseModel):
@@ -338,6 +376,7 @@ class SessionCreateIn(BaseModel):
 
 class SessionTurnIn(BaseModel):
     question: str = Field(min_length=1,max_length=3000)
+    actor_id: str = Field(default="",max_length=36)
     answer: str = Field(default="",max_length=6000)
     experiment: str = Field(max_length=40)
     profile: str = Field(max_length=40)
@@ -377,8 +416,15 @@ def research_session_read(sid: str):
 @app.post("/research/sessions/{sid}/turns")
 def research_session_turn(sid: str, req: SessionTurnIn):
     try:
-        return sessions.save_turn(sid,req.question,req.answer,req.experiment,
-                                  req.profile,req.ablation,req.web_mode,req.result)
+        speaker=actors.find(req.actor_id)
+        if req.actor_id and not speaker:
+            raise ValueError("Неизвестный говорящий")
+        result=sessions.save_turn(sid,req.question,req.answer,req.experiment,
+                                  req.profile,req.ablation,req.web_mode,req.result,
+                                  actor_id=req.actor_id)
+        if speaker:
+            actors.record_turn_speaker(sid,req.actor_id)
+        return result
     except ValueError as error:
         raise HTTPException(404,str(error))
 
