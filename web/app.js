@@ -82,7 +82,10 @@ async function previewIntent(){
   const text=$('message').value.trim(),seq=++previewId;
   if(!text){$('intent-preview').textContent='Намерение ещё не определено';return;}
   try{
-    const r=await api('/api/intent',{method:'POST',body:JSON.stringify({text})});
+    const mode=$('voice-intent').value;
+    const preview=mode==='auto'||/^(?:вопрос|команда|утверждение)\s*[:.,-]?\s+/iu.test(text)?
+      text:({question:'Вопрос',command:'Команда',statement:'Утверждение'})[mode]+': '+text;
+    const r=await api('/api/intent',{method:'POST',body:JSON.stringify({text:preview})});
     if(seq!==previewId)return;
     $('intent-preview').textContent=({
       question:'❓ Вопрос',command:'⚙️ Команда',
@@ -374,7 +377,12 @@ const voice = window.JarvisVoice.initVoice({
 });
 $('chat-form').addEventListener('submit',async event=>{
   event.preventDefault();if(busy)return;
-  const input=$('message'),text=input.value.trim();if(!text)return;
+  const input=$('message');
+  let text=input.value.trim();if(!text)return;
+  const mode=$('voice-intent').value;
+  if(mode!=='auto' && !/^(?:вопрос|команда|утверждение)\s*[:.,-]?\s+/iu.test(text)){
+    text=({question:'Вопрос',command:'Команда',statement:'Утверждение'})[mode]+': '+text;
+  }
   voice.stopForManualSend();
   voice.cancelSpeech();
   input.value='';putMessage(text,'user');busy=true;$('send').disabled=true;
