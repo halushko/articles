@@ -8,6 +8,8 @@ import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
+from fastapi.testclient import TestClient
+from services.research.api import app as research_app
 
 from services.research.engine import Engine
 from services.research.settings import load
@@ -131,6 +133,44 @@ class DialogueGroundingTests(unittest.TestCase):
         self.assertFalse(looks_like_loop("Домкрат, баллонный ключ, запасное колесо и упоры."))
         self.assertTrue(claims_unobserved_search(
             "Я ищу информацию в интернете, скоро отвечу."))
+
+
+class ExecutionHttpTests(unittest.TestCase):
+    def test_real_api_permission_execution_status_and_world_memory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.dict(os.environ,{"DATABASE_PATH":str(Path(folder)/"live.sqlite3")}):
+                with TestClient(research_app) as client:
+                    actor=client.post("/research/actors",json={
+                        "display_name":"Дима"}).json()["id"]
+                    sid=client.post("/research/sessions",json={}).json()["id"]
+                    common={"session_id":sid,"actor_id":actor}
+                    offer=client.post("/research/operations/web/propose",json={
+                        **common,"query":"замена колеса","question":"Найди инструкцию"}).json()
+                    resolved=client.post("/research/operations/web/resolve",json={
+                        **common,"phrase":"я разрешаю поиск"}).json()
+                    self.assertEqual(resolved["status"],"approved")
+                    op=offer["id"]
+                    started=client.post("/research/operations/web/start",json={
+                        **common,"operation_id":op}).json()
+                    self.assertTrue(started["started"])
+                    again=client.post("/research/operations/web/start",json={
+                        **common,"operation_id":op}).json()
+                    self.assertFalse(again["started"])
+                    finished=client.post("/research/operations/web/finish",json={
+                        **common,"operation_id":op,"status":"succeeded",
+                        "answer":"Проверенный ответ","sources":[{
+                            "title":"Руководство","url":"https://example.org",
+                            "status":"read"}]}).json()
+                    self.assertTrue(finished["saved"])
+                    status=client.post("/research/operations/web/status",json=common).json()
+                    self.assertEqual(status["current"]["execution_status"],"succeeded")
+                    context=client.post("/apprentice/context",json={
+                        "query":"Где результат поиска?",**common}).json()
+                    self.assertEqual(context["operations"]["last_result"]["answer"],
+                                     "Проверенный ответ")
+                    denied=client.post("/research/operations/web/status",json={
+                        "session_id":sid,"actor_id":""}).json()
+                    self.assertIsNone(denied["last_result"])
 
 
 class PromptBudgetTests(unittest.TestCase):
