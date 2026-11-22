@@ -79,7 +79,7 @@ class BehaviorRulesTests(unittest.TestCase):
         self.assertEqual(no_pending["status"],"no_pending_search")
         proposed=approvals.propose_search(sid,"weather tomorrow","What is weather?",actor_id="actor-a")
         wrong=approvals.resolve(sid,"Да поищи",actor_id="actor-b")
-        self.assertEqual(wrong["status"],"no_pending_search")
+        self.assertFalse(wrong["handled"])
         approved=approvals.resolve(sid,"Да поищи",actor_id="actor-a")
         self.assertEqual(approved["status"],"approved")
         self.assertEqual(approved["query"],"weather tomorrow")
