@@ -226,6 +226,26 @@ class ApprenticeMemory:
         return {"id":proposal_id,"status":status,"kind":row["kind"],"name":new_name,
                 "executed":False}
 
+    def forget(self, kind, item_id):
+        """Retract a confirmed item without destroying the teaching audit."""
+        if kind not in TABLES:
+            raise ValueError("Unknown knowledge type")
+        table = TABLES[kind]  # SQL identifier is from an internal allowlist.
+        with self.engine.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(f"SELECT * FROM {table} WHERE id=?", (item_id,)).fetchone()
+            if not row:
+                raise ValueError("Unknown knowledge item")
+            proposal_id = row["source_proposal_id"]
+            con.execute(f"DELETE FROM {table} WHERE id=?", (item_id,))
+            if proposal_id is not None:
+                con.execute("""UPDATE apprentice_proposals SET status='retracted',
+                    reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='confirmed'""",
+                    (proposal_id,))
+            con.execute("INSERT INTO apprentice_events(event_type,proposal_id,note) VALUES(?,?,?)",
+                        ("retracted",proposal_id,f"{kind} #{item_id}"[:300]))
+        return {"forgotten":True,"kind":kind,"id":item_id,"executed":False}
+
     @staticmethod
     def _row(row):
         item = dict(row)
