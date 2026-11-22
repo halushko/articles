@@ -432,7 +432,8 @@ def proposed_web_query(text: str, parsed: dict) -> str:
         return (query or text)[:240]
     # A quotation or lesson containing "поищи" is not a search request.
     # The fallback only handles a command that BEGINS with a search verb.
-    request = re.match(r"(?iu)^\s*(?:(?:команда|приказ)\s*[:,-]?\s*)?"
+    request = re.match(r"(?iu)^\s*(?:(?:а|ну|пожалуйста)\s+)*"
+                       r"(?:(?:команда|приказ)\s*[:,-]?\s*)?"
                        r"(?:найди|найдите|поищи|поищите|загугли|"
                        r"проверь\s+в\s+интернете|search\s+the\s+web|"
                        r"ищи\s+в\s+сети)\b",text)
@@ -443,6 +444,40 @@ def proposed_web_query(text: str, parsed: dict) -> str:
                        r"пожалуйста)\s+)+","",terms).strip(" .,;:-")
         return (terms if len(terms) >= 3 else text)[:240]
     return ""
+
+
+def contextual_search_query(text: str, candidate: str, memory: dict) -> str:
+    """Resolve an omitted search subject from this actor's saved conversation.
+
+    Never invent a search topic from an assistant answer or another actor.
+    If no unambiguous prior question exists, request clarification instead.
+    """
+    if not candidate:
+        return ""
+    # Explicit search subject is not replaced by the dialogue's older topic.
+    clause=str(candidate).strip()
+    referring=(clause == text or bool(re.match(
+        r"(?iu)^(?:мне кажется|я думаю|потому что|ведь|"
+        r"ты не|это|об этом|по этому вопросу)\b",clause)))
+    if not referring:
+        return candidate[:240]
+    dialogue=memory.get("dialogue") if isinstance(memory.get("dialogue"),dict) else {}
+    history=dialogue.get("history") if isinstance(dialogue.get("history"),list) else []
+    ignored=set("а и я мне меня ты тебя это этот такая такое что как где "
+                "почему откуда от сюда информация такой нужными поиск".split())
+    for item in reversed(history[-12:]):
+        if not isinstance(item,dict) or item.get("role")!="user":
+            continue
+        utterance=str(item.get("content") or "").strip()
+        if proposed_web_query(utterance,{}):
+            continue
+        words=[w for w in re.findall(r"(?u)\w+",utterance.casefold())
+               if len(w)>=3 and w not in ignored]
+        # A bare "откуда информация?" is not the original topic.
+        if len(words)>=3:
+            return utterance[:240]
+    state=dialogue.get("state") if isinstance(dialogue.get("state"),dict) else {}
+    return str(state.get("goal") or state.get("topic") or "")[:240]
 
 
 async def answer_from_public_search(data: ChatIn, text: str,
@@ -591,8 +626,15 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Route explicit requests to a real, allowlisted tool before Qwen.
     # Never require Qwen to infer that "найди в интернете" needs a search.
     intent_info=memory.get("utterance_intent") or {}
-    wanted_direct=(proposed_web_query(text,{})
-                   if intent_info.get("intent")=="command" else "")
+    candidate=(proposed_web_query(text,{})
+               if intent_info.get("intent")=="command" else "")
+    wanted_direct=contextual_search_query(text,candidate,memory)
+    if candidate and not wanted_direct:
+        return {"answer":"Что именно искать? В текущем разговоре нет "
+                         "однозначной темы для поиска.",
+                "route":"world_search_clarification","model":"SQLite",
+                "utterance_intent":intent_info,"tokens":0,"executed":False,
+                "total_ms":round((time.perf_counter()-start)*1000,2)}
     if wanted_direct:
         if data.web_mode=="off":
             return {"answer":"Интернет отключён. Поиск не выполнялся.",
