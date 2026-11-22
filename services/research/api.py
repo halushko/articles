@@ -7,16 +7,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from .engine import Engine
+from .apprentice import ApprenticeMemory
 from .settings import load
 from .normalize import parse_command
 from .embedding import embed
 
 engine: Engine | None = None
+apprentice: ApprenticeMemory | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine
+    global engine, apprentice
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
+    apprentice = ApprenticeMemory(engine)
     yield
 
 app = FastAPI(title="JARVIS Research Index", version="0.3.2", lifespan=lifespan)
@@ -115,3 +118,37 @@ def feedback(req: FeedbackIn):
         return engine.record_feedback(req.decision_id, req.rating)
     except ValueError as err:
         raise HTTPException(422,str(err))
+
+# The apprenticeship index is domain-independent: it knows no Home Assistant
+# entity IDs, network endpoints, shell commands, or executable code.
+class ApprenticeProposalsIn(BaseModel):
+    source_text: str = Field(min_length=1,max_length=3000)
+    proposals: list[dict] = Field(default_factory=list,max_length=5)
+
+class ApprenticeReviewIn(BaseModel):
+    proposal_id: int = Field(gt=0)
+    decision: str = Field(pattern="^(confirm|reject)$")
+    name: str | None = Field(default=None,max_length=120)
+    description: str | None = Field(default=None,max_length=1200)
+
+class ApprenticeContextIn(BaseModel):
+    query: str = Field(min_length=1,max_length=3000)
+
+@app.get("/apprentice/state")
+def apprentice_state():
+    return apprentice.snapshot()
+
+@app.post("/apprentice/context")
+def apprentice_context(req: ApprenticeContextIn):
+    return apprentice.context(req.query)
+
+@app.post("/apprentice/propose")
+def apprentice_propose(req: ApprenticeProposalsIn):
+    return {"proposals":apprentice.propose(req.source_text,req.proposals),"executed":False}
+
+@app.post("/apprentice/review")
+def apprentice_review(req: ApprenticeReviewIn):
+    try:
+        return apprentice.review(req.proposal_id,req.decision,req.name,req.description)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
