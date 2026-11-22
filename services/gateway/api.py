@@ -12,6 +12,8 @@ import json
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
+from .tracing import (ChatTrace, CURRENT_TRACE, input_summary,
+                      output_summary, trace_forward_endpoint)
 
 LLM_URL = os.getenv("LLM_URL", "http://llm:8000")
 RESEARCH_URL = os.getenv("RESEARCH_URL", "http://research:8000")
@@ -142,6 +144,9 @@ def progress(request_id, phase, detail="", final=False):
         if len(CHAT_PHASES)>300:
             for key in list(CHAT_PHASES)[:100]:
                 CHAT_PHASES.pop(key,None)
+    trace=CURRENT_TRACE.get()
+    if trace is not None:
+        trace.add("gateway.phase", phase=phase, detail=detail[:100], final=final)
     previous=CHAT_PHASES.get(request_id)
     CHAT_PHASES[request_id]={
         "phase":phase,"detail":detail[:140],
@@ -170,17 +175,38 @@ async def chat_status(request_id: str):
             "phase_elapsed_seconds":round(now-state["updated"],1)}
 
 async def forward(url: str, method: str = "GET", payload: dict | None = None):
+    trace=CURRENT_TRACE.get()
+    service,endpoint=trace_forward_endpoint(url)
+    should_trace=(trace is not None and not endpoint.endswith("/turns"))
+    started=time.perf_counter()
+    if should_trace:
+        trace.add("service.request", service=service, endpoint=endpoint,
+                  method=method, input=input_summary(endpoint,payload))
     try:
         async with httpx.AsyncClient(timeout=250) as client:
             response = await client.request(method,url,json=payload)
             response.raise_for_status()
-            return response.json()
+            data=response.json()
+        if should_trace:
+            trace.add("service.response", service=service, endpoint=endpoint,
+                      http_status=response.status_code,
+                      duration_ms=round((time.perf_counter()-started)*1000,2),
+                      output=output_summary(endpoint,data))
+        return data
     except httpx.HTTPStatusError as e:
+        if should_trace:
+            trace.add("service.error",status="error",service=service,endpoint=endpoint,
+                      http_status=e.response.status_code,
+                      duration_ms=round((time.perf_counter()-started)*1000,2))
         # Propagate meaningful client mistakes without hiding a failed experiment.
         if e.response.status_code in {400,409,422}:
             raise HTTPException(e.response.status_code,e.response.text[:500])
         raise HTTPException(502,f"Upstream error {e.response.status_code}")
     except httpx.HTTPError as e:
+        if should_trace:
+            trace.add("service.error",status="error",service=service,endpoint=endpoint,
+                      error_type=type(e).__name__,
+                      duration_ms=round((time.perf_counter()-started)*1000,2))
         raise HTTPException(503,f"Upstream unavailable: {type(e).__name__}")
 
 
@@ -822,6 +848,12 @@ async def chat_core(data: ChatIn):
     start = time.perf_counter()
     progress(data.request_id,"routing","Выбираю маршрут ответа")
     text = data.text.strip()
+    trace=CURRENT_TRACE.get()
+    if trace:
+        trace.add("gateway.route_selection", chosen_mode=data.experiment,
+                  index_before_llm=data.experiment == "hybrid",
+                  index_only=data.experiment == "research_only",
+                  isolated_llm_control=data.experiment == "llm_only")
     if data.experiment == "apprentice":
         return await apprentice_chat(data,start)
     if data.experiment != "llm_only":
@@ -870,42 +902,58 @@ async def chat_core(data: ChatIn):
 
 @app.post("/api/chat", dependencies=[Depends(auth)])
 async def chat(data: ChatIn):
-    """Persist a complete model/retrieval turn without affecting control modes."""
-    progress(data.request_id,"received","Запрос принят")
+    """Trace every mode, persist diagnostics beside the turn, keep isolation rules."""
+    trace=ChatTrace(data)
+    token=CURRENT_TRACE.set(trace)
     try:
-        result=await chat_core(data)
-    except HTTPException as error:
-        progress(data.request_id,"error","Ошибка обработки: "+str(error.detail)[:70],True)
+        progress(data.request_id,"received","Запрос принят")
+        try:
+            result=await chat_core(data)
+        except HTTPException as error:
+            trace.add("gateway.error",status="error",http_status=error.status_code)
+            progress(data.request_id,"error","Ошибка обработки: "+str(error.detail)[:70],True)
+            if data.session_id:
+                try:
+                    failure={"route":"chat_error","model":"none",
+                             "error_status":error.status_code,
+                             "search_status":"upstream_error",
+                             "debug_trace":trace.result(error="HTTP "+str(error.status_code))}
+                    await forward(
+                        RESEARCH_URL+"/research/sessions/"+data.session_id+"/turns",
+                        "POST",{
+                            "question":data.text,
+                            "answer":"[Не удалось получить ответ: "+str(error.detail)[:500]+"]",
+                            "experiment":data.experiment,"profile":data.profile,
+                            "ablation":data.ablation,"web_mode":data.web_mode,
+                            "result":failure,"actor_id":data.actor_id})
+                except HTTPException:
+                    pass
+            raise
+        trace.add("gateway.outcome", route=result.get("route",""),
+                  model=result.get("model",""),
+                  tokens=result.get("tokens",0),
+                  prompt_tokens=result.get("prompt_tokens",0),
+                  executed=result.get("executed",False),
+                  persistence_attempted=bool(data.session_id))
+        result["debug_trace"]=trace.result(response=result)
         if data.session_id:
+            progress(data.request_id,"saving","SQLite: сохраняю ответ и трассировку")
             try:
-                await forward(
+                saved=await forward(
                     RESEARCH_URL+"/research/sessions/"+data.session_id+"/turns",
                     "POST",{
-                        "question":data.text,
-                        "answer":"[Не удалось получить ответ: "+str(error.detail)[:500]+"]",
+                        "question":data.text,"answer":str(result.get("answer",""))[:6000],
                         "experiment":data.experiment,"profile":data.profile,
                         "ablation":data.ablation,"web_mode":data.web_mode,
-                        "result":{"route":"chat_error","model":"none",
-                                  "error_status":error.status_code,
-                                  "search_status":"upstream_error"}})
-            except HTTPException:
-                pass
-        raise
-    if data.session_id:
-        progress(data.request_id,"saving","SQLite: сохраняю ответ и источники")
-        try:
-            saved=await forward(
-                RESEARCH_URL+"/research/sessions/"+data.session_id+"/turns",
-                "POST",{
-                    "question":data.text,"answer":str(result.get("answer",""))[:6000],
-                    "experiment":data.experiment,"profile":data.profile,
-                    "ablation":data.ablation,"web_mode":data.web_mode,
-                    "result":result,"actor_id":data.actor_id})
-            result["turn_id"]=saved["turn_id"]
-            result["session_id"]=data.session_id
-        except HTTPException as error:
-            # Never pretend unsaved turns were persisted. Return answer with
-            # explicit warning so the UI can let the teacher export manually.
-            result["persistence_warning"]=str(error.detail)[:300]
-    progress(data.request_id,"done","Ответ готов",True)
-    return result
+                        "result":result,"actor_id":data.actor_id})
+                result["turn_id"]=saved["turn_id"]
+                result["session_id"]=data.session_id
+            except HTTPException as error:
+                trace.add("gateway.persistence_error",status="error",
+                          http_status=error.status_code)
+                result["persistence_warning"]=str(error.detail)[:300]
+                result["debug_trace"]=trace.result(response=result)
+        progress(data.request_id,"done","Ответ готов",True)
+        return result
+    finally:
+        CURRENT_TRACE.reset(token)
