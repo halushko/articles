@@ -127,6 +127,10 @@ class DialogueCoordinator:
                 WHERE session_id=? AND actor_id=?
                 ORDER BY id DESC LIMIT ?""",
                 (session_id,actor_id,min(8,max(1,int(limit))))).fetchall()
+            timeline=[dict(row) for row in con.execute(
+                """SELECT question,route FROM research_turns
+                WHERE session_id=? AND actor_id=?
+                ORDER BY id DESC LIMIT 36""",(session_id,actor_id))]
         history=[]
         for row in reversed(turns):
             history.extend(({"role":"user","content":row["question"][:800]},
@@ -134,6 +138,13 @@ class DialogueCoordinator:
         # The last server-recorded route is more reliable than the model's
         # account of where its own earlier answer came from.
         previous=dict(turns[0]) if turns else {}
+        if previous.get("route") in ("sqlite_answer_provenance","sqlite_operation_status"):
+            with self.engine.connect() as con:
+                subst=con.execute("""SELECT question,answer,route,model,provenance
+                    FROM research_turns WHERE session_id=? AND actor_id=?
+                      AND route NOT IN ('sqlite_answer_provenance','sqlite_operation_status')
+                    ORDER BY id DESC LIMIT 1""",(session_id,actor_id)).fetchone()
+            previous=dict(subst) if subst else previous
         provenance=_decode(previous.get("provenance") or "{}")
         sources=provenance.get("sources")
         if not isinstance(sources,list):
@@ -142,15 +153,38 @@ class DialogueCoordinator:
             "route":previous.get("route",""),
             "model":previous.get("model",""),
             "source_kind":("external_web" if sources else
-                           "confirmed_sqlite" if previous.get("model")=="SQLite"
+                           "confirmed_sqlite" if previous.get("route") in (
+                               "apprentice_confirmed_context","apprentice_graph_inspection",
+                               "sqlite_graph_inspection","sqlite_inspection")
+                           else "server_operation" if previous.get("model")=="SQLite"
                            else "unverified_model_answer"),
             "sources":[{"title":str(item.get("title") or "")[:150],
                         "url":str(item.get("url") or "")[:500],
                         "status":str(item.get("status") or "")[:40]}
                        for item in sources[:4] if isinstance(item,dict)],
         } if previous else {}
+        # The journal is reliable episodic memory even if Qwen cannot recall it.
+        preceding=None
+        for pos,turn in enumerate(timeline):
+            m=re.search(r"(?iu)\\b(?:забудем|забудь|забыли)\\s+про\\s+([^.!?]{2,90})",
+                        turn["question"])
+            if not m:
+                continue
+            subject=m.group(1).strip(" ,;:-")
+            stem=normalize(subject).split()
+            token=stem[0][:5] if stem else ""
+            older=timeline[pos+1:]
+            reference=next((item["question"] for item in older
+                if len(item["question"])>=18 and token and token in normalize(item["question"])),None)
+            if reference is None:
+                reference=next((item["question"] for item in older
+                    if len(item["question"])>=25),None)
+            preceding={"subject":subject[:90],"reference":str(reference or "")[:300],
+                       "source":"actor_scoped_dialogue_journal"}
+            break
         return {"state":dict(frame) if frame else {}, "history":history,
                 "last_response_evidence":last_evidence,
+                "previous_topic":preceding,
                 "pending":self.pending_summary(session_id,actor_id)}
 
     def _pending(self, session_id):
