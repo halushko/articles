@@ -8,7 +8,7 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><div class="orb">J</div><div><div class="title">JARVIS <span class="version">v0.5 · Web Research</span></div>
+  <div class="brand"><div class="orb">J</div><div><div class="title"><span id="assistant-brand">JARVIS</span> <span class="version">v0.6 · Learning State</span></div>
     <p>Маленькая языковая модель · большая обучаемая память</p></div></div>
   <span class="status" id="health">Проверка сервисов…</span>
 </header>
@@ -54,6 +54,13 @@
       <button type="button" class="chip" data-example="У меня дома есть аккумулятор по имени Мелкий. Он стоит в гараже.">Познакомить с устройством</button>
       <button type="button" class="chip" data-example="Научиcь сортировке массива: сравниваем соседние элементы и меняем их местами, пока массив не станет отсортированным. Пример: [3,1,2] → [1,2,3].">Провести урок</button>
       <button type="button" class="chip" data-example="Какие новые знания и способности ты приобрёл от меня?">Проверить знания</button>
+    </div>
+    <div id="chat-progress" class="chat-progress" role="status" aria-live="polite" hidden>
+      <div class="chat-progress-main">
+        <span id="chat-progress-step">Запрос принят</span>
+        <strong id="chat-progress-elapsed">⏱ 0 с</strong>
+      </div>
+      <div id="chat-progress-hint" class="chat-progress-hint"></div>
     </div>
     <div id="chat" class="chat" aria-live="polite">
       <div class="message system">Я ещё не знаю твоё окружение. Расскажи мне что-нибудь, как ученику: о доме, программировании или другой области. После ответа появятся предложения для подтверждения.</div>
@@ -132,6 +139,9 @@
       <div class="panel-title"><h2>Нужна проверка</h2><span id="pending-count" class="badge">0</span></div>
       <p class="explain">Кандидаты от Qwen и прозрачного языкового анализатора не становятся фактами автоматически. Для связей проверь субъект, отношение и объект.</p>
       <div id="pending" class="pending"></div>
+      <h3 class="graph-heading">Изменения существующих знаний</h3>
+      <p class="explain">Новое имя не создаёт новую сущность. Сначала проверка, затем атомарное изменение с историей и сохранением старого имени.</p>
+      <div id="pending-changes" class="pending"></div>
     </section>
     <section class="panel">
       <h2>Участники разговора</h2>
@@ -168,6 +178,7 @@
   </aside>
 </main>
 <script defer src="/static/voice.js"></script>
+<script defer src="/static/status-ui.js"></script>
 <script defer src="/static/research-ui.js"></script>
 <script defer src="/static/app.js"></script>
 </body>

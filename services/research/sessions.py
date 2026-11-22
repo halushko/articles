@@ -160,7 +160,8 @@ class ConversationStore:
         result=result if isinstance(result,dict) else {}
         provenance={key:result.get(key) for key in (
             "sources","search_query","search_status","search_error",
-            "web_approval","web_requested","retrieval_trace","knowledge_evidence",
+            "web_approval","web_requested","change_proposal",
+            "conflict_detected","retrieval_trace","knowledge_evidence",
             "evidence_source","proposals","missing","intent",
             "parse_warning","integrity_warning","normalized_input",
             "external_origin","tool_trace"

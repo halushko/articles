@@ -140,6 +140,16 @@ web.search — строго ограниченный поиск публичны
 Не утверждай, что поиск состоялся, пока gateway не вернул реальные
 результаты. НИКОГДА не говори, что получил доступ, проверил API,
 настроил соединение, получил токен или выполнил команду без инструмента.
+Изменение имени существующего объекта — не новый факт и не новая сущность.
+Если тебя просят переименовать себя, учителя или знакомую сущность,
+НИКОГДА не говори «я переименован» до подтверждённого изменения в SQLite.
+Вместо этого предложи операцию в массиве changes. target='assistant' или
+'user' для роли, target='entity' и old_name для существующей сущности.
+new_name должен буквально присутствовать в просьбе учителя. Не подбирай
+цель по догадке и не меняй память сам. Изменения подтверждаются учителем.
+Если учитель спрашивает о противоречии между твоими утверждениями и
+подтверждённой памятью, назови противоречие и текущее значение, а не
+повторяй старое ошибочное заявление.
 Ты не можешь самостоятельно получать токены доступа. НЕ проси прислать
 токен, пароль или секрет в чат; после появления защищённого коннектора
 пользователь сможет настроить секреты отдельно от языковой модели.
@@ -161,6 +171,10 @@ web.search — строго ограниченный поиск публичны
  "intent":"teach|ask|request|chat",
  "needs_web":false,
  "web_query":"короткий поисковый запрос или пустая строка",
+ "changes":[
+   {"target":"assistant|user|entity","old_name":"точное имя существующего объекта",
+    "new_name":"новое имя из сообщения учителя"}
+ ],
  "proposals":[
    {"kind":"entity|action|lesson|fact|capability","name":"краткое имя",
     "description":"содержание того, чему учит пользователь или гипотеза",
@@ -173,7 +187,10 @@ web.search — строго ограниченный поиск публичны
 }
 Верни максимум 3 полезных предложения. Для fact нужны subject, predicate и object.
 Для lesson укажи steps/examples, только если они действительно есть в сообщении.
-Для простого вопроса proposals=[]; не пытайся всё превращать в урок.
+Для простого вопроса proposals=[] и changes=[].
+Вопросы и просьбы найти информацию — НЕ урок и НЕ обучающее утверждение.
+Изменение имени — только changes, а не факт/сущность/урок.
+Не пытайся всё превращать в урок.
 Старайся отвечать кратко, конкретно, с естественным интересом к новым знаниям.
 """
 
@@ -222,6 +239,18 @@ async def analyze(req: AnalyzeIn):
                 "parse_warning":"Invalid structured model output; nothing saved",
                 "model":profile["model"],"tokens":int(data.get("eval_count") or 0),
                 "latency_ms":round((time.perf_counter()-start)*1000,2)}
+    changes=parsed.get("changes",[])
+    if not isinstance(changes,list):
+        changes=[]
+    clean_changes=[]
+    for change in changes[:2]:
+        if not isinstance(change,dict):
+            continue
+        target=str(change.get("target") or "").strip()
+        old=str(change.get("old_name") or "").strip()
+        new=str(change.get("new_name") or "").strip()
+        if target in ("assistant","user","entity") and 2<=len(new)<=100:
+            clean_changes.append({"target":target,"old_name":old[:100],"new_name":new[:100]})
     proposals = parsed.get("proposals",[])
     if not isinstance(proposals,list):
         proposals = []
@@ -236,6 +265,7 @@ async def analyze(req: AnalyzeIn):
                         "domain":str(p.get("domain") or "general")[:60],
                         "details":p.get("details") if isinstance(p.get("details"),dict) else {}})
     return {"reply":parsed["reply"][:3000],
+            "changes":clean_changes,
             "needs_web":parsed.get("needs_web") is True,
             "web_query":str(parsed.get("web_query") or "")[:240],
             "intent":parsed.get("intent") if parsed.get("intent") in

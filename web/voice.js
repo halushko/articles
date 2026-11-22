@@ -3,6 +3,52 @@
 (function (root) {
   'use strict';
 
+  function prepareSpeechText(input) {
+    /* Speech is a spoken summary, not a second rendering of Markdown.
+       Original content, links and code remain untouched in the chat/export. */
+    let text = String(input || '').replace(/\r\n?/g, '\n');
+    text = text.replace(/^\s*(?:```|~~~)[^\n]*\n[\s\S]*?^\s*(?:```|~~~)\s*$/gm,
+                        '\nПример кода показан на экране.\n');
+    text = text.replace(/!\[([^\]]*)\]\(\s*[^)]+\)/g, '$1');
+    text = text.replace(/\[([^\]]+)\]\(\s*(?:https?:\/\/|mailto:)[^)]+\)/gi, '$1');
+    text = text.replace(/\bhttps?:\/\/[^\s<>)]*/gi, 'ссылка');
+    // A source number is visual provenance, not part of the sentence.
+    text = text.replace(/\s*\[\d{1,3}\]/g, '');
+    text = text.replace(/^\s{0,3}#{1,6}\s*/gm, '');
+    text = text.replace(/^\s{0,3}>\s?/gm, '');
+    text = text.replace(/^\s*[-*+]\s+/gm, '');
+    text = text.replace(/^\s*\d+[.)]\s+/gm, '');
+    // A Markdown table is useful visually, but should not be read cell by cell.
+    text = text.replace(/(?:^\s*\|[^\n]*\|\s*$\n?){2,}/gm,
+                        '\nТаблица с подробностями показана на экране.\n');
+    text = text.replace(/[`]{1,2}([^`\n]+)[`]{1,2}/g,(_,value)=>{
+      const token=value.trim();
+      if (/^(?:\/?api\/|\/|[\w.-]+\/[\w./<>-]+|[\w.-]+\.[\w./<>-]+$)/i.test(token)) {
+        return 'путь в API';
+      }
+      if (/^[\w.-]{1,50}$/.test(token)) return token.replace(/_/g,' ');
+      return 'фрагмент кода';
+    });
+    text = text.replace(/<(?:[\w-]{2,50})>/g,'идентификатор');
+    text = text.replace(/\*\*|__|~~/g, '');
+    text = text.replace(/\*([^*\n]+)\*/g,'$1');
+    text = text.replace(/(^|\s)_([^_\n]+)_(?=\s|$)/g,'$1$2');
+    text = text.replace(/(?:^\s*[-|:]\s*[-|:]\s*$)/gm,'');
+    text = text.replace(/\bREST\s+API\b/gi,'рест эй пи ай');
+    text = text.replace(/\bAPI\b/gi,'эй пи ай');
+    text = text.replace(/\bHTTP\b/gi,'эйч ти ти пи');
+    text = text.replace(/\bHTTPS\b/gi,'эйч ти ти пи эс');
+    text = text.replace(/\bURL\b/gi,'ю эр эл');
+    text = text.replace(/\bJSON\b/gi,'джейсон');
+    text = text.replace(/\bSQL\b/gi,'эс кью эл');
+    text = text.replace(/[<>={}\\^|#]/g,' ');
+    text = text.replace(/[→⇒]/g, ' приводит к ');
+    text = text.replace(/[\t ]+/g,' ').replace(/\n\s*\n+/g,'. ');
+    text = text.replace(/\s*\n\s*/g,'. ');
+    return text.replace(/\s+([,.!?;:])/g,'$1')
+      .replace(/\.{2,}/g,'.').replace(/\s+/g,' ').trim();
+  }
+
   function initVoice(opts) {
     const { input, button, language, status, form, outputToggle, outputStatus } = opts;
     const Recognition = root.SpeechRecognition || root.webkitSpeechRecognition;
@@ -57,7 +103,7 @@
     function splitForSpeech(value) {
       const segments = [];
       // Short utterances avoid engines stopping on long, unbroken speech.
-      let remaining = String(value || '').replace(/https?:\/\/\S+/g, 'ссылка').replace(/\s+/g, ' ').trim();
+      let remaining = prepareSpeechText(value);
       while (remaining) {
         if (remaining.length <= 180) { segments.push(remaining); break; }
         const prefix = remaining.slice(0, 180);
@@ -264,5 +310,5 @@
     return { stopForManualSend, cancelSpeech, speak, isSupported: true };
   }
 
-  root.JarvisVoice = { initVoice };
+  root.JarvisVoice = { initVoice, prepareSpeechText };
 })(window);

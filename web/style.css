@@ -123,3 +123,23 @@
 .web-permission button{font-size:12px}
 .save-warning{font-size:12px;color:#ffb8ad;margin-top:7px}
 #session-status{overflow-wrap:anywhere}
+
+/* v0.6 — observable stages, no invented model thoughts or ETA. */
+.chat-progress{
+  margin:10px 0 12px;padding:11px 13px;
+  border-radius:11px;border:1px solid #44709a;background:#132b3d;
+  color:#d5eafa;box-shadow:0 0 0 1px #1c3c56 inset;
+}
+.chat-progress[hidden]{display:none!important}
+.chat-progress-main{display:flex;gap:12px;justify-content:space-between;
+  align-items:center;font-size:13px}
+#chat-progress-step{font-weight:600;overflow-wrap:anywhere}
+#chat-progress-elapsed{white-space:nowrap;font-variant-numeric:tabular-nums}
+.chat-progress-hint{font-size:11px;color:#a3bad0;margin-top:5px}
+.chat-progress:not(.finished) #chat-progress-step{animation:status-pulse 1.6s ease-in-out infinite}
+@keyframes status-pulse{50%{opacity:.65}}
+.chat-progress.finished{border-color:#326c52;background:#13362a}
+.chat-progress.failed{border-color:#914c49;background:#382525}
+.knowledge-change{border-color:#57728f;background:#1a2839}
+.knowledge-change .review-actions{flex-wrap:wrap}
+.knowledge-change p{overflow-wrap:anywhere}

@@ -118,7 +118,11 @@ window.JarvisResearchUI = (() => {
   }
 
   async function load(id) {
-    const record = await client.api('/api/sessions/' + encodeURIComponent(id));
+    const [record,changes] = await Promise.all([
+      client.api('/api/sessions/' + encodeURIComponent(id)),
+      client.api('/api/apprentice/changes')
+    ]);
+    const pendingChangeIds = new Set((changes.pending || []).map(x=>x.id));
     current = id;
     localStorage.setItem(storageKey, id);
     $('session-select').value = id;
@@ -142,6 +146,10 @@ window.JarvisResearchUI = (() => {
         card.append(badge);
       }
       addSources(card, turn.provenance?.sources);
+      const proposal=turn.provenance?.change_proposal;
+      if (proposal?.id && pendingChangeIds.has(proposal.id)){
+        window.JarvisChatRenderChange?.(proposal,card,turn.id);
+      }
       if (turn.provenance?.web_approval) {
         addPermission(card, turn.provenance.web_approval, turn.id);
       }
@@ -233,6 +241,24 @@ window.JarvisResearchUI = (() => {
     }
   }
 
+  async function onChangeReview({entry,result,turnId}){
+    if(!current)return;
+    try{
+      await client.api(`/api/sessions/${current}/events`,{
+        method:'POST',body:JSON.stringify({
+          event_type:'knowledge_change_review',
+          turn_id:turnId||null,
+          data:{change_id:entry.id,target_kind:entry.target_kind,
+                target_id:entry.target_id,
+                before:entry.expected_value,after:result.proposed_value,
+                status:result.status}
+        })
+      });
+    }catch(error){
+      alertStatus('Знание изменено, но запись события не удалась: '+error.message);
+    }
+  }
+
   async function grade(turnId, rating, teacherNote) {
     if (!current || !turnId) return;
     await client.api(`/api/sessions/${current}/grade`,{
@@ -314,6 +340,6 @@ window.JarvisResearchUI = (() => {
   return {
     init, ready: ensure, id: () => current,
     webMode: () => $('web-mode').value,
-    onAnswer, grade, onReview
+    onAnswer, grade, onReview, onChangeReview
   };
 })();

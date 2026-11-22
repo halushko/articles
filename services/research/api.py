@@ -204,6 +204,32 @@ def apprentice_inspect(req: ApprenticeContextIn):
     return {"matched":result is not None,"inspection":result,
             "normalized_text":normalized,"executed":False}
 
+class ModelChangesIn(BaseModel):
+    source_text: str = Field(min_length=1,max_length=3000)
+    changes: list[dict] = Field(default_factory=list,max_length=3)
+
+class ChangeReviewIn(BaseModel):
+    change_id: int = Field(gt=0)
+    decision: str = Field(pattern="^(confirm|reject)$")
+    new_name: str | None = Field(default=None,max_length=100)
+
+@app.get("/apprentice/changes")
+def apprentice_changes():
+    return apprentice.changes.snapshot()
+
+@app.post("/apprentice/changes/propose")
+def apprentice_change_propose(req: ModelChangesIn):
+    return {"changes":apprentice.changes.model_proposals(req.source_text,req.changes)}
+
+@app.post("/apprentice/changes/review")
+def apprentice_change_review(req: ChangeReviewIn):
+    try:
+        return apprentice.changes.review(req.change_id,req.decision,req.new_name)
+    except ValueError as error:
+        raise HTTPException(409,str(error))
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(409,"Имя конфликтует с существующим объектом")
+
 @app.post("/apprentice/propose")
 def apprentice_propose(req: ApprenticeProposalsIn):
     return {"proposals":apprentice.propose(req.source_text,req.proposals),"executed":False}

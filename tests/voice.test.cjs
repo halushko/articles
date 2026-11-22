@@ -142,3 +142,43 @@ test('browser without recognition still allows TTS and manual typing', () => {
   assert.equal(h.voice.speak('Я могу говорить'),true);
   assert.equal(h.spoken.length,1);
 });
+
+test('speech strips Markdown code fences, backticks and source markers but keeps explanation', () => {
+  const h = setup();
+  const original = [
+    '## REST API', '',
+    'Сделай запрос по `/api/states/<entity_id>/` [1].',
+    'Пример команды:',
+    '```bash',
+    'curl -H "Authorization: Bearer TOKEN" http://homeassistant.local:8123/api/',
+    '```',
+    'Документация: [Home Assistant](https://www.home-assistant.io/integrations/api/).'
+  ].join('\n');
+  assert.equal(h.voice.speak(original), true);
+  const spoken = h.spoken[0].text;
+  assert.match(spoken, /рест эй пи ай/i);
+  assert.match(spoken, /Пример кода показан на экране/);
+  assert.match(spoken, /Home Assistant/);
+  assert.doesNotMatch(spoken, /`|curl|Bearer|TOKEN|\/api\/states|\[1\]|https?:\/\//i);
+  assert.doesNotMatch(spoken, /обратный апостроф/i);
+});
+
+test('plain text survives spoken rendering; inline link becomes readable label', () => {
+  const h = setup();
+  assert.equal(h.voice.speak('Привет! Подробности в [документации](https://example.org/docs).'),true);
+  const result=h.spoken[0].text;
+  assert.match(result,/Привет!/);
+  assert.match(result,/документации/);
+  assert.doesNotMatch(result,/https|\[|\]/);
+});
+
+test('Markdown table is referenced once instead of reading pipes and cells', () => {
+  const h = setup();
+  const original=['Сравнение:', '| Режим | Цена |','|---|---|',
+                  '| Локально | 0 |','| Интернет | 0 |','Итог — бесплатно.'].join('\n');
+  h.voice.speak(original);
+  const rendered=h.spoken.map(x=>x.text).join(' ');
+  assert.match(rendered,/Таблица с подробностями показана на экране/);
+  assert.doesNotMatch(rendered,/\|/);
+  assert.match(rendered,/бесплатно/);
+});

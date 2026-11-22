@@ -6,10 +6,12 @@ explicitly confirmed by the teacher.
 """
 import json
 import sqlite3
+import re
 from difflib import SequenceMatcher
 from .normalize import normalize
 from .conversation import DialogueMemory
 from .graph import KnowledgeGraph
+from .changes import KnowledgeChanges
 from .teaching import grounded_candidates
 
 SCHEMA = """
@@ -116,10 +118,19 @@ class ApprenticeMemory:
             con.executescript(SCHEMA)
         self.dialogue = DialogueMemory(engine)
         self.graph = KnowledgeGraph(engine)
+        self.changes = KnowledgeChanges(engine,self.graph)
 
     def propose(self, source_text, proposals):
         if not isinstance(proposals, list):
             raise ValueError("proposals must be a list")
+        # A question or a research assignment is not a teacher declaration.
+        # In particular "найди документацию ..." must NOT create lessons
+        # merely because Qwen returned an enthusiastic schema.
+        if ("?" in source_text or re.search(
+            r"(?iu)^\s*(?:(?:джарвис|jarvis|домик)[, ]+)?"
+            r"(?:найди|поищи|загугли|проверь|исследуй|расскажи|объясни)\b",
+            source_text.strip())):
+            return []
         saved = []
         with self.engine.connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -339,17 +350,38 @@ class ApprenticeMemory:
             events = [dict(r) for r in con.execute(
                 "SELECT * FROM apprentice_events ORDER BY id DESC LIMIT 20")]
         graph=self.graph.snapshot()
+        changes=self.changes.snapshot()
+        counts["pending_changes"]=len(changes["pending"])
+        counts["confirmed_changes"]=sum(1 for item in changes["recent"]
+                                        if item["status"]=="confirmed")
         counts["canonical_entities"]=graph["counts"]["canonical_entities"]
         counts["graph_relations"]=graph["counts"]["confirmed_relations"]
         return {"counts":counts,"pending":proposals,"knowledge":nodes,
-                "graph":graph,
+                "graph":graph, "changes":changes,
                 "dialogue":self.dialogue.state(),
                 "events":events,"note":"Only confirmed teachings are in knowledge. Actions are descriptions, not runnable tools."}
 
     def context(self, query):
         """Retrieve confirmed knowledge only. Similarity is a fast *hint*, not proof."""
+        normalized_original = self.dialogue.normalize_speech(query)
+        change_proposal = self.changes.from_text(normalized_original)
         prepared = self.dialogue.prepare(query)
         normalized_text = prepared["text"]
+        if change_proposal and change_proposal.get("id"):
+            old=change_proposal["expected_value"]
+            new=change_proposal["proposed_value"]
+            prepared["direct_reply"]=(
+                f"Пока моё подтверждённое имя или название объекта — «{old}». "
+                f"Предлагаю изменить его на «{new}». "
+                "Изменение ещё НЕ применено: подтверди предложение ниже.")
+        elif change_proposal and change_proposal.get("already_current"):
+            prepared["direct_reply"]="Это имя уже установлено в подтверждённой памяти."
+        elif change_proposal and change_proposal.get("error"):
+            prepared["direct_reply"]="Я не изменил память: "+change_proposal["error"]
+        else:
+            explained=self.changes.explain(normalized_text,self.dialogue.state()["roles"])
+            if explained:
+                prepared["direct_reply"]=explained
         text = normalize(normalized_text)
         tokens = set(text.split())
         with self.engine.connect() as con:
@@ -404,6 +436,8 @@ class ApprenticeMemory:
         direct = prepared.get("direct_reply") or (inspection and inspection["answer"])
         return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
                 "normalized_text":normalized_text, "direct_reply":direct,
+                "change_proposal":change_proposal, 
+                "pending_changes":self.changes.snapshot(6)["pending"],
                 "inspection":inspection, "graph":relevant_graph,
                 "graph_counts":graph["counts"],
                 "identity":state["roles"],

@@ -90,6 +90,64 @@ function renderProposal(entry, target, description=entry.description||'', turnId
   panel.append(actions);target.append(panel);
   chat.scrollTop=chat.scrollHeight;
 }
+
+function renderChangeProposal(entry,target,turnId=null){
+  if(!entry || !entry.id || entry.status!=='pending') return;
+  const panel=document.createElement('div');
+  panel.className='proposal knowledge-change';
+  const kind=document.createElement('strong');
+  kind.textContent='✏️ Изменить существующее имя · '+(entry.target_kind==='role'?
+    entry.target_id==='assistant'?'Имя ученика':'Имя учителя':'Сущность #'+entry.target_id);
+  const details=document.createElement('p');
+  details.textContent='Сейчас: «'+entry.expected_value+'» → Предлагается: «'+entry.proposed_value+
+    '». Пока в SQLite НЕ изменено.';
+  const actions=document.createElement('div');
+  actions.className='review-actions';
+  const approve=mkButton('✓ Применить изменение','',()=>review('confirm'));
+  const reject=mkButton('✕ Отклонить','secondary',()=>review('reject'));
+  let proposalName=entry.proposed_value;
+  const edit=mkButton('Исправить новое имя','secondary',()=>{
+    const next=window.prompt('Новое имя существующего объекта',proposalName);
+    if(next===null||!next.trim())return;
+    proposalName=next.trim();
+    details.textContent='Сейчас: «'+entry.expected_value+'» → Предлагается: «'+proposalName+
+      '». Пока в SQLite НЕ изменено.';
+  });
+  async function review(decision){
+    [approve,reject,edit].forEach(x=>x.disabled=true);
+    try{
+      const result=await api('/api/apprentice/changes/review',{
+        method:'POST',body:JSON.stringify({
+          change_id:entry.id,decision,new_name:decision==='confirm'?proposalName:undefined
+        })
+      });
+      await window.JarvisResearchUI?.onChangeReview({entry,result,turnId});
+      panel.remove();
+      if(result.status==='confirmed'){
+        putMessage('✓ Изменено и проверено в SQLite: «'+result.expected_value+
+          '» → «'+result.current_value+'». Это тот же объект; старое имя сохранено как псевдоним.',
+          'system','confirmed knowledge mutation');
+        await refresh();
+      } else if(result.status==='stale'){
+        putMessage('⚠️ Это предложение устарело: текущим значением уже стало «'+
+          result.current_value+'». Создай новое изменение.','system');
+        await refresh();
+      } else {
+        putMessage('Изменение отклонено: «'+entry.expected_value+
+          '» осталось без изменений.','system');
+        await refresh();
+      }
+    }catch(error){
+      putMessage('Изменение не применено: '+error.message,'system');
+      [approve,reject,edit].forEach(x=>x.disabled=false);
+    }
+  }
+  actions.append(approve,reject,edit);
+  panel.append(kind,details,actions);
+  target.append(panel);chat.scrollTop=chat.scrollHeight;
+}
+window.JarvisChatRenderChange=renderChangeProposal;
+
 function setupCorrection(container,phrase) {
   const panel=document.createElement('div');panel.className='choice';
   const intro=document.createElement('div');intro.textContent='Выбери демо-устройство из старого индекса:';panel.append(intro);
@@ -123,7 +181,18 @@ async function send(text,experiment,extras={}) {
                  session_id:sessions?.id()||undefined,
                  web_mode:mode==='apprentice' ? sessions?.webMode()||'ask':'off',
                  ...extras};
-  const r=await api('/api/chat',{method:'POST',body:JSON.stringify(options)});
+  const requestId=window.crypto?.randomUUID?.() ||
+    '00000000-0000-4000-8000-'+String(Date.now()).slice(-12).padStart(12,'0');
+  options.request_id=requestId;
+  window.JarvisProgress?.begin(requestId,api);
+  let r;
+  try{
+    r=await api('/api/chat',{method:'POST',body:JSON.stringify(options)});
+    window.JarvisProgress?.end(true);
+  }catch(error){
+    window.JarvisProgress?.end(false);
+    throw error;
+  }
   const stamp=[r.route,r.model,Number.isFinite(r.total_ms)?`${r.total_ms} мс`:null,
                r.tokens!=null?`${r.tokens} токенов`:null,
                r.evidence_source==='confirmed_sqlite_graph'?'✓ подтверждено SQLite':null
@@ -137,6 +206,9 @@ async function send(text,experiment,extras={}) {
   card.append(replay);
   voice.speak(r.answer);
   if(r.parse_warning) putMessage('Не удалось надёжно извлечь структурированное знание. Ничего не добавлено.','system');
+  if(mode==='apprentice' && r.change_proposal?.id){
+    renderChangeProposal(r.change_proposal,card,r.turn_id);
+  }
   if(mode==='apprentice'){
     const gradeControls=document.createElement('div');gradeControls.className='grade-controls';
     const verdict=document.createElement('span');verdict.textContent='Проверка учителя:';
@@ -282,6 +354,7 @@ async function refresh(){
     const counts=memory.counts;
     const grid=$('learning-stats');grid.replaceChildren();
     const labels={canonical_entities:'Уникальные объекты',graph_relations:'Рёбра графа',
+                  pending_changes:'Изменения на проверке',confirmed_changes:'Применено изменений',
                   entity:'Сырые сущности',action:'Действия (опис.)',
                   fact:'Сырые связи',lesson:'Уроки',capability:'Идеи навыков',
                   pending:'Гипотезы',graded:'Оценено ответов'};
@@ -356,6 +429,7 @@ async function refresh(){
     if(!any)known.textContent='Пока пусто. Начни с объяснения.';
     const dialogue=memory.dialogue||{};
     const roles=dialogue.roles||{};
+    if ($('assistant-brand')) $('assistant-brand').textContent=roles.assistant||'JARVIS';
     const identity=$('dialogue-roles');
     identity.replaceChildren();
     for(const [key,name] of [
@@ -366,6 +440,12 @@ async function refresh(){
       const left=document.createElement('span');left.textContent=key;
       const right=document.createElement('strong');right.textContent=name;
       row.append(left,right);identity.append(row);
+    }
+    for(const alias of dialogue.role_aliases||[]){
+      const row=document.createElement('div');
+      row.className='known-row';
+      row.textContent='Историческое имя '+alias.role+': '+alias.name;
+      identity.append(row);
     }
     const dictionary=$('speech-items');dictionary.replaceChildren();
     for(const item of dialogue.speech_corrections||[]){
@@ -403,6 +483,13 @@ async function refresh(){
     if(!memory.pending.length){
       const empty=document.createElement('p');empty.className='explain';
       empty.textContent='Все предложения проверены.';pending.append(empty);
+    }
+    const changes=$('pending-changes');changes.replaceChildren();
+    for(const item of (memory.changes?.pending||[])){
+      renderChangeProposal(item,changes);
+    }
+    if(!memory.changes?.pending?.length){
+      changes.textContent='Нет изменений, ожидающих подтверждения.';
     }
   }catch(e){$('health').textContent='Нет связи: '+e.message;}
 }

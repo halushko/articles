@@ -49,6 +49,13 @@ CREATE TABLE IF NOT EXISTS runtime_capabilities (
  description TEXT NOT NULL,
  executor TEXT
 );
+CREATE TABLE IF NOT EXISTS dialogue_role_aliases (
+ role TEXT NOT NULL,
+ name TEXT NOT NULL,
+ name_key TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(role,name_key)
+);
 """
 
 NAME_CHARS = r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ][A-Za-zА-Яа-яЁёІіЇїЄєҐґ'-]{0,35}"
@@ -63,6 +70,11 @@ SELF_NAME_QUERY = re.compile(
 ASSISTANT_NAME_QUERY = re.compile(
     r"(?iu)\b(?:как\s+(?:тебя\s+зовут|зовут\s+тебя)|какое\s+у\s+тебя\s+имя|"
     r"як\s+тебе\s+звати|як\s+твоє\s+ім.?я)\b"
+)
+ASSISTANT_NAME_CHOICE = re.compile(
+    r"(?iu)\b(?:тебя\s+зовут\s+[^?.!]{2,100}\s+или\s+[^?.!]{2,100}|"
+    r"(?:а\s+)?тебя\s+зовут\s+как|"
+    r"как\s+тебя\s+теперь\s+зовут)\b"
 )
 TEACH_CORRECTION = re.compile(
     r"(?isu)\bкогда\s+я\s+говорю\s+(.+?)\s*,?\s*"
@@ -163,7 +175,10 @@ class DialogueMemory:
                 "SELECT id,heard,correct FROM speech_corrections ORDER BY id DESC LIMIT 100")]
             tools = [dict(r) for r in con.execute(
                 "SELECT name,status,description,executor FROM runtime_capabilities ORDER BY name")]
-        return {"roles":roles,"speech_corrections":aliases,"capabilities":tools}
+            role_aliases = [dict(r) for r in con.execute(
+                "SELECT role,name FROM dialogue_role_aliases ORDER BY created_at")]
+        return {"roles":roles,"speech_corrections":aliases,"capabilities":tools,
+                "role_aliases":role_aliases}
 
     def normalize_speech(self, text):
         with self.engine.connect() as con:
@@ -201,7 +216,9 @@ class DialogueMemory:
                     DO UPDATE SET display_name=excluded.display_name,
                                   source=excluded.source,updated_at=CURRENT_TIMESTAMP""",
                     (new_name,))
-            return {"text":text,"direct_reply":f"Приятно познакомиться, {new_name}. Я JARVIS.",
+            return {"text":text,"direct_reply":(
+                        f"Приятно познакомиться, {new_name}. "
+                        f"Меня зовут {self.state()['roles'].get('assistant','JARVIS')}."),
                     "roles":self.state()["roles"],"taught_name":new_name}
         roles = self.state()["roles"]
         compact = text.strip()
@@ -211,7 +228,9 @@ class DialogueMemory:
             return {"text":text, "roles":roles,
                     "direct_reply":f"Тебя зовут {name}." if name else
                     "Ты ещё не представился. Как тебя зовут?"}
-        if len(compact) < 100 and ASSISTANT_NAME_QUERY.search(compact):
+        if len(compact) < 160 and (
+                ASSISTANT_NAME_QUERY.search(compact)
+                or ASSISTANT_NAME_CHOICE.search(compact)):
             return {"text":text,"roles":roles,
                     "direct_reply":f"Меня зовут {roles.get('assistant','JARVIS')}."}
         if len(compact)<180 and CAPABILITY_QUERY.search(compact):

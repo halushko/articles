@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -37,6 +38,7 @@ class ChatIn(BaseModel):
     allow_web_search: bool = False
     approved_web_query: str = Field(default="",max_length=240)
     external_context: str = Field(default="",max_length=8000)
+    request_id: str | None = Field(default=None,pattern=r"^[a-f0-9-]{36}$")
 
 class LearnIn(BaseModel):
     phrase: str = Field(min_length=1,max_length=500)
@@ -81,6 +83,11 @@ class GraphAliasIn(BaseModel):
 class GraphAliasDeleteIn(BaseModel):
     item_id: int = Field(gt=0)
 
+class ChangeReviewIn(BaseModel):
+    change_id: int = Field(gt=0)
+    decision: str = Field(pattern="^(confirm|reject)$")
+    new_name: str | None = Field(default=None,max_length=100)
+
 class SessionCreateIn(BaseModel):
     title: str = Field(default="",max_length=140)
 
@@ -105,6 +112,48 @@ class FeedbackIn(BaseModel):
 def auth(x_jarvis_token: str | None = Header(None)):
     if TOKEN and not secrets.compare_digest(x_jarvis_token or "", TOKEN):
         raise HTTPException(401,"Missing or incorrect X-Jarvis-Token")
+
+CHAT_PHASES = {}
+PHASE_TTL = 900
+
+def progress(request_id, phase, detail="", final=False):
+    """Actual gateway pipeline stage; no invented completion percentages."""
+    if not request_id:
+        return
+    now=time.monotonic()
+    if len(CHAT_PHASES)>300:
+        for key,item in list(CHAT_PHASES.items()):
+            if now-item["updated"]>PHASE_TTL:
+                CHAT_PHASES.pop(key,None)
+        if len(CHAT_PHASES)>300:
+            for key in list(CHAT_PHASES)[:100]:
+                CHAT_PHASES.pop(key,None)
+    previous=CHAT_PHASES.get(request_id)
+    CHAT_PHASES[request_id]={
+        "phase":phase,"detail":detail[:140],
+        "started":previous["started"] if previous else now,
+        "updated":now,"final":final
+    }
+
+@app.get("/api/chat/status/{request_id}", dependencies=[Depends(auth)])
+async def chat_status(request_id: str):
+    try:
+        uuid.UUID(request_id)
+    except ValueError:
+        raise HTTPException(422,"Некорректный идентификатор запроса")
+    state=CHAT_PHASES.get(request_id)
+    if not state:
+        return {"phase":"unknown","detail":"Запрос не найден в текущем процессе.",
+                "running":False,"elapsed_seconds":0}
+    now=time.monotonic()
+    if now-state["updated"]>PHASE_TTL:
+        CHAT_PHASES.pop(request_id,None)
+        return {"phase":"expired","detail":"Статус запроса устарел.",
+                "running":False,"elapsed_seconds":0}
+    return {"phase":state["phase"],"detail":state["detail"],
+            "running":not state["final"],
+            "elapsed_seconds":round(now-state["started"],1),
+            "phase_elapsed_seconds":round(now-state["updated"],1)}
 
 async def forward(url: str, method: str = "GET", payload: dict | None = None):
     try:
@@ -217,6 +266,15 @@ async def feedback(data: FeedbackIn):
     return await forward(RESEARCH_URL+"/feedback","POST",data.model_dump())
 
 
+@app.get("/api/apprentice/changes", dependencies=[Depends(auth)])
+async def apprentice_changes():
+    return await forward(RESEARCH_URL+"/apprentice/changes")
+
+@app.post("/api/apprentice/changes/review", dependencies=[Depends(auth)])
+async def apprentice_changes_review(req: ChangeReviewIn):
+    return await forward(RESEARCH_URL+"/apprentice/changes/review","POST",
+                         req.model_dump())
+
 @app.get("/api/apprentice/state", dependencies=[Depends(auth)])
 async def apprentice_state():
     return await forward(RESEARCH_URL+"/apprentice/state")
@@ -304,6 +362,7 @@ def proposed_web_query(text: str, parsed: dict) -> str:
 
 async def answer_from_public_search(data: ChatIn, text: str,
                                     memory: dict, query: str, start: float):
+    progress(data.request_id,"web_fetch","SearXNG: поиск и чтение публичных страниц")
     results=await forward(RESEARCH_URL+"/research/web/search","POST",{
         "query":query[:240],"session_id":data.session_id or ""})
     evidence=results.get("sources") or []
@@ -317,6 +376,7 @@ async def answer_from_public_search(data: ChatIn, text: str,
                 "tool_trace":{"tool":"public_web.search","status":results.get("status")},
                 "proposals":[],"tokens":0,"executed":False,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
+    progress(data.request_id,"web_answer","Qwen: анализирует найденные источники")
     grounded=await forward(LLM_URL+"/web-answer","POST",{
         "question":text,"profile":data.profile,"sources":evidence,
         "memory":memory,"origin":"searxng"})
@@ -341,6 +401,7 @@ async def answer_from_public_search(data: ChatIn, text: str,
 
 async def apprentice_chat(data: ChatIn, start: float):
     # Only confirmed knowledge is given to the interpreter; guesses stay pending.
+    progress(data.request_id,"memory","SQLite: проверяю знания и изменения")
     memory = await forward(RESEARCH_URL+"/apprentice/context","POST",{"query":data.text})
     text = memory.get("normalized_text", data.text)
     direct_reply = memory.get("direct_reply")
@@ -355,6 +416,7 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "retrieval_trace":inspection.get("trace") if inspection else None,
                 "evidence_source":inspection.get("source") if inspection else "dialogue_roles",
                 "normalized_input":text if text != data.text else None,
+                "change_proposal":memory.get("change_proposal"),
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
     # User-pasted Google AI text is a manually supplied, unverified outside
     # observation. It is never saved as teacher-confirmed knowledge.
@@ -362,6 +424,7 @@ async def apprentice_chat(data: ChatIn, start: float):
         source={"title":"Google AI Mode · вставлено учителем",
                 "url":"","status":"manually_pasted_unverified",
                 "text":data.external_context[:8000]}
+        progress(data.request_id,"web_answer","Qwen: анализирует вставленный ответ Google AI")
         grounded=await forward(LLM_URL+"/web-answer","POST",{
             "question":text,"profile":data.profile,"sources":[source],
             "memory":memory,"origin":"google_ai_manual"})
@@ -399,6 +462,7 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "proposals":[], "model":"SQLite", "tokens":0,"executed":False,
                 "normalized_input":text if text != data.text else None,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
+    progress(data.request_id,"planning","Qwen: обдумывает вопрос и формирует ответ")
     parsed = await forward(LLM_URL+"/analyze","POST",
                            {"text":text,"profile":data.profile,
                             "history":data.history,"memory":memory})
@@ -436,6 +500,28 @@ async def apprentice_chat(data: ChatIn, start: float):
             "Для актуального ответа мне нужен публичный поиск, но "
             "интернет отключён в этом эксперименте. "
             "Я не буду выдавать непроверенную информацию за найденную.")
+    change_proposal=None
+    if parsed.get("changes") and isinstance(parsed["changes"],list):
+        saved_changes=await forward(RESEARCH_URL+"/apprentice/changes/propose","POST",
+            {"source_text":text,"changes":parsed["changes"][:3]})
+        if saved_changes.get("changes"):
+            change_proposal=saved_changes["changes"][0]
+            parsed["reply"]=(
+                "Нужно обновить подтверждённое знание. "
+                f"Предлагаю заменить «{change_proposal['expected_value']}» на "
+                f"«{change_proposal['proposed_value']}». "
+                "Пока изменение не применено: подтверди ниже.")
+            parsed["proposals"]=[]
+    if re.search(r"(?iu)\b(?:я\s+переименован|я\s+переименовал(?:ся)?|"
+                 r"я\s+изменил\s+(?:сво[её]\s+)?имя)\b",
+                 parsed.get("reply","")) and not change_proposal:
+        parsed["reply"]=(
+            "Я мог ошибочно заявить, что переименование выполнено. "
+            "У меня нет подтверждённой записи об изменении в этом запросе. "
+            "Попроси изменить имя существующего объекта — я предложу "
+            "проверяемое изменение SQLite.")
+        parsed["integrity_warning"]="Blocked unsupported self-mutation claim"
+        parsed["proposals"]=[]
     # Do not turn information requests or model guesses into confirmed
     # teaching proposals: only explicit teaching can create candidates.
     if (parsed.get("intent") in ("ask","request")
@@ -462,6 +548,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             "intent":parsed.get("intent","chat"),
             "missing":missing,
             "parse_warning":parsed.get("parse_warning"),
+            "change_proposal":change_proposal,
             "integrity_warning":parsed.get("integrity_warning"),
             "web_approval":parsed.get("web_approval"),
             "web_requested":bool(wanted),
@@ -492,6 +579,7 @@ def probable_graph_inspection(text: str) -> bool:
 
 async def chat_core(data: ChatIn):
     start = time.perf_counter()
+    progress(data.request_id,"routing","Выбираю маршрут ответа")
     text = data.text.strip()
     if data.experiment == "apprentice":
         return await apprentice_chat(data,start)
@@ -532,6 +620,7 @@ async def chat_core(data: ChatIn):
             return {"answer":"Исследовательский индекс обрабатывает изученные команды и факты; для свободного диалога нужен LLM. Я не буду угадывать ответ.",
                     "route":"research_abstain", "tokens":0,"executed":False,
                     "total_ms":round((time.perf_counter()-start)*1000,2)}
+    progress(data.request_id,"planning","Qwen: выполняется контрольный диалог")
     answer = await forward(LLM_URL+"/chat","POST",{"text":text,"profile":data.profile})
     answer["total_ms"] = round((time.perf_counter()-start)*1000,2)
     answer["experiment"] = data.experiment
@@ -541,9 +630,11 @@ async def chat_core(data: ChatIn):
 @app.post("/api/chat", dependencies=[Depends(auth)])
 async def chat(data: ChatIn):
     """Persist a complete model/retrieval turn without affecting control modes."""
+    progress(data.request_id,"received","Запрос принят")
     try:
         result=await chat_core(data)
     except HTTPException as error:
+        progress(data.request_id,"error","Ошибка обработки: "+str(error.detail)[:70],True)
         if data.session_id:
             try:
                 await forward(
@@ -560,6 +651,7 @@ async def chat(data: ChatIn):
                 pass
         raise
     if data.session_id:
+        progress(data.request_id,"saving","SQLite: сохраняю ответ и источники")
         try:
             saved=await forward(
                 RESEARCH_URL+"/research/sessions/"+data.session_id+"/turns",
@@ -574,4 +666,5 @@ async def chat(data: ChatIn):
             # Never pretend unsaved turns were persisted. Return answer with
             # explicit warning so the UI can let the teacher export manually.
             result["persistence_warning"]=str(error.detail)[:300]
+    progress(data.request_id,"done","Ответ готов",True)
     return result
