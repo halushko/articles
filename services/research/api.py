@@ -202,7 +202,7 @@ def apprentice_context(req: ApprenticeContextIn):
     if req.session_id and sessions.exists(req.session_id):
         change=result.get("change_proposal")
         if change and change.get("id"):
-            result["voice_review"]=voice_reviews.queue(req.session_id,changes=[change])
+            result["voice_review"]=voice_reviews.queue(req.session_id,changes=[change],actor_id=req.actor_id)
         else:
             # Any unrelated utterance closes the short "yes/no" window.
             voice_reviews.clear(req.session_id)
@@ -269,23 +269,25 @@ def apprentice_change_review(req: ChangeReviewIn):
 
 class VoiceReviewQueueIn(BaseModel):
     session_id: str = Field(min_length=36,max_length=36)
+    actor_id: str = Field(default="",max_length=36)
     changes: list[dict] = Field(default_factory=list,max_length=5)
     proposals: list[dict] = Field(default_factory=list,max_length=5)
 
 class VoiceReviewResolveIn(BaseModel):
     session_id: str = Field(default="",max_length=36)
+    actor_id: str = Field(default="",max_length=36)
     text: str = Field(min_length=1,max_length=250)
 
 @app.post("/apprentice/voice/queue")
 def voice_review_queue(req: VoiceReviewQueueIn):
     try:
-        return voice_reviews.queue(req.session_id,req.changes,req.proposals)
+        return voice_reviews.queue(req.session_id,req.changes,req.proposals,actor_id=req.actor_id)
     except ValueError as error:
         raise HTTPException(422,str(error))
 
 @app.post("/apprentice/voice/resolve")
 def voice_review_resolve(req: VoiceReviewResolveIn):
-    return voice_reviews.resolve(req.session_id,req.text)
+    return voice_reviews.resolve(req.session_id,req.text,actor_id=req.actor_id)
 
 @app.post("/apprentice/propose")
 def apprentice_propose(req: ApprenticeProposalsIn):
