@@ -406,11 +406,16 @@ def proposed_web_query(text: str, parsed: dict) -> str:
         return (query or text)[:240]
     # A quotation or lesson containing "поищи" is not a search request.
     # The fallback only handles a command that BEGINS with a search verb.
-    if re.match(r"(?iu)^\s*(?:(?:команда|приказ)\s*[:,-]?\s*)?"
-                r"(?:найди|найдите|поищи|поищите|загугли|"
-                r"проверь\s+в\s+интернете|search\s+the\s+web|"
-                r"ищи\s+в\s+сети)\b",text):
-        return text[:240]
+    request = re.match(r"(?iu)^\s*(?:(?:команда|приказ)\s*[:,-]?\s*)?"
+                       r"(?:найди|найдите|поищи|поищите|загугли|"
+                       r"проверь\s+в\s+интернете|search\s+the\s+web|"
+                       r"ищи\s+в\s+сети)\b",text)
+    if request:
+        # The search engine wants the subject, not the spoken instruction.
+        terms = text[request.end():].strip(" .,;:-")
+        terms = re.sub(r"(?iu)^(?:(?:в\s+интернете|в\s+сети|мне|"
+                       r"пожалуйста)\s+)+","",terms).strip(" .,;:-")
+        return (terms if len(terms) >= 3 else text)[:240]
     return ""
 
 
