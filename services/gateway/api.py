@@ -37,6 +37,7 @@ class ChatIn(BaseModel):
     web_mode: str = Field(default="off",pattern="^(off|ask|auto)$")
     allow_web_search: bool = False
     approved_web_query: str = Field(default="",max_length=240)
+    approval_id: str = Field(default="",max_length=36)
     external_context: str = Field(default="",max_length=8000)
     request_id: str | None = Field(default=None,pattern=r"^[a-f0-9-]{36}$")
 
@@ -401,6 +402,43 @@ async def answer_from_public_search(data: ChatIn, text: str,
 
 
 async def apprentice_chat(data: ChatIn, start: float):
+    # Tool permissions are checked before any model call or memory teaching.
+    # A previous request is bound to this session + exact query, consumed once.
+    # Bare "да" does NOT authorize a network request.
+    is_web_reply = bool(re.match(
+        r"(?iu)^\\s*(?:(?:команда|приказ)\\s*[:,-]?\\s*)?"
+        r"(?:разрешаю|да\\s+разрешаю|подтверждаю\\s+поиск|"
+        r"разрешить\\s+поиск|не\\s+разрешаю|"
+        r"запрещаю\\s+поиск|отмена\\s+поиска|отмени\\s+поиск)\\b",
+        data.text))
+    if is_web_reply or data.approval_id or data.allow_web_search:
+        if data.web_mode == "off":
+            return {"answer":"Интернет отключён. Поиск не выполнялся.",
+                    "route":"web_permission_denied","model":"SQLite",
+                    "executed":False,"tokens":0}
+        resolved=await forward(RESEARCH_URL+"/research/operations/web/resolve","POST",{
+            "session_id":data.session_id or "",
+            "phrase":data.text[:250],
+            "approval_id":data.approval_id,
+            "source":"button" if data.approval_id and data.allow_web_search else "voice"})
+        if resolved.get("handled"):
+            if resolved.get("status")=="approved":
+                search=await answer_from_public_search(
+                    data,resolved["question"],{},resolved["query"],start)
+                search.update({"route":"apprentice_web_evidence"
+                               if search.get("search_status")=="ok" else search["route"],
+                               "approval_id":resolved["operation_id"],
+                               "approval_source":"button" if data.approval_id else "voice",
+                               "utterance_intent":{"intent":"command","reason":"approved_tool_operation",
+                                                   "confidence":"high"},
+                               "requested_action":"web.search"})
+                return search
+            return {"answer":resolved.get("answer","Поиск не разрешён."),
+                    "route":"web_permission_"+resolved.get("status","denied"),
+                    "utterance_intent":{"intent":"command","reason":"tool_permission"},
+                    "model":"SQLite","tokens":0,"executed":False,
+                    "approval_id":resolved.get("operation_id"),
+                    "total_ms":round((time.perf_counter()-start)*1000,2)}
     # Only confirmed knowledge is given to the interpreter; guesses stay pending.
     progress(data.request_id,"memory","SQLite: проверяю знания и изменения")
     # Voice confirmation is scoped to the last review shown in this session,
@@ -440,6 +478,39 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "normalized_input":text if text != data.text else None,
                 "change_proposal":memory.get("change_proposal"),
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
+    # Route explicit requests to a real, allowlisted tool before Qwen.
+    # Never require Qwen to infer that "найди в интернете" needs a search.
+    intent_info=memory.get("utterance_intent") or {}
+    wanted_direct=(proposed_web_query(text,{})
+                   if intent_info.get("intent")=="command" else "")
+    if wanted_direct:
+        if data.web_mode=="off":
+            return {"answer":"Интернет отключён. Поиск не выполнялся.",
+                    "route":"apprentice_web_disabled","model":"SQLite",
+                    "utterance_intent":intent_info,"tokens":0,"executed":False}
+        if data.web_mode=="auto":
+            found=await answer_from_public_search(data,text,memory,wanted_direct,start)
+            found["utterance_intent"]=intent_info
+            return found
+        if data.session_id:
+            approval=await forward(RESEARCH_URL+"/research/operations/web/propose",
+                 "POST",{"session_id":data.session_id,
+                          "query":wanted_direct,"question":text})
+            return {"answer":("Могу выполнить публичный поиск по запросу "
+                      f"«{approval['query']}». Поиск ещё не запущен. "
+                      "Скажи «Разрешаю поиск» или нажми «Разрешить этот поиск»."),
+                    "route":"apprentice_web_permission","web_approval":approval,
+                    "requested_action":"web.search",
+                    "utterance_intent":intent_info,"model":"SQLite",
+                    "tokens":0,"executed":False,
+                    "total_ms":round((time.perf_counter()-start)*1000,2)}
+        return {"answer":"Для безопасного согласия на поиск нужен сохранённый диалог.",
+                "route":"apprentice_web_no_session","model":"SQLite",
+                "utterance_intent":intent_info,"tokens":0,"executed":False}
+    # An unrelated turn invalidates older, unanswered search requests.
+    if data.session_id:
+        await forward(RESEARCH_URL+"/research/operations/web/clear",
+                      "POST",{"session_id":data.session_id})
     # User-pasted Google AI text is a manually supplied, unverified outside
     # observation. It is never saved as teacher-confirmed knowledge.
     if data.external_context:
@@ -464,9 +535,6 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "сервисам или устройствам. Он сохранён как непроверенный источник.")
             grounded["integrity_warning"]="Blocked unsupported external action claim"
         return grounded
-    if data.allow_web_search and data.web_mode != "off":
-        return await answer_from_public_search(
-            data,text,memory,data.approved_web_query.strip() or text,start)
     capabilities = {item.get("name"):item.get("status")
                     for item in memory.get("capabilities",[])}
     if (requests_external_connection(text)
@@ -511,12 +579,18 @@ async def apprentice_chat(data: ChatIn, start: float):
         result["tokens"]=int(result.get("tokens") or 0)+int(parsed.get("tokens") or 0)
         return result
     if wanted and data.web_mode=="ask":
-        parsed["web_approval"]={"query":wanted,"question":text}
+        if data.session_id:
+            approval=await forward(RESEARCH_URL+"/research/operations/web/propose",
+                 "POST",{"session_id":data.session_id,"query":wanted,"question":text})
+            parsed["web_approval"]=approval
+            parsed["reply"]=(
+                "Для проверки нужен публичный поиск. "
+                f"Предлагаю запрос: «{wanted}». "
+                "Скажи «Разрешаю поиск» или нажми кнопку. "
+                "До согласия запрос не отправляется.")
+        else:
+            parsed["reply"]="Для согласия на поиск нужен сохранённый диалог."
         parsed["web_requested"]=True
-        parsed["reply"]=(
-            "Для точного ответа нужно проверить публичные источники. "
-            f"Предлагаю поиск: «{wanted}». До твоего разрешения "
-            "запрос в интернет не отправлялся.")
     if wanted and data.web_mode=="off":
         parsed["reply"]=(
             "Для актуального ответа мне нужен публичный поиск, но "
