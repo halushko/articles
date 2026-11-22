@@ -77,6 +77,15 @@ class ApprenticeMemoryTests(unittest.TestCase):
             {"kind":"bad","name":"F","description":"not a type"}])
         self.assertEqual(r,[])
 
+    def test_teacher_grades_are_evidence_not_training(self):
+        result=self.memory.grade("Сортируй [2,1]","[1,2]","good")
+        self.assertTrue(result["saved"])
+        self.assertEqual(self.memory.snapshot()["counts"]["graded"],1)
+        self.assertEqual(self.memory.snapshot()["counts"]["graded_good"],1)
+        self.assertEqual(self.memory.snapshot()["counts"]["lesson"],0)
+        with self.assertRaises(ValueError):
+            self.memory.grade("q","a","incorrect")
+
     def test_explicit_retraction_preserves_audit(self):
         p=self.memory.propose("Z объект",[
             {"kind":"entity","name":"Z","description":"Объект для забвения"}])[0]
