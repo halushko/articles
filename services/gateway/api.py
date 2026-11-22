@@ -12,6 +12,8 @@ import json
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
+from .grounding import (response_from_records, looks_like_loop,
+                        claims_unobserved_search)
 from .tracing import (ChatTrace, CURRENT_TRACE, input_summary,
                       output_summary, trace_forward_endpoint)
 
@@ -667,6 +669,16 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "change_proposal":memory.get("change_proposal"),
                 "speaker":memory.get("speaker"),
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
+    # Introspection has authoritative SQLite evidence; never ask Qwen whether
+    # a web operation actually ran or what previous conversation was about.
+    observed=response_from_records(text,memory)
+    if observed:
+        answer,route,evidence=observed
+        return {"answer":answer,"route":route,"model":"SQLite","tokens":0,
+                "executed":False,"evidence_source":"server_journal",
+                "retrieval_trace":evidence,
+                "utterance_intent":memory.get("utterance_intent"),
+                "total_ms":round((time.perf_counter()-start)*1000,2)}
     # Route explicit requests to a real, allowlisted tool before Qwen.
     # Never require Qwen to infer that "найди в интернете" needs a search.
     intent_info=memory.get("utterance_intent") or {}
@@ -772,7 +784,19 @@ async def apprentice_chat(data: ChatIn, start: float):
         grounded=await forward(LLM_URL+"/grounded-chat","POST",{
             "text":text,"profile":data.profile,
             "history":data.history,"memory":memory})
-        if unverified_external_activity(grounded.get("answer","")):
+        if looks_like_loop(grounded.get("answer","")):
+            grounded["answer"]=("Ответ языковой модели зациклился на повторениях. "
+                                "Не буду выдавать его за достоверную инструкцию. "
+                                "Нужна проверка по внешним источникам.")
+            grounded["route"]="world_model_unreliable"
+            grounded["integrity_warning"]="Repeated 5-grams in Qwen output"
+        elif claims_unobserved_search(grounded.get("answer","")):
+            grounded["answer"]=("Я не запускал поиск этим сообщением. "
+                                "Если нужен поиск — попроси найти информацию "
+                                "и подтверди конкретную операцию.")
+            grounded["route"]="world_unverified_tool_claim"
+            grounded["integrity_warning"]="Model invented active search"
+        elif unverified_external_activity(grounded.get("answer","")):
             grounded["answer"]=(
                 "Я не выполнял внешних действий или подключений. "
                 "Для реальной операции требуется доступный серверный инструмент.")
