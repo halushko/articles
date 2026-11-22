@@ -13,6 +13,7 @@ from .normalize import parse_command
 from .embedding import embed
 from .sessions import ConversationStore, markdown
 from .review_voice import VoiceReviews
+from .approvals import OperationApprovals
 from .web_research import FreeWebResearch
 
 engine: Engine | None = None
@@ -20,14 +21,16 @@ apprentice: ApprenticeMemory | None = None
 sessions: ConversationStore | None = None
 web_research: FreeWebResearch | None = None
 voice_reviews: VoiceReviews | None = None
+operation_approvals: OperationApprovals | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice, sessions, web_research, voice_reviews
+    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
     sessions = ConversationStore(engine)
     voice_reviews = VoiceReviews(engine,apprentice,sessions)
+    operation_approvals = OperationApprovals(engine,sessions)
     web_research = FreeWebResearch(engine)
     yield
 
@@ -296,6 +299,37 @@ def speech_correction_delete(req: SpeechCorrectionDeleteIn):
         return apprentice.dialogue.delete_correction(req.item_id)
     except ValueError as error:
         raise HTTPException(422,str(error))
+
+
+class SearchApprovalIn(BaseModel):
+    session_id: str = Field(min_length=36,max_length=36)
+    query: str = Field(min_length=3,max_length=240)
+    question: str = Field(default="",max_length=3000)
+
+class SearchApprovalDecisionIn(BaseModel):
+    session_id: str = Field(min_length=36,max_length=36)
+    phrase: str = Field(default="",max_length=250)
+    approval_id: str = Field(default="",max_length=36)
+    source: str = Field(default="voice",pattern="^(voice|button)$")
+
+class SearchApprovalClearIn(BaseModel):
+    session_id: str = Field(min_length=36,max_length=36)
+
+@app.post("/research/operations/web/propose")
+def web_operation_propose(req: SearchApprovalIn):
+    try:
+        return operation_approvals.propose_search(req.session_id,req.query,req.question)
+    except ValueError as error:
+        raise HTTPException(422,str(error))
+
+@app.post("/research/operations/web/resolve")
+def web_operation_resolve(req: SearchApprovalDecisionIn):
+    return operation_approvals.resolve(req.session_id,req.phrase,req.approval_id,req.source)
+
+@app.post("/research/operations/web/clear")
+def web_operation_clear(req: SearchApprovalClearIn):
+    operation_approvals.clear(req.session_id)
+    return {"cleared":True}
 
 # Research sessions and free public-web search are independent from the old
 # online-weight index. Every answer's provenance is stored per-turn.
