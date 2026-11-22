@@ -202,6 +202,11 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
                 return {"handled":True,"status":"approved",
                         "operation_id":"test-operation-id",
                         "question":"Проверь новость","query":"тест новости"}
+            if url.endswith("/research/operations/web/start"):
+                return {"started":True,"status":"running"}
+            if url.endswith("/research/operations/web/finish"):
+                self.assertEqual(payload["status"],"succeeded")
+                return {"saved":True,"status":"succeeded"}
             if url.endswith("/research/web/search"):
                 self.assertEqual(payload["query"],"тест новости")
                 return {"available":True,"status":"ok",
@@ -223,7 +228,7 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["answer"],"Результат [1]")
         self.assertEqual(result["sources"][0]["url"],"https://example.org/info")
         self.assertEqual(result["proposals"],[])
-        self.assertEqual(len(calls),4)
+        self.assertEqual(len(calls),6)
 
     async def test_auto_search_uses_model_plan(self):
         calls=[]
