@@ -252,17 +252,17 @@ class GatewayCoordinatorTests(unittest.IsolatedAsyncioTestCase):
                         "capabilities":[]}
             if url.endswith("/research/operations/web/clear"):
                 return {"cleared":True}
-            if url.endswith("/analyze"):
+            if url.endswith("/grounded-chat"):
                 self.assertIn("обсудить рецепт",str(payload["memory"]))
-                return {"reply":"Тогда вот рецепт пюре","intent":"chat",
-                        "needs_web":False,"proposals":[],"learning":[],
+                return {"answer":"Тогда вот рецепт пюре",
+                        "route":"world_grounded_chat",
                         "tokens":12,"model":"test"}
             raise AssertionError(url)
         with patch.object(gateway,"forward",forward):
             result=await gateway.apprentice_chat(gateway.ChatIn(
                 text="да",experiment="apprentice",web_mode="ask",
                 session_id="b312050f-5ae1-4b20-86bc-4ea463dcc4ae"),0)
-        self.assertEqual(result["route"],"apprentice_tutor")
+        self.assertEqual(result["route"],"world_grounded_chat")
         self.assertEqual(result["answer"],"Тогда вот рецепт пюре")
         self.assertFalse(any("/apprentice/voice/resolve" in x for x in calls))
 
