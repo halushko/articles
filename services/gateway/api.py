@@ -484,7 +484,8 @@ async def apprentice_chat(data: ChatIn, start: float):
         r"отмен\w*|применяй\b|согласен\b|согласна\b|сохрани\b)",data.text))
     if voice_cue:
         voice=await forward(RESEARCH_URL+"/apprentice/voice/resolve","POST",
-                            {"text":data.text[:250],"session_id":data.session_id or ""})
+                            {"text":data.text[:250],"session_id":data.session_id or "",
+                              "actor_id":data.actor_id})
         if voice.get("handled"):
             return {"answer":voice["answer"],"route":"apprentice_voice_review",
                     "intent":"review","utterance_intent":{"intent":"command",
@@ -685,7 +686,8 @@ async def apprentice_chat(data: ChatIn, start: float):
     voice_review=None
     if data.session_id and (change_proposal or proposals):
         voice_review=await forward(RESEARCH_URL+"/apprentice/voice/queue","POST",
-            {"session_id":data.session_id,"changes":[change_proposal] if change_proposal else [],
+            {"session_id":data.session_id,"actor_id":data.actor_id,
+              "changes":[change_proposal] if change_proposal else [],
              "proposals":proposals})
     if voice_review and voice_review.get("ready"):
         parsed["reply"]=(str(parsed.get("reply") or "").rstrip()+" "+
