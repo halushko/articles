@@ -77,6 +77,8 @@ class WorldMemory:
         data=self.apprentice.context(query,speaker=speaker)
         data["behavior_rules"]=self.behavior.context(actor_id)
         data["dialogue"]=self.dialogue.context(session_id,actor_id)
+        data["operations"]=(self.dialogue.approvals.execution_status(session_id,actor_id)
+                            if session_id else {"current":None,"last_result":None})
         data["speaker"]=speaker
         data["experiences"]=self.recall(data.get("normalized_text") or query,
                                         actor_id,session_id)
