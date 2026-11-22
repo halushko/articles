@@ -413,6 +413,40 @@ def web_operation_propose(req: SearchApprovalIn):
 def web_operation_resolve(req: SearchApprovalDecisionIn):
     return operation_approvals.resolve(req.session_id,req.phrase,req.approval_id,req.source,req.actor_id)
 
+class SearchExecutionIn(BaseModel):
+    session_id: str = Field(min_length=36,max_length=36)
+    actor_id: str = Field(default="",max_length=36)
+    operation_id: str = Field(min_length=36,max_length=36)
+
+
+class SearchExecutionFinishIn(SearchExecutionIn):
+    status: str = Field(pattern="^(succeeded|failed)$")
+    answer: str = Field(default="",max_length=5000)
+    sources: list[dict] = Field(default_factory=list,max_length=8)
+    error: str = Field(default="",max_length=400)
+
+
+class SearchExecutionStatusIn(BaseModel):
+    session_id: str = Field(min_length=36,max_length=36)
+    actor_id: str = Field(default="",max_length=36)
+
+
+@app.post("/research/operations/web/start")
+def web_execution_start(req: SearchExecutionIn):
+    return operation_approvals.execution_start(req.session_id,req.operation_id,req.actor_id)
+
+
+@app.post("/research/operations/web/finish")
+def web_execution_finish(req: SearchExecutionFinishIn):
+    return operation_approvals.execution_finish(req.session_id,req.operation_id,
+                req.actor_id,req.status,req.answer,req.sources,req.error)
+
+
+@app.post("/research/operations/web/status")
+def web_execution_status(req: SearchExecutionStatusIn):
+    return operation_approvals.execution_status(req.session_id,req.actor_id)
+
+
 @app.post("/research/operations/web/clear")
 def web_operation_clear(req: SearchApprovalClearIn):
     operation_approvals.clear(req.session_id)
