@@ -564,7 +564,8 @@ async def apprentice_chat(data: ChatIn, start: float):
     # No pending approval? "да" is an ordinary conversational reply, not a
     # failed memory-review command. Continue with trusted session history.
     progress(data.request_id,"memory","SQLite: проверяю знания и контекст разговора")
-    memory = await forward(RESEARCH_URL+"/world/context","POST",
+    # Compatibility endpoint now delegates to the unified WorldMemory read model.
+    memory = await forward(RESEARCH_URL+"/apprentice/context","POST",
                            {"query":data.text,"session_id":data.session_id or "",
                              "actor_id":data.actor_id})
     text = memory.get("normalized_text", data.text)
