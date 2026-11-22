@@ -361,13 +361,13 @@ class ApprenticeMemory:
                 "dialogue":self.dialogue.state(),
                 "events":events,"note":"Only confirmed teachings are in knowledge. Actions are descriptions, not runnable tools."}
 
-    def context(self, query):
-        """Retrieve confirmed knowledge only. Similarity is a fast *hint*, not proof."""
+    def context(self, query, speaker=None):
+        """Retrieve confirmed knowledge. Speaker is a profile hint, not auth."""
         normalized_original = self.dialogue.normalize_speech(query)
         intent_info=classify(normalized_original)
         change_proposal = (self.changes.from_text(intent_info["normalized"])
                            if intent_info["intent"]=="command" else None)
-        prepared = self.dialogue.prepare(query)
+        prepared = self.dialogue.prepare(query,speaker=speaker)
         normalized_text = intent_info["normalized"]
         if change_proposal and change_proposal.get("id"):
             old=change_proposal["expected_value"]
@@ -437,8 +437,16 @@ class ApprenticeMemory:
         # The graph is a domain-independent projection of confirmed knowledge,
         # not an alternative unverified source. Query plans and evidence are visible.
         state = self.dialogue.state()
+        # The old singleton role is legacy fallback only. Per-turn speaker
+        # selection is authoritative for *conversation context*, not privileges.
+        effective_roles=dict(state["roles"])
+        if speaker is not None:
+            if speaker.get("display_name"):
+                effective_roles["user"]=speaker["display_name"]
+            else:
+                effective_roles.pop("user",None)
         graph = self.graph.snapshot()
-        inspection = self.graph.inspect(normalized_text,state["roles"],graph)
+        inspection = self.graph.inspect(normalized_text,effective_roles,graph)
         relevant_graph = self.graph.lookup(normalized_text,graph)
         direct = prepared.get("direct_reply") or (inspection and inspection["answer"])
         return {"knowledge":rows[:12] if overview else rows[:9],"counts":counts,"pending_count":pending_count,
@@ -448,7 +456,7 @@ class ApprenticeMemory:
                 "pending_changes":self.changes.snapshot(6)["pending"],
                 "inspection":inspection, "graph":relevant_graph,
                 "graph_counts":graph["counts"],
-                "identity":state["roles"],
+                "identity":effective_roles,
                 "capabilities":state["capabilities"],
                 "execution_tools":[],
                 "note":"Graph and knowledge are confirmed teacher records only; unconfirmed proposals excluded."}
