@@ -169,8 +169,9 @@ class ApprenticeMemory:
                 # Identical extraction from the same lesson should not create duplicates.
                 previous = con.execute("""SELECT id,status FROM apprentice_proposals
                       WHERE kind=? AND name_key=? AND description=? AND source_text=?
+                        AND domain=?
                       ORDER BY id DESC LIMIT 1""",
-                      (kind,normalize(name),description,source_text[:3000])).fetchone()
+                      (kind,normalize(name),description,source_text[:3000],domain)).fetchone()
                 if previous:
                     if previous["status"] == "pending":
                         saved.append({"id":previous["id"],"kind":kind,"name":name,

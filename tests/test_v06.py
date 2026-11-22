@@ -56,6 +56,19 @@ class KnowledgeChangeTests(unittest.TestCase):
         self.assertIn(("assistant","JARVIS"),
                       [(x["role"],x["name"]) for x in aliases])
 
+    def test_repeated_request_and_rename_back(self):
+        proposal=self.memory.context("Я просил переименовать тебя в Домик")["change_proposal"]
+        self.assertEqual(proposal["proposed_value"],"Домик")
+        self.memory.changes.review(proposal["id"],"confirm")
+        another=self.memory.context("Переименуй себя в JARVIS")["change_proposal"]
+        self.memory.changes.review(another["id"],"confirm")
+        self.assertEqual(self.memory.context("Как тебя зовут")["direct_reply"],
+                         "Меня зовут JARVIS.")
+        self.assertFalse(any(e["name"]=="JARVIS" for e in
+                             self.memory.changes.snapshot()["role_aliases"]))
+        self.assertTrue(any(e["name"]=="Домик" for e in
+                            self.memory.changes.snapshot()["role_aliases"]))
+
     def test_reject_does_not_mutate_and_duplicate_is_deduplicated(self):
         a=self.memory.context("Давайте теперь тебя буду звать Домик")["change_proposal"]
         b=self.memory.context("Давайте теперь тебя буду звать Домик")["change_proposal"]

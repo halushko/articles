@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS dialogue_role_aliases (
 # Parsing only detects explicit mutation intent. It does not guess what an
 # unspecified object refers to, or treat a question as a write request.
 SELF_RENAME = (
+    re.compile(r"(?iu)^\s*я\s+просил\s+(?:тебя\s+переименовать|"
+               r"переименовать\s+тебя)\s+(?:в|на)\s+(.+?)\s*[.!]*$"),
     re.compile(r"(?iu)^\s*(?:переименуй\s+себя|"
                r"поменяй\s+сво[её]\s+имя|"
                r"измени\s+сво[её]\s+имя|"
@@ -57,7 +59,7 @@ SELF_RENAME = (
                r"(?:тебя\s+буду\s+звать|буду\s+тебя\s+звать)\s+(.+?)\s*[.!]*$"),
 )
 ENTITY_RENAME = (
-    re.compile(r"(?iu)^\s*(?:переименуй|переименовать|"
+    re.compile(r"(?iu)^\s*(?:переименуй|переименовать|поменять|"
                r"измени\s+название|поменяй\s+(?:имя|название))\s+"
                r"(?:(?:сущность|объект)\s+)?(.+?)\s+(?:в|на)\s+(.+?)\s*[.!]*$"),
     re.compile(r"(?iu)^\s*(.+?)\s+(?:теперь\s+называется|"
@@ -292,6 +294,8 @@ class KnowledgeChanges:
         con.execute("""UPDATE graph_equivalences
                        SET canonical_key=?,canonical_name=? WHERE canonical_key=?""",
                     (newkey,new,oldkey))
+        # The new canonical name must not remain an alias of itself.
+        con.execute("DELETE FROM graph_equivalences WHERE alias_key=?",(newkey,))
         # The formerly canonical name becomes a historical alias.
         con.execute("""INSERT INTO graph_equivalences
                      (alias_key,alias,canonical_key,canonical_name) VALUES(?,?,?,?)
@@ -325,6 +329,8 @@ class KnowledgeChanges:
                     con.execute("""INSERT INTO dialogue_role_aliases(role,name,name_key)
                          VALUES(?,?,?) ON CONFLICT(role,name_key) DO NOTHING""",
                          (tid,old,name_key(old)))
+                    con.execute("DELETE FROM dialogue_role_aliases WHERE role=? AND name_key=?",
+                                (tid,name_key(changed_to)))
                     con.execute("""UPDATE dialogue_roles
                         SET display_name=?,source='teacher_confirmed_change',
                             updated_at=CURRENT_TIMESTAMP WHERE role=?""",
