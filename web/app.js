@@ -325,9 +325,9 @@ async function send(text,experiment,extras={}) {
       buttons.forEach(x=>x.disabled=true);
       try{
         await api('/api/apprentice/grade',{method:'POST',
-           body:JSON.stringify({question:text,answer:r.answer,rating,teacher_note:teacherNote})});
+           body:JSON.stringify({question:text,answer:r.answer,rating,teacher_note:teacherNote,actor_id:actorId()})});
         await window.JarvisResearchUI?.grade(r.turn_id,rating,teacherNote);
-        gradeControls.textContent=rating==='good'?'✓ Ответ оценён как верный':'✕ Ошибка учтена в статистике. Объясни правильный ответ следующим сообщением, чтобы обучить память.';
+        gradeControls.textContent=rating==='good'?'✓ Ответ оценён как верный':'✕ Исправление сохранено для следующих похожих вопросов.';
         await refresh();
       }catch(e){
         putMessage('Ошибка оценки: '+e.message,'system');
