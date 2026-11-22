@@ -169,6 +169,11 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
             calls.append(url)
             if url.endswith("/apprentice/context"):
                 return {"knowledge":[],"capabilities":[],"graph":{}}
+            if url.endswith("/research/operations/web/clear"):
+                return {"cleared":True}
+            if url.endswith("/research/operations/web/propose"):
+                return {"id":"approval-test","query":payload["query"],
+                        "question":payload["question"]}
             if url.endswith("/analyze"):
                 return {"reply":"Я предлагаю проверить это в сети.",
                         "intent":"ask","needs_web":True,
@@ -179,7 +184,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
             raise AssertionError(url)
         with patch.object(gateway,"forward",fake):
             result=await gateway.chat(gateway.ChatIn(
-                experiment="apprentice",web_mode="ask",text="Найди свежую документацию"))
+                experiment="apprentice",web_mode="ask",text="Найди свежую документацию",
+                session_id="b312050f-5ae1-4b20-86bc-4ea463dcc4ae"))
         self.assertEqual(result["search_status"],"approval_needed")
         self.assertEqual(result["web_approval"]["query"],"официальная документация")
         self.assertEqual(result["proposals"],[])
@@ -189,8 +195,11 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
         calls=[]
         async def fake(url,method="GET",payload=None):
             calls.append(url)
-            if url.endswith("/apprentice/context"):
-                return {"knowledge":[],"capabilities":[],"graph":{}}
+            if url.endswith("/research/operations/web/resolve"):
+                self.assertEqual(payload["approval_id"],"test-operation-id")
+                return {"handled":True,"status":"approved",
+                        "operation_id":"test-operation-id",
+                        "question":"Проверь новость","query":"тест новости"}
             if url.endswith("/research/web/search"):
                 self.assertEqual(payload["query"],"тест новости")
                 return {"available":True,"status":"ok",
@@ -204,7 +213,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(gateway,"forward",fake):
             result=await gateway.chat(gateway.ChatIn(
                 experiment="apprentice",web_mode="ask",
-                allow_web_search=True,approved_web_query="тест новости",
+                allow_web_search=True,approval_id="test-operation-id",
+                session_id="b312050f-5ae1-4b20-86bc-4ea463dcc4ae",
                 text="Проверь новость"))
         self.assertEqual(result["answer"],"Результат [1]")
         self.assertEqual(result["sources"][0]["url"],"https://example.org/info")
