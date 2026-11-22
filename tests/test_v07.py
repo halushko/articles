@@ -247,8 +247,9 @@ class GatewayVoiceTests(unittest.IsolatedAsyncioTestCase):
         calls=[]
         async def forward(url,method="GET",payload=None):
             calls.append(url)
-            if url.endswith("/apprentice/voice/resolve"):
-                return {"handled":True,"answer":"Подтверждено.",
+            if url.endswith("/research/dialogue/resolve"):
+                return {"handled":True,"category":"knowledge.review",
+                        "answer":"Подтверждено.",
                         "status":"confirmed","executed":False,
                         "review":{"kind":"change","id":11,"decision":"confirm"}}
             raise AssertionError(url)
