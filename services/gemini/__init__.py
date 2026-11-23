@@ -1,0 +1,1 @@
+"""Standalone external synthesis microservice."""

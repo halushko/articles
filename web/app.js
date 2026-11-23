@@ -259,7 +259,7 @@ function setupCorrection(container,phrase) {
 }
 async function send(text,experiment,extras={}) {
   const mode=experiment||$('experiment').value;
-  const usesWorld=(mode==='apprentice'||mode==='hybrid');
+  const usesWorld=(mode==='apprentice'||mode==='hybrid'||mode==='core');
   const sessions=window.JarvisResearchUI;
   try { await sessions?.ready(); }
   catch(error) {
@@ -399,6 +399,7 @@ function renderMode(){
   const explanation=$('mode-explanation');
   const notes={
     llm_only:'⚠️ Контрольный эксперимент: Qwen не получает SQLite, не знает подтверждённые сущности и может выдумывать ответы о своей памяти. Для общения с обученным JARVIS выбери «Ученик».',
+    core:'🧪 Эксперимент: Qwen определяет намерение; Core проверяет память, строит план, запрашивает разрешение на поиск и использует только найденные источники. Изменения устройств и знаний здесь не выполняются.',
     hybrid:'Общий мир JARVIS: старый индекс распознаёт известные команды, обычные вопросы и поиск обслуживает общий диалоговый движок с памятью и опытом.',
     research_only:'Экспериментальный старый индекс команд без LLM и общего диалога. Это не полноценный JARVIS.'
   };

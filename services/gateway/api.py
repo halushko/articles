@@ -20,6 +20,7 @@ from .tracing import (ChatTrace, CURRENT_TRACE, input_summary,
 
 LLM_URL = os.getenv("LLM_URL", "http://llm:8000")
 RESEARCH_URL = os.getenv("RESEARCH_URL", "http://research:8000")
+CORE_URL = os.getenv("CORE_URL", "http://core:8000")
 TOKEN = os.getenv("JARVIS_TOKEN", "")
 HOST_BIND = os.getenv("HOST_BIND", "127.0.0.1")
 
@@ -34,7 +35,7 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parents[
 
 class ChatIn(BaseModel):
     text: str = Field(min_length=1,max_length=3000)
-    experiment: str = Field(default="hybrid", pattern="^(apprentice|hybrid|research_only|llm_only)$")
+    experiment: str = Field(default="hybrid", pattern="^(apprentice|hybrid|research_only|llm_only|core)$")
     profile: str = Field(default="fast",pattern="^(fast|deep)$")
     ablation: str = Field(default="combined",pattern="^(exact|online|combined)$")
     history: list[dict] = Field(default_factory=list,max_length=14)
@@ -157,6 +158,21 @@ def progress(request_id, phase, detail="", final=False):
         "updated":now,"final":final
     }
 
+
+class PlanPreviewIn(BaseModel):
+    text: str = Field(min_length=1,max_length=3000)
+    actor_id: str = Field(default="",max_length=36)
+    session_id: str = Field(default="",max_length=60)
+    web_mode: str = Field(default="off",pattern="^(off|ask|auto)$")
+    profile: str = Field(default="fast",pattern="^(fast|deep)$")
+
+
+@app.post("/api/plan", dependencies=[Depends(auth)])
+async def preview_plan(req: PlanPreviewIn):
+    """Opt-in plan preview only. Existing chat remains unchanged."""
+    return await forward(CORE_URL+"/v1/plan","POST",req.model_dump())
+
+
 @app.get("/api/chat/status/{request_id}", dependencies=[Depends(auth)])
 async def chat_status(request_id: str):
     try:
@@ -177,7 +193,7 @@ async def chat_status(request_id: str):
             "elapsed_seconds":round(now-state["started"],1),
             "phase_elapsed_seconds":round(now-state["updated"],1)}
 
-async def forward(url: str, method: str = "GET", payload: dict | None = None):
+async def forward(url: str, method: str = "GET", payload: dict | None = None, timeout: float = 250):
     trace=CURRENT_TRACE.get()
     service,endpoint=trace_forward_endpoint(url)
     should_trace=(trace is not None and not endpoint.endswith("/turns"))
@@ -186,7 +202,7 @@ async def forward(url: str, method: str = "GET", payload: dict | None = None):
         trace.add("service.request", service=service, endpoint=endpoint,
                   method=method, input=input_summary(endpoint,payload))
     try:
-        async with httpx.AsyncClient(timeout=250) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(method,url,json=payload)
             response.raise_for_status()
             data=response.json()
@@ -1198,6 +1214,14 @@ async def chat_core(data: ChatIn):
                   index_before_llm=data.experiment == "hybrid",
                   index_only=data.experiment == "research_only",
                   isolated_llm_control=data.experiment == "llm_only")
+    if data.experiment == "core":
+        progress(data.request_id,"planning","Core: планирование и проверка источников")
+        return await forward(CORE_URL+"/v1/chat","POST",{
+            "text": data.text, "actor_id": data.actor_id,
+            "session_id": data.session_id or "",
+            "web_mode": data.web_mode, "profile": data.profile,
+            "approval_id": data.approval_id,
+            "allow_web_search": data.allow_web_search},timeout=365)
     if data.experiment == "apprentice":
         return await apprentice_chat(data,start)
     if data.experiment != "llm_only":

@@ -12,6 +12,27 @@ COPY config/llm.json config/llm.json
 EXPOSE 8000
 CMD ["uvicorn", "services.llm.api:app", "--host", "0.0.0.0", "--port", "8000"]
 
+FROM base AS search
+COPY services/research/__init__.py services/research/__init__.py
+COPY services/research/web_research.py services/research/web_research.py
+COPY services/search/ services/search/
+EXPOSE 8000
+CMD ["uvicorn", "services.search.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM base AS gemini
+COPY services/research/__init__.py services/research/__init__.py
+COPY services/research/web_research.py services/research/web_research.py
+COPY services/llm/__init__.py services/llm/__init__.py
+COPY services/llm/gemini.py services/llm/gemini.py
+COPY services/gemini/ services/gemini/
+EXPOSE 8000
+CMD ["uvicorn", "services.gemini.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM base AS core
+COPY services/core/ services/core/
+EXPOSE 8000
+CMD ["uvicorn", "services.core.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
 FROM base AS research
 COPY services/research/ services/research/
 COPY config/research.json config/research.json

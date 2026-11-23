@@ -111,6 +111,65 @@ async def chat(req: ChatIn):
                 "generation":round((data.get("eval_duration") or 0)/1e6,2)},
             "executed":False,"prompt_trace":prompt_trace}
 
+
+class PlanIn(BaseModel):
+    text: str = Field(min_length=1, max_length=3000)
+    profile: str = Field(default="fast", pattern="^(fast|deep)$")
+    context: dict = Field(default_factory=dict)
+    capabilities: list[dict] = Field(default_factory=list, max_length=8)
+
+
+PLAN_SYSTEM = """Ты предлагаешь план для JARVIS, а не исполняешь действия.
+Интерпретируй смысл целого сообщения, включая несколько намерений и
+продолжение разговора без вопросительного знака.
+Верни один JSON объект:
+{"intent":"mixed","steps":[{"id":"s1","capability":"knowledge.lookup","arguments":{"query":"..."},"depends_on":[]}],"needs_clarification":false,"clarifying_question":"","explanation":"..."}
+intent: question, teaching, action, research, recall, mixed или unclear.
+Используй только capabilities из списка. Не выдумывай устройства или факты.
+Если запрос нельзя выполнить, сформулируй уточняющий вопрос или явно
+назови отсутствующую capability: сервер отклонит такой план.
+Для сложного запроса предложи до 5 зависимых шагов.
+Ничего не сохраняй и не утверждай, что действие выполнено.
+Не добавляй пояснения за пределами JSON."""
+
+
+@app.post("/plan")
+async def plan(req: PlanIn):
+    """LLM suggests structured steps; Core independently validates them."""
+    profile = load()["profiles"][req.profile]
+    tools = [{"name": item.get("name"), "description": item.get("description"),
+              "approval": item.get("approval")} for item in req.capabilities]
+    messages = [
+        {"role": "system", "content": PLAN_SYSTEM},
+        {"role": "user", "content": json.dumps(
+            {"message": req.text, "context": req.context, "capabilities": tools},
+            ensure_ascii=False, default=str)[:11000]},
+    ]
+    payload = {
+        "model": profile["model"], "messages": messages,
+        "stream": False, "format": "json", "think": False,
+        "keep_alive": "30m",
+        "options": {"temperature": 0, "num_ctx": max(4096, profile["num_ctx"]),
+                    "num_predict": 650},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=float(os.getenv("OLLAMA_TIMEOUT", "240"))) as client:
+            response = await client.post(os.getenv("OLLAMA_URL", "http://ollama:11434") + "/api/chat",
+                                         json=payload)
+            response.raise_for_status()
+            raw = response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "Local planning model unavailable: " +
+                            type(exc).__name__) from exc
+    content = public_content((raw.get("message") or {}).get("content", ""))
+    try:
+        parsed = json.loads(content)
+    except (ValueError, TypeError):
+        parsed = None
+    return {"plan": parsed, "model": profile["model"],
+            "tokens": int(raw.get("eval_count") or 0), "executed": False}
+
+
 class AnalyzeIn(BaseModel):
     text: str = Field(min_length=1,max_length=3000)
     profile: str = Field(default="fast",pattern="^(fast|deep)$")

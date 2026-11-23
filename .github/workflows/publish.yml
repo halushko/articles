@@ -3,6 +3,8 @@ name: Test and publish JARVIS (llm-index)
 on:
   push:
     branches: [llm-index]
+  pull_request:
+    branches: [llm-index]
   workflow_dispatch:
 
 concurrency:
@@ -32,7 +34,29 @@ jobs:
       - run: python -m evaluation.benchmark --dataset evaluation/toy_cases.jsonl
       - run: python -m evaluation.graph_benchmark --dataset evaluation/graph_cases.jsonl --assert-pass
 
+  build-smoke:
+    name: Build ${{ matrix.component }} (PR smoke)
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [core, search, gemini]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: ${{ matrix.component }}
+          push: false
+          cache-from: type=gha,scope=smoke-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=smoke-${{ matrix.component }}
+
   publish:
+    if: github.event_name != 'pull_request'
     needs: test
     name: Publish ${{ matrix.component }}
     runs-on: ubuntu-latest
@@ -42,7 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [llm, research, gateway, searxng]
+        component: [llm, research, core, search, gemini, gateway, searxng]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
