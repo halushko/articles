@@ -193,7 +193,7 @@ async def chat_status(request_id: str):
             "elapsed_seconds":round(now-state["started"],1),
             "phase_elapsed_seconds":round(now-state["updated"],1)}
 
-async def forward(url: str, method: str = "GET", payload: dict | None = None):
+async def forward(url: str, method: str = "GET", payload: dict | None = None, timeout: float = 250):
     trace=CURRENT_TRACE.get()
     service,endpoint=trace_forward_endpoint(url)
     should_trace=(trace is not None and not endpoint.endswith("/turns"))
@@ -202,7 +202,7 @@ async def forward(url: str, method: str = "GET", payload: dict | None = None):
         trace.add("service.request", service=service, endpoint=endpoint,
                   method=method, input=input_summary(endpoint,payload))
     try:
-        async with httpx.AsyncClient(timeout=250) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(method,url,json=payload)
             response.raise_for_status()
             data=response.json()
@@ -1221,7 +1221,7 @@ async def chat_core(data: ChatIn):
             "session_id": data.session_id or "",
             "web_mode": data.web_mode, "profile": data.profile,
             "approval_id": data.approval_id,
-            "allow_web_search": data.allow_web_search})
+            "allow_web_search": data.allow_web_search},timeout=365)
     if data.experiment == "apprentice":
         return await apprentice_chat(data,start)
     if data.experiment != "llm_only":
