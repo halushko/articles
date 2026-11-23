@@ -1,8 +1,8 @@
-"""Read-only planning API.
+"""JARVIS core: propose plans, enforce policy and coordinate specialized executors.
 
-Only this service interprets multi-intent requests into proposed steps. It
-neither executes tools nor mutates knowledge. Gateway remains the public edge;
-Research owns SQLite, LLM owns access to local Ollama.
+Only local Qwen interprets natural language. Core never asks Qwen to make
+up factual answers. Research owns the world and durable search approvals;
+Search owns SearXNG calls; Gemini only synthesizes real public evidence.
 """
 import os
 
@@ -11,11 +11,15 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .planner import catalog, validate
+from .runtime import reply, research_answer, run_plan
 
-RESEARCH_URL = os.getenv("RESEARCH_URL", "http://research:8000")
-LLM_URL = os.getenv("LLM_URL", "http://llm:8000")
-
-app = FastAPI(title="JARVIS Core - Planning", version="0.1.0", docs_url=None)
+URLS = {
+    "research": os.getenv("RESEARCH_URL", "http://research:8000"),
+    "llm": os.getenv("LLM_URL", "http://llm:8000"),
+    "search": os.getenv("SEARCH_URL", "http://search:8000"),
+    "gemini": os.getenv("GEMINI_URL", "http://gemini:8000"),
+}
+app = FastAPI(title="JARVIS Core", version="0.2.0", docs_url=None)
 
 
 class PlanIn(BaseModel):
@@ -26,48 +30,101 @@ class PlanIn(BaseModel):
     profile: str = Field(default="fast", pattern="^(fast|deep)$")
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "module": "core", "execution_enabled": False}
+class ExecuteIn(PlanIn):
+    approval_id: str = Field(default="", max_length=36)
+    allow_web_search: bool = False
 
 
-@app.post("/v1/plan")
-async def propose_plan(req: PlanIn):
-    """Untrusted Qwen returns candidates; the server validates every step."""
-    async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            response = await client.post(
-                RESEARCH_URL + "/research/planner/context",
-                json={"text": req.text, "actor_id": req.actor_id,
-                      "session_id": req.session_id})
+async def call(service, endpoint, payload):
+    if service not in URLS or not endpoint.startswith("/"):
+        raise ValueError("Unsupported internal endpoint")
+    timeout = 250 if service == "llm" else 65 if service == "gemini" else 35
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(URLS[service] + endpoint, json=payload)
             response.raise_for_status()
-            context = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise HTTPException(503, "Planning context unavailable: " +
-                                type(exc).__name__) from exc
+            return response.json()
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(502, service + " returned HTTP " +
+                            str(error.response.status_code)) from error
+    except (httpx.HTTPError, ValueError) as error:
+        raise HTTPException(503, service + " unavailable: " +
+                            type(error).__name__) from error
 
-    tools = catalog(context.get("capabilities", []), req.web_mode)
-    # Never send capabilities or person/device permissions chosen by a client.
-    # Only Research's actual registered routes can appear in this catalog.
+
+async def planning(req):
+    """One context read, one bounded Qwen call, one deterministic validator."""
+    context = await call("research", "/research/planner/context", {
+        "text": req.text, "actor_id": req.actor_id, "session_id": req.session_id})
+    capabilities = catalog(context.get("capabilities", []), req.web_mode)
     compact = {
         "task": context.get("task") or {},
         "history": (context.get("history") or [])[-6:],
         "knowledge": (context.get("knowledge") or [])[:6],
         "experiences": (context.get("experiences") or [])[:3],
     }
-    async with httpx.AsyncClient(timeout=160) as client:
-        try:
-            response = await client.post(LLM_URL + "/plan", json={
-                "text": req.text, "profile": req.profile,
-                "context": compact, "capabilities": list(tools.values())})
-            response.raise_for_status()
-            parsed = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            return {"status": "unavailable", "reason": "Локальный планировщик недоступен",
-                    "error_type": type(exc).__name__, "steps": [],
-                    "executed": False, "execution_allowed": False}
-    outcome = validate(parsed.get("plan"), tools)
+    try:
+        parsed = await call("llm", "/plan", {
+            "text": req.text, "profile": req.profile,
+            "context": compact, "capabilities": list(capabilities.values())})
+    except HTTPException:
+        return context, {"status": "unavailable", "reason": "Qwen недоступна",
+                         "steps": [], "executed": False,
+                         "execution_allowed": False}
+    outcome = validate(parsed.get("plan"), capabilities)
     outcome["model"] = parsed.get("model", "")
-    outcome["tool_count"] = len(tools)
+    outcome["tool_count"] = len(capabilities)
     outcome["task_context_used"] = bool((compact["task"] or {}).get("context_used"))
-    return outcome
+    return context, outcome
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "module": "core",
+            "execution_enabled": True,
+            "physical_actions_enabled": False}
+
+
+@app.post("/v1/plan")
+async def propose_plan(req: PlanIn):
+    """Preview without execution or side effects."""
+    _, plan = await planning(req)
+    return plan
+
+
+@app.post("/v1/chat")
+async def execute(req: ExecuteIn):
+    """One turn, one validated plan, at most one public search.
+
+    Before planning, the deterministic operation manager handles approvals
+    (including a voice approval with no punctuation). Approval is bound to
+    the original session, actor, query and TTL in Research SQLite.
+    """
+    original = req.model_dump()
+    if req.session_id:
+        approval = await call("research", "/research/operations/web/resolve", {
+            "session_id": req.session_id, "actor_id": req.actor_id,
+            "phrase": req.text if not req.approval_id else "",
+            "approval_id": req.approval_id,
+            "source": ("button" if req.approval_id and req.allow_web_search else "voice"),
+        })
+        if approval.get("handled"):
+            if approval.get("status") == "approved":
+                approved_query = str(approval.get("query") or "")
+                # Rebuild *read-only* context around the original request;
+                # don't plan again or let the model change approved arguments.
+                context = await call("research", "/research/planner/context", {
+                    "text": approval.get("question") or approved_query,
+                    "actor_id": req.actor_id, "session_id": req.session_id})
+                return await research_answer(original, context, approved_query,
+                                             call, approval=approval)
+            return reply(approval.get("answer") or
+                         "Не удалось применить разрешение на поиск.",
+                         "core_search_approval_" + str(approval.get("status") or "invalid"),
+                         operation_state=approval)
+
+    context, plan = await planning(req)
+    if plan.get("reason") == "Qwen недоступна":
+        return reply("Локальная модель распознавания намерения недоступна. "
+                     "Ничего не выполняю.", "core_planner_unavailable")
+    return await run_plan(original, context, plan, call)
