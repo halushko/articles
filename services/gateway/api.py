@@ -859,8 +859,13 @@ async def apprentice_chat(data: ChatIn, start: float):
             and not wanted_direct
             and public_research_reuse_eligible(text, intent_info.get("intent", ""))):
         progress(data.request_id, "memory", "SQLite: ищу ранее найденные источники")
+        # If the user said "дай рецепт" or "покажи это", use the
+        # subject completed from their own previous turns. Do not send a
+        # generic query to SQLite and then fall through to a hallucination.
+        recall_query=(str(task.get("subject") or text)
+                      if task.get("context_used") else text)
         found=await forward(RESEARCH_URL+"/research/findings/recall", "POST",{
-            "query": text[:1200], "session_id": data.session_id or "",
+            "query": recall_query[:1200], "session_id": data.session_id or "",
             "actor_id": data.actor_id})
         if found.get("found"):
             return {"answer": found["answer"], "route": "memory_public_research",
