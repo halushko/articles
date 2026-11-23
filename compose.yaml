@@ -69,8 +69,8 @@ services:
     volumes:
       - research_data:/data
 
-  gateway:
-    image: ghcr.io/halushko/articles-llm-index-gateway:latest
+  core:
+    image: ghcr.io/halushko/articles-llm-index-core:latest
     restart: unless-stopped
     depends_on:
       - llm
@@ -78,6 +78,18 @@ services:
     environment:
       LLM_URL: http://llm:8000
       RESEARCH_URL: http://research:8000
+
+  gateway:
+    image: ghcr.io/halushko/articles-llm-index-gateway:latest
+    restart: unless-stopped
+    depends_on:
+      - llm
+      - research
+      - core
+    environment:
+      LLM_URL: http://llm:8000
+      RESEARCH_URL: http://research:8000
+      CORE_URL: http://core:8000
       HOST_BIND: ${HOST_BIND:-127.0.0.1}
       JARVIS_TOKEN: ${JARVIS_TOKEN:-}
       WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
