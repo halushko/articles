@@ -293,6 +293,21 @@ async def list_sessions():
 async def read_session(sid: str):
     return await forward(RESEARCH_URL+"/research/sessions/"+sid)
 
+
+class SessionClearIn(BaseModel):
+    confirm: bool = False
+
+
+@app.post("/api/sessions/{sid}/clear", dependencies=[Depends(auth)])
+async def clear_session(sid: str, req: SessionClearIn):
+    if req.confirm is not True:
+        raise HTTPException(422, "Подтверди очистку диалога")
+    # Do not expose a global memory erase as a conversation cleanup.
+    result=await forward(RESEARCH_URL+"/research/sessions/"+sid+"/clear",
+                         "POST",{"confirm":True})
+    CHAT_PHASES.clear()  # Old live progress cards are not conversation history.
+    return result
+
 @app.post("/api/sessions/{sid}/events", dependencies=[Depends(auth)])
 async def add_session_event(sid: str,req: SessionEventIn):
     return await forward(RESEARCH_URL+"/research/sessions/"+sid+"/events",
@@ -304,18 +319,22 @@ async def grade_session_turn(sid: str,req: SessionGradeIn):
                          "POST",req.model_dump())
 
 @app.get("/api/sessions/{sid}/export", dependencies=[Depends(auth)])
-async def export_session(sid: str, format: str = "md"):
+async def export_session(sid: str, format: str = "md", last: int = 0):
     if format not in ("md","json"):
         raise HTTPException(422,"Доступные форматы: md, json")
-    data=await forward(RESEARCH_URL+"/research/sessions/"+sid+"/export")
+    if last < 0 or last > 500:
+        raise HTTPException(422,"Последние сообщения: 0 (все) или 1–500")
+    data=await forward(RESEARCH_URL+"/research/sessions/"+sid+"/export"+
+                      (f"?last={last}" if last else ""))
     if format=="md":
         body=data["markdown"]
         kind="text/markdown; charset=utf-8"
     else:
         body=json.dumps(data["session"],ensure_ascii=False,indent=2)
         kind="application/json; charset=utf-8"
+    name=f"jarvis-{sid}"+(f"-last-{last}" if last else "")+"."+format
     return Response(content=body,media_type=kind,headers={
-        "Content-Disposition":f'attachment; filename="jarvis-{sid}.{format}"',
+        "Content-Disposition":f'attachment; filename="{name}"',
         "Cache-Control":"no-store"
     })
 
@@ -580,43 +599,51 @@ async def answer_from_public_search(data: ChatIn, text: str,
                 "proposals":[],"tokens":0,"executed":False,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
 
-    # Google Search Grounding is NOT required (and returned 429 on Free Tier).
-    # SearXNG supplies real sources; Gemini synthesizes WITHOUT google_search.
+    # Local Qwen is the PRIMARY evidence interpreter. Gemini is a scarce
+    # cloud fallback, never the default for a search that Qwen can handle.
     grounded = None
+    local_issue = ""
+    progress(data.request_id, "web_answer", "Qwen: анализирует найденные источники")
+    try:
+        candidate=await forward(LLM_URL+"/web-answer","POST",{
+            "question":text,"profile":data.profile,"sources":evidence,
+            "memory":memory,"origin":"searxng"})
+        answer=str(candidate.get("answer") or "")
+        if (not answer.strip() or looks_like_loop(answer)
+                or model_abstained(answer)
+                or claims_unobserved_search(answer)):
+            local_issue = "Локальная модель не смогла достоверно обработать источники"
+        else:
+            grounded=candidate
+    except HTTPException as error:
+        local_issue=str(error.detail)[:300]
+
     gemini_issue = ""
-    if gemini_enabled():
-        progress(data.request_id, "web_answer", "Gemini: анализирует публичные источники SearXNG")
+    if grounded is None and gemini_enabled():
+        progress(data.request_id, "web_answer", "Gemini: резервный анализ публичных источников")
         try:
-            candidate = await forward(LLM_URL+"/gemini-answer","POST",{
-                "question": text[:1200], "search": False,
-                "sources": evidence[:5]})
+            candidate=await forward(LLM_URL+"/gemini-answer","POST",{
+                "question": text[:1200], "search": False, "sources": evidence[:5]})
             if candidate.get("response_usable", True):
                 grounded = candidate
+                grounded["fallback_from"] = "qwen"
+                grounded["local_error"] = local_issue
             else:
                 gemini_issue = "Gemini не вернул пригодный ответ"
         except HTTPException as error:
             gemini_issue = str(error.detail)[:300]
     if grounded is None:
-        progress(data.request_id,"web_answer","Qwen: анализирует найденные источники")
-        try:
-            grounded=await forward(LLM_URL+"/web-answer","POST",{
-                "question":text,"profile":data.profile,"sources":evidence,
-                "memory":memory,"origin":"searxng"})
-            if gemini_issue:
-                grounded["fallback_from"]="gemini"
-                grounded["gemini_error"]=gemini_issue
-        except HTTPException as error:
-            return {"answer": ("Поиск выполнен, но ни Gemini, ни локальная "
-                               "модель не смогли обработать источники. "
-                               "Найденные ссылки сохранены в результате."),
-                    "route":"apprentice_web_analysis_failed",
-                    "model":"none","tokens":0,"executed":False,
-                    "search_query":query[:240],"search_status":"analysis_failed",
-                    "search_error":(gemini_issue+"; "+str(error.detail))[:400],
-                    "sources":[{"title":v.get("title"),"url":v.get("url"),
-                                "snippet":v.get("snippet"),"status":v.get("status")}
-                               for v in evidence[:5]],
-                    "total_ms":round((time.perf_counter()-start)*1000,2)}
+        return {"answer": ("Поиск выполнен, но локальная модель не смогла "
+                           "надёжно обработать источники. "
+                           "Найденные ссылки прилагаю без выдуманного рецепта."),
+                "route":"apprentice_web_analysis_failed",
+                "model":"none","tokens":0,"executed":False,
+                "search_query":query[:240],"search_status":"analysis_failed",
+                "search_error":(local_issue+"; "+gemini_issue)[:400],
+                "sources":[{"title":v.get("title"),"url":v.get("url"),
+                            "snippet":v.get("snippet"),"status":v.get("status")}
+                           for v in evidence[:5]],
+                "total_ms":round((time.perf_counter()-start)*1000,2)}
     grounded.update({"sources":[{"title":v.get("title"),"url":v.get("url"),
                                    "snippet":v.get("snippet"),"status":v.get("status"),
                                    "page_text":v.get("page_text","")[:4000]}
@@ -676,6 +703,29 @@ async def gemini_public_answer(data: ChatIn, text: str, question: str, start: fl
         result["answer"]="Gemini не выполнял внешних действий или подключений."
         result["integrity_warning"]="Blocked unsupported external action claim"
     return result
+
+
+def public_research_reuse_eligible(text: str, web_requested: str = "") -> bool:
+    """Read-only recall may never bypass an EXPLICIT fresh internet request.
+
+    For "дай рецепт котлет" reuse previous sourced answer; for "поищи в
+    интернете рецепт котлет" perform the actual permitted web search.
+    """
+    if not public_only(text):
+        return False
+    if re.search(r"(?iu)\b(?:в\s+интернете|в\s+сети|вебе|"
+                 r"search\s+the\s+web|on\s+the\s+web|"
+                 r"проверь\s+источники|загугли)\b", text):
+        return False
+    if re.search(r"(?iu)\b(?:свеж\w*|актуальн\w*|"
+                 r"нов\w*|друг\w*|последн\w*|"
+                 r"сегодн\w*|проверь\w*|обнови\w*)\b", text):
+        return False
+    # Look up only meaningful public questions, not chatter or teaching.
+    return bool(public_information_request(text) or
+                recipe_request(text) or
+                re.match(r"(?iu)^\s*(найди|поищи|покажи|"
+                         r"дай|найдите|покажите)\s+", text))
 
 
 async def apprentice_chat(data: ChatIn, start: float):
@@ -785,6 +835,28 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "route":"world_search_clarification","model":"SQLite",
                 "utterance_intent":intent_info,"tokens":0,"executed":False,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
+    # Memory-first: authoritative local journal of past PUBLIC research.
+    # Source-backed findings are NOT confirmed personal facts. Never reuse
+    # if this request explicitly asks to visit the internet again.
+    if (not data.external_context and not memory.get("unavailable_operation")
+            and public_research_reuse_eligible(text, wanted_direct)):
+        progress(data.request_id, "memory", "SQLite: ищу ранее найденные источники")
+        found=await forward(RESEARCH_URL+"/research/findings/recall", "POST",{
+            "query": text[:1200], "session_id": data.session_id or "",
+            "actor_id": data.actor_id})
+        if found.get("found"):
+            return {"answer": found["answer"], "route": "memory_public_research",
+                    "model": "SQLite", "tokens": 0, "executed": False,
+                    "sources": found.get("sources") or [],
+                    "evidence_source": found.get("evidence_source"),
+                    "retrieval_trace": {"finding_id": found.get("id"),
+                                        "saved_query": found.get("search_query"),
+                                        "recorded_at": found.get("created_at"),
+                                        "match_score": found.get("match_score"),
+                                        "fresh_search": False},
+                    "utterance_intent": intent_info,
+                    "search_status": "reused", "search_executed": False,
+                    "total_ms": round((time.perf_counter()-start)*1000,2)}
     if wanted_direct:
         if data.web_mode=="off":
             return {"answer":"Интернет отключён. Поиск не выполнялся.",
@@ -859,18 +931,9 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "сервисам или устройствам. Он сохранён как непроверенный источник.")
             grounded["integrity_warning"]="Blocked unsupported external action claim"
         return grounded
-    # Gemini handles standalone public knowledge first, without paid grounding.
-    # web_mode=off disables search, not the explicitly enabled cloud LLM.
-    # Personal/contextual questions and commands stay with local Qwen + SQLite.
+    # Gemini is NOT a primary model. Public questions reach local Qwen first
+    # and only fall back to Gemini on demonstrable refusal/repetition.
     gemini_issue = ""
-    if (gemini_enabled() and public_only(text)
-            and (recipe_request(text) or
-                 public_information_request(text, intent_info.get("intent","")))):
-        candidate=await gemini_public_answer(data, text, text, start)
-        if candidate.get("route")!="gemini_unavailable":
-            candidate["utterance_intent"]=intent_info
-            return candidate
-        gemini_issue=candidate.get("gemini_error","Gemini недоступен")
     capabilities = {item.get("name"):item.get("status")
                     for item in memory.get("capabilities",[])}
     if (requests_external_connection(text)
