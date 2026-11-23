@@ -40,6 +40,15 @@ class TaskParserTests(unittest.TestCase):
         self.assertEqual(found["search_query"],
                          "официальная документация Home Assistant REST API")
 
+    def test_short_read_only_followup_reuses_same_focus(self):
+        found=plan(["поища рецепт борща"],"дай рецепт")
+        self.assertFalse(found["explicit_search"])
+        self.assertTrue(found["context_used"])
+        self.assertEqual(found["subject"],"рецепт борща")
+        reference=plan(["найди инструкцию принтера"],"покажи это")
+        self.assertEqual(reference["subject"],"инструкцию принтера")
+        self.assertTrue(reference["context_used"])
+
     def test_new_subject_overrides_old_subject(self):
         found=plan(["найди рецепт котлет"],"поища рецепт борща")
         self.assertEqual(found["search_query"],"рецепт борща")
