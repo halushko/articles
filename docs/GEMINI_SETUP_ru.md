@@ -57,11 +57,13 @@ Docker Compose передаст значения в контейнер `llm`. О
 ```powershell
 git switch llm-index
 git pull --ff-only origin llm-index
-docker compose up -d --build --force-recreate llm gateway
+docker compose pull llm gateway
+docker compose up -d --force-recreate llm gateway
 ```
 
-Если стек использует удалённые образы вместо локальной сборки,
-сначала проверь `compose.yaml` и соответствующую инструкцию развёртывания.
+В этом проекте `compose.yaml` использует готовые образы GHCR (`build:`
+отсутствует). Перед `docker compose pull` дождись успешной публикации
+образов в GitHub Actions; `--build` не собирает исходники этой конфигурации.
 Для изменения `.env` недостаточно `docker compose restart`: контейнер
 нужно пересоздать.
 
