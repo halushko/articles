@@ -13,6 +13,7 @@ from .normalize import normalize
 from .approvals import TTL as OPERATION_TTL, spoken_search_decision
 from .review_voice import TTL_SECONDS as REVIEW_TTL, speech_intent
 from .adaptive import WEB_CONTEXT
+from .task_context import plan as plan_user_task
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS dialogue_frames (
@@ -186,6 +187,23 @@ class DialogueCoordinator:
                 "last_response_evidence":last_evidence,
                 "previous_topic":preceding,
                 "pending":self.pending_summary(session_id,actor_id)}
+
+    def task_context(self, session_id, actor_id, query):
+        """Resolve the current user's request using only their own journal.
+
+        Unlike model-produced dialogue_frame.topic this cannot silently
+        replace the subject with a generic category or invented noun.
+        No model calls; bounded replay is cheap enough for every turn.
+        """
+        turns=[]
+        if self.sessions.exists(session_id):
+            with self.engine.connect() as con:
+                turns=[row["question"] for row in con.execute(
+                    """SELECT question FROM research_turns
+                       WHERE session_id=? AND actor_id=?
+                       ORDER BY id DESC LIMIT 12""",
+                    (session_id,str(actor_id or "")[:36]))]
+        return plan_user_task(list(reversed(turns)),query)
 
     def _pending(self, session_id):
         now=time.time()
