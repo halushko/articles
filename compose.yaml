@@ -41,7 +41,7 @@ services:
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-240}
       GEMINI_ENABLED: ${GEMINI_ENABLED:-false}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash-lite}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
       GEMINI_TIMEOUT: ${GEMINI_TIMEOUT:-50}
 
   # No published ports: only the research service can query this engine.
