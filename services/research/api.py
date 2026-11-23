@@ -73,6 +73,32 @@ class FeedbackIn(BaseModel):
     decision_id: int
     rating: str = Field(pattern="^(good|bad)$")
 
+
+class PlannerContextIn(BaseModel):
+    text: str = Field(min_length=1, max_length=3000)
+    actor_id: str = Field(default="", max_length=36)
+    session_id: str = Field(default="", max_length=60)
+
+
+@app.post("/research/planner/context")
+def planner_context(req: PlannerContextIn):
+    """Read-only planning context, with no implicit knowledge changes."""
+    from .world import terms
+    words = terms(req.text)
+    history = dialogue.context(req.session_id, req.actor_id).get("history", []) if req.session_id else []
+    task = dialogue.task_context(req.session_id, req.actor_id, req.text) if req.session_id else {}
+    with engine.connect() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT id,name,entity_type,domain,description FROM world_entities ORDER BY id DESC LIMIT 200")]
+        capabilities = [dict(r) for r in con.execute(
+            "SELECT name,status,description,executor FROM runtime_capabilities ORDER BY name")]
+    knowledge = [r for r in rows if words & terms(r["name"] + " " + r["description"])]
+    return {"history": history[-6:], "task": task,
+            "knowledge": knowledge[:6],
+            "experiences": world.recall(req.text, req.actor_id, req.session_id, limit=3),
+            "capabilities": capabilities, "executed": False}
+
+
 @app.get("/health")
 def health():
     return {"status":"ok", "version":"0.3.2", "module":"research",
