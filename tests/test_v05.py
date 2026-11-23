@@ -189,7 +189,8 @@ class GatewayWebPolicyTests(unittest.IsolatedAsyncioTestCase):
                 experiment="apprentice",web_mode="ask",text="Найди свежую документацию",
                 session_id="b312050f-5ae1-4b20-86bc-4ea463dcc4ae"))
         self.assertEqual(result["search_status"],"approval_needed")
-        self.assertEqual(result["web_approval"]["query"],"официальная документация")
+        self.assertEqual(result["web_approval"]["query"],"свежую документацию")
+        self.assertFalse(any("/analyze" in x for x in calls))
         self.assertEqual(result["proposals"],[])
         self.assertFalse(any("/research/web/search" in x for x in calls))
 
