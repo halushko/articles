@@ -20,6 +20,7 @@ from .tracing import (ChatTrace, CURRENT_TRACE, input_summary,
 
 LLM_URL = os.getenv("LLM_URL", "http://llm:8000")
 RESEARCH_URL = os.getenv("RESEARCH_URL", "http://research:8000")
+CORE_URL = os.getenv("CORE_URL", "http://core:8000")
 TOKEN = os.getenv("JARVIS_TOKEN", "")
 HOST_BIND = os.getenv("HOST_BIND", "127.0.0.1")
 
@@ -156,6 +157,21 @@ def progress(request_id, phase, detail="", final=False):
         "started":previous["started"] if previous else now,
         "updated":now,"final":final
     }
+
+
+class PlanPreviewIn(BaseModel):
+    text: str = Field(min_length=1,max_length=3000)
+    actor_id: str = Field(default="",max_length=36)
+    session_id: str = Field(default="",max_length=60)
+    web_mode: str = Field(default="off",pattern="^(off|ask|auto)$")
+    profile: str = Field(default="fast",pattern="^(fast|deep)$")
+
+
+@app.post("/api/plan", dependencies=[Depends(auth)])
+async def preview_plan(req: PlanPreviewIn):
+    """Opt-in plan preview only. Existing chat remains unchanged."""
+    return await forward(CORE_URL+"/v1/plan","POST",req.model_dump())
+
 
 @app.get("/api/chat/status/{request_id}", dependencies=[Depends(auth)])
 async def chat_status(request_id: str):
