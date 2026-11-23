@@ -3,6 +3,8 @@ name: Test and publish JARVIS (llm-index)
 on:
   push:
     branches: [llm-index]
+  pull_request:
+    branches: [llm-index]
   workflow_dispatch:
 
 concurrency:
@@ -33,6 +35,7 @@ jobs:
       - run: python -m evaluation.graph_benchmark --dataset evaluation/graph_cases.jsonl --assert-pass
 
   publish:
+    if: github.event_name != 'pull_request'
     needs: test
     name: Publish ${{ matrix.component }}
     runs-on: ubuntu-latest
