@@ -63,18 +63,40 @@ def reliable_pages(sources):
             and len(str(s.get("page_text") or "")) >= 100]
 
 
-def cited_synthesis(answer, sources):
-    """Require real source indices; no fake URLs or unsupported citations."""
-    if not isinstance(answer, str) or not answer.strip():
+def cited_synthesis(answer, sources, question=""):
+    """Strict lexical entailment screen; not a proof of factual correctness.
+
+    Requiring numbered citations alone does not stop Gemini inventing an
+    ingredient with [1]. Every substantive output word must also occur in
+    fetched evidence or the original public question (inflections allowed).
+    Paraphrases can be rejected; safe fallback is the unmodified excerpt.
+    """
+    if not isinstance(answer, str) or not answer.strip() or not sources:
         return False
     refs = [int(n) for n in re.findall(r"\[(\d+)\]", answer)]
     if not refs or any(n < 1 or n > len(sources) for n in refs):
         return False
-    allowed = {s.get("url") for s in sources}
-    for url in re.findall(r"https?://[^\s\]\)]+", answer):
-        if url.rstrip(".,;") not in allowed:
+    allowed_urls = {s.get("url") for s in sources}
+    found_urls = re.findall(r"https?://[^\s\]\)]+", answer)
+    for url in found_urls:
+        if url.rstrip(".,;") not in allowed_urls:
             return False
-    return True
+    # Source content is the only evidence; the model's own prior response
+    # and world knowledge do not qualify as citations.
+    source_text = question + " " + " ".join(
+        str(s.get("page_text") or "") + " " + str(s.get("title") or "")
+        for s in sources)
+    def root(word):
+        # Two common alphabets share the same normalization policy.
+        word = word.casefold().replace("ё", "е")
+        return word[:5] if len(word) >= 5 else word[:3]
+    known = {root(word) for word in terms(source_text)}
+    sans_urls = re.sub(r"https?://\S+", " ", answer)
+    sans_refs = re.sub(r"\[\d+\]", " ", sans_urls)
+    # If even one new substantive token appears, don't present the
+    # generator's prose as supported fact. This may reject true paraphrases.
+    extra = [word for word in terms(sans_refs) if root(word) not in known]
+    return not extra
 
 
 def summarize_memory(knowledge):
