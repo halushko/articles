@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS research_findings (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  actor_id TEXT NOT NULL DEFAULT '',
  session_id TEXT NOT NULL,
+ origin_turn_id INTEGER UNIQUE,
  search_query TEXT NOT NULL,
  question TEXT NOT NULL,
  answer TEXT NOT NULL,
@@ -98,8 +99,44 @@ class ResearchFindings:
         self.engine = engine
         with engine.connect() as con:
             con.executescript(SCHEMA)
+            columns={row["name"] for row in con.execute(
+                "PRAGMA table_info(research_findings)")}
+            if "origin_turn_id" not in columns:
+                con.execute("ALTER TABLE research_findings ADD COLUMN origin_turn_id INTEGER")
+            con.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_origin
+                           ON research_findings(origin_turn_id)""")
+        self._backfill_existing_searches()
 
-    def remember(self, session_id, actor_id, question, answer, result):
+    def _backfill_existing_searches(self):
+        """One-time-compatible import of previous sourced search turns.
+
+        Previous installations stored answers/sources in research_turns but
+        never made them independently recallable. Do not require a new search.
+        Cleared old conversations cannot be recovered retroactively.
+        """
+        with self.engine.connect() as con:
+            rows=con.execute("""SELECT t.id,t.session_id,t.actor_id,t.question,
+                        t.answer,t.route,t.provenance
+                FROM research_turns t
+                LEFT JOIN research_findings f ON f.origin_turn_id=t.id
+                WHERE f.id IS NULL AND t.route IN
+                      ('apprentice_web_evidence','gemini_searxng_evidence')
+                ORDER BY t.id DESC LIMIT 500""").fetchall()
+        for row in reversed(rows):
+            try:
+                result=json.loads(row["provenance"] or "{}")
+                if not isinstance(result,dict):
+                    continue
+                result["route"]=row["route"]
+                # Old stored searches may not include this explicit flag;
+                # trust only provenance from an actual search route+sources.
+                result.setdefault("search_executed", True)
+                self.remember(row["session_id"],row["actor_id"],row["question"],
+                              row["answer"],result,turn_id=row["id"])
+            except (ValueError, TypeError):
+                continue
+
+    def remember(self, session_id, actor_id, question, answer, result, turn_id=None):
         """Save ONLY completed real-search responses; no invented LLM 'facts'."""
         if not isinstance(result, dict):
             return False
@@ -115,10 +152,10 @@ class ResearchFindings:
             return False
         actor_id = str(actor_id or "")[:36]
         with self.engine.connect() as con:
-            con.execute("INSERT INTO research_findings "
-                        "(actor_id,session_id,search_query,question,answer,sources) "
-                        "VALUES(?,?,?,?,?,?)",
-                        (actor_id, session_id, query, str(question)[:500],
+            con.execute("INSERT OR IGNORE INTO research_findings "
+                        "(actor_id,session_id,origin_turn_id,search_query,question,answer,sources) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (actor_id, session_id, turn_id, query, str(question)[:500],
                          answer, json.dumps(excerpts, ensure_ascii=False)))
             # Keep a finite number of findings per person / anonymous session.
             if actor_id:
