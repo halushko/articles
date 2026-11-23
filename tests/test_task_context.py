@@ -131,6 +131,8 @@ class GatewayTaskContextTests(unittest.IsolatedAsyncioTestCase):
         calls=[]
         async def forward(url,method="GET",payload=None):
             calls.append(url)
+            if url.endswith("/research/dialogue/resolve"):
+                return {"handled":False}
             if url.endswith("/apprentice/context"):
                 return {
                     "normalized_text":"поища рецепт борща",
@@ -148,7 +150,9 @@ class GatewayTaskContextTests(unittest.IsolatedAsyncioTestCase):
                 session_id="b312050f-5ae1-4b20-86bc-4ea463dcc4ae"),
                 time.perf_counter())
         self.assertEqual(result["route"],"apprentice_web_permission")
-        self.assertEqual(len(calls),2)
+        self.assertEqual(len(calls),3)
+        self.assertNotIn("/analyze",str(calls))
+        self.assertNotIn("/grounded-chat",str(calls))
 
     async def test_executor_uses_approved_resolved_topic_for_sources_and_llm(self):
         calls=[]
