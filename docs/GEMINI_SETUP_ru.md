@@ -2,18 +2,19 @@
 
 ## Теперь две независимые возможности
 
-1. **Gemini — генерация ответа**. Когда `GEMINI_ENABLED=true`, JARVIS
-   направляет в Gemini обычные автономные **публичные** вопросы («Что такое
-   Python?», «Почему небо синее?», «Дай рецепт котлет»). Используется
-   `generateContent` **без** инструмента `google_search`. Владелец
-   проекта уже подтвердил реальным HTTP 200 / `ANSWER: OK` работу
-   `gemini-3.5-flash-lite` без Google Search. Тариф и квоты могут меняться.
+1. **Gemini — только резервная генерация**. JARVIS сначала проверяет
+   подтверждённую SQLite-память, ранее выполненные публичные исследования и
+   запускает локальную Qwen. Если Qwen явно не смогла ответить или
+   зациклилась, JARVIS может обратиться к Gemini с **публичным** вопросом.
+   Используется `generateContent` без инструмента `google_search`.
+   У владельца проекта ответ `HTTP 200 / ANSWER: OK` реально получен
+   от `gemini-3.5-flash-lite` без Google Search. Квоты могут меняться.
 2. **Бесплатный поиск — SearXNG**. В режиме `auto` явная просьба «поищи
    в интернете рецепт котлет» сначала отправляется в SearXNG. Из найденных
    публичных страниц или поисковых фрагментов формируются ограниченные
-   источники [1]–[5]. **Gemini без Google Search Grounding** анализирует
-   их и отвечает, помечая цитаты. Если Gemini недоступен, локальная Qwen
-   анализирует те же источники.
+   источники [1]–[5]. **Сначала локальная Qwen** анализирует источники.
+   Если она не справилась, Gemini без Google Search Grounding анализирует
+   только ограниченные публичные источники как резерв.
 3. В режиме `ask` JARVIS **сначала запрашивает подтверждение поиска**
    (посредством сессионной операции). Наличие Gemini больше не обходит
    разрешение на поиск. `off` запрещает **поиск**, но не самостоятельный
@@ -57,8 +58,8 @@ Docker Compose передаст значения в контейнер `llm`. О
 ```powershell
 git switch llm-index
 git pull --ff-only origin llm-index
-docker compose pull llm gateway
-docker compose up -d --force-recreate llm gateway
+docker compose pull llm gateway research
+docker compose up -d --force-recreate llm gateway research
 ```
 
 В этом проекте `compose.yaml` использует готовые образы GHCR (`build:`
@@ -76,18 +77,19 @@ docker compose exec llm python -c "from services.llm.gemini import DEFAULT_MODEL
 
 Проверки в интерфейсе JARVIS:
 
-- «Что такое Python?» — маршрут `gemini_general`, `model` равен
-  `gemini-3.5-flash-lite`. С включённым Gemini это работает даже при
-  `web_mode=off` (поскольку интернет-поиска нет).
-- «Дай рецепт котлет» — также `gemini_general`, без поисковых ссылок.
-  Это знание модели, а не результат чтения интернета.
+- «Что такое Python?» — сначала SQLite и локальная Qwen. Gemini
+  вызывается, только если Qwen явно не справилась.
+- После однажды успешно найденного с помощью SearXNG рецепта
+  «Дай рецепт котлет» — `route=memory_public_research`, `model=SQLite`,
+  `tokens=0`; сохраняются исходные URL, сеть и Gemini не нужны.
 - «Поищи в интернете рецепт котлет», `web_mode=auto` —
-  SearXNG → Gemini, `route=gemini_searxng_evidence`, `sources` с
-  реальными URL и статусами `read`/`search_snippet`.
+  SearXNG → Qwen, `route=apprentice_web_evidence`.
+  Если Qwen не справится, Gemini → `route=gemini_searxng_evidence`.
+  В обоих случаях остаются реальные источники и их статусы.
 - Тот же запрос при `web_mode=ask` — сначала запрос разрешения. После
   его подтверждения выполняется тот же поиск и анализ.
-- При ошибке Gemini `429` / тайм-ауте — локальная Qwen используется
-  как резерв; в ответе есть `fallback_from=gemini` и `gemini_error`.
+- При ошибке Gemini `429` / тайм-ауте после отказа локальной Qwen
+  JARVIS сообщает о проблеме; он не выдумывает подтверждённый ответ.
   Если SearXNG недоступен, JARVIS не придумывает результаты поиска.
 
 ## Почему не Google Search Grounding
@@ -108,5 +110,9 @@ docker compose exec llm python -c "from services.llm.gemini import DEFAULT_MODEL
 
 Офлайновые тесты проверяют отсутствие `google_search` по умолчанию,
 запрет передачи приватной памяти, отдельную маркировку источников,
-разрешение поиска, ошибки квоты и резервный маршрут через Qwen.
+разрешение поиска, ошибки квоты и резервный маршрут через Gemini.
 Они не заменяют проверку Docker-развёртывания и реального Gemini API.
+
+## Архитектура локальной памяти и очистки
+
+Подробности и тестовые сценарии: [JARVIS v11](JARVIS_MEMORY_FIRST_v11_ru.md).
