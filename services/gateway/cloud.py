@@ -9,6 +9,7 @@ import re
 PRIVATE = [
     r"(?iu)\b(?:мой|моя|моё|мои|моего|моем|меня|наша|наши|наш|"
     r"твой|твоя|твоё|тебя|мої|мій|моя|наш|наша|мене|мені)\b",
+    r"(?iu)\b(?:я|мы|нас|нам|свой|своя|своё|свои|свого|нашому)\b",
     r"(?iu)\b(?:дим\w*|дмитр\w*|над\w*|надежд\w*|наді\w*|наскулил\w*|мелк\w*|игнат\w*)\b",
     r"(?iu)\b(?:home\s*assistant|ha\s*api|домашн\w*\s+"
     r"(?:сет\w*|устройств\w*|автоматизац\w*)|"
@@ -51,3 +52,28 @@ def model_abstained(text):
         r"\bнужн\w*\s+(?:проверить|внешние\s+источники)\b)",
         text,
     ))
+
+
+def public_information_request(text: str, intent: str = "") -> bool:
+    """Conservative standalone public-knowledge request, not arbitrary dialogue.
+
+    The intent classifier may see a spoken question without punctuation.
+    A positive public-question shape is still required before cloud routing.
+    """
+    if not public_only(text):
+        return False
+    phrase = text.strip()
+    if recipe_request(phrase):
+        return True
+    return bool(re.match(
+        r"(?iu)^(?:"
+        r"что\s+(?:такое|означает|будет|произойд[её]т|делать\s+если)\b|"
+        r"кто\s+(?:такой|такая|такие|был|была|есть)\b|"
+        r"как\s+(?:сделать|устроен|работает|готовить|приготовить|"
+        r"устроена|появил|возник|научиться|выбрать|правильно|можно)\b|"
+        r"почему\b|зачем\b|когда\b|где\b|сколько\b|"
+        r"каков\b|какой\b|какая\b|какие\b|можно\s+ли\b|"
+        r"объясни\b|расскажи\b|подскажи\s+(?:как|почему|что)\b|"
+        r"what\b|why\b|how\b|when\b|where\b|who\b|"
+        r"що\s+таке\b|чому\b|як\b|коли\b"
+        r")", phrase))
