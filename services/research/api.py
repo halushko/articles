@@ -589,11 +589,24 @@ def research_session_grade(sid: str,req: SessionGradeIn):
         raise HTTPException(422,str(error))
 
 @app.get("/research/sessions/{sid}/export")
-def research_session_export(sid: str):
+def research_session_export(sid: str, last: int = 0):
+    if not 0 <= last <= 500:
+        raise HTTPException(422,"Последние сообщения: 0 (все) или 1–500")
     try:
         data=sessions.read(sid)
     except ValueError as error:
         raise HTTPException(404,str(error))
+    if last:
+        # A compact diagnostic export is not the destructive clear operation.
+        # Do not accidentally append thousands of old standalone events.
+        recent=data["turns"][-last:]
+        ids={turn["id"] for turn in recent}
+        start=recent[0]["created_at"] if recent else None
+        data={**data,"turns":recent,
+              "events":[event for event in data["events"]
+                        if event["turn_id"] in ids or
+                        (event["turn_id"] is None and start is not None
+                         and event["created_at"] >= start)]}
     return {"markdown":markdown(data),"session":data}
 
 @app.post("/research/web/search")
