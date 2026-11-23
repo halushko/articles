@@ -5,7 +5,7 @@ operations can run, checks prerequisites and never fabricates facts.
 Search approval and execution state live in Research's SQLite.
 """
 from .evidence import (cited_synthesis, excerpt_answer, query_eligible,
-                       reliable_pages, summarize_memory)
+                       reliable_pages, summarize_memory, sufficient_memory)
 
 
 def reply(answer, route, **more):
@@ -136,6 +136,8 @@ async def run_plan(req, context, plan, call):
     knowledge = [item for item in context.get("knowledge", [])
                  if item.get("verified")]
     memory_answer = summarize_memory(knowledge)
+    memory_complete = (plan.get("intent") == "recall"
+                       or sufficient_memory(req["text"], knowledge))
     trace, completed = [], set()
     web_result = None
 
@@ -219,7 +221,7 @@ async def run_plan(req, context, plan, call):
                 web_result["plan"] = plan
                 web_result["execution_trace"] = trace
                 return web_result
-            if memory_answer:
+            if memory_answer and memory_complete:
                 return reply(memory_answer, "core_confirmed_memory",
                              evidence_source="confirmed_sqlite", plan=plan,
                              execution_trace=trace)
@@ -231,7 +233,7 @@ async def run_plan(req, context, plan, call):
         web_result["plan"] = plan
         web_result["execution_trace"] = trace
         return web_result
-    if memory_answer:
+    if memory_answer and memory_complete:
         return reply(memory_answer, "core_confirmed_memory",
                      evidence_source="confirmed_sqlite", plan=plan,
                      execution_trace=trace)
@@ -241,8 +243,9 @@ async def run_plan(req, context, plan, call):
     if plan.get("intent") in ("question", "research"):
         mode = req.get("web_mode")
         if mode == "off":
-            return reply("Подтверждённых сведений недостаточно. "
-                         "Разреши исследование или уточни вопрос.",
+            return reply((memory_answer + "\n\n" if memory_answer else "") +
+                         "Эти сведения не покрывают весь вопрос. "
+                         "Разреши исследование или уточни недостающие данные.",
                          "core_research_disabled", plan=plan,
                          execution_trace=trace)
         query = req["text"]
