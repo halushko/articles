@@ -206,7 +206,7 @@ def plan(previous_turns, request):
         "subject":resolved[:240],
         "explicit_search":wants_search,
         "search_query":resolved[:240] if wants_search and status=="ready" else "",
-        "context_used":bool(reused and wants_search),
+        "context_used":bool(reused and addressed),
         "status":status,
         "source":"user_turns_session_actor",
         "history_turns_examined":min(len(previous_turns),12),
