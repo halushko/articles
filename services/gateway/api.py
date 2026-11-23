@@ -539,7 +539,9 @@ async def execute_approved_search(data: ChatIn, permission: dict, start: float):
                 "operation_state":started,"approval_id":op_id,
                 "tokens":0,"executed":False}
     try:
-        result=await answer_from_public_search(data,permission["question"],{},
+        # The user-approved query is the resolved task, not an abbreviated
+        # utterance that may omit the subject (e.g. "классический рецепт").
+        result=await answer_from_public_search(data,permission["query"],{},
                                                permission["query"],start)
     except Exception as error:
         # Explicitly record executor errors; never let a pending job silently
@@ -835,9 +837,16 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Route explicit requests to a real, allowlisted tool before Qwen.
     # Never require Qwen to infer that "найди в интернете" needs a search.
     intent_info=memory.get("utterance_intent") or {}
-    candidate=proposed_web_query(text,{})
-    wanted_direct=contextual_search_query(text,candidate,memory)
-    if candidate and not wanted_direct:
+    task=memory.get("task_context") or {}
+    # The research service derives this focus from this actor's prior USER
+    # requests, not from model prose. Explicit subjectless followups can
+    # now reuse that subject before tool authorization and the search call.
+    task_search=bool(task.get("explicit_search"))
+    candidate=(str(task.get("search_query") or "") if task_search
+               else proposed_web_query(text,{}))
+    wanted_direct=(candidate[:240] if task_search else
+                   contextual_search_query(text,candidate,memory))
+    if (task_search or candidate) and not wanted_direct:
         return {"answer":"Что именно искать? В текущем разговоре нет "
                          "однозначной темы для поиска.",
                 "route":"world_search_clarification","model":"SQLite",
@@ -875,7 +884,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             found["utterance_intent"]=intent_info
             return found
         if data.web_mode=="auto":
-            found=await answer_from_public_search(data,text,memory,wanted_direct,start)
+            found=await answer_from_public_search(data,wanted_direct,memory,wanted_direct,start)
             found["utterance_intent"]=intent_info
             return found
         if data.session_id:
@@ -1054,7 +1063,7 @@ async def apprentice_chat(data: ChatIn, start: float):
     if wanted and not public_only(text, wanted):
         return await gemini_public_answer(data,text,wanted,start)
     if wanted and data.web_mode=="auto":
-        result=await answer_from_public_search(data,text,memory,wanted,start)
+        result=await answer_from_public_search(data,wanted,memory,wanted,start)
         result["planner_model"]=parsed.get("model")
         result["planner_tokens"]=parsed.get("tokens",0)
         result["tokens"]=int(result.get("tokens") or 0)+int(parsed.get("tokens") or 0)
