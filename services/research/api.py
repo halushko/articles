@@ -12,6 +12,7 @@ from .settings import load
 from .normalize import parse_command
 from .embedding import embed
 from .sessions import ConversationStore, markdown
+from .findings import ResearchFindings
 from .review_voice import VoiceReviews
 from .approvals import OperationApprovals
 from .dialogue import DialogueCoordinator
@@ -31,13 +32,15 @@ actors: ActorRegistry | None = None
 behavior: BehaviorMemory | None = None
 dialogue: DialogueCoordinator | None = None
 world: WorldMemory | None = None
+findings: ResearchFindings | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors, behavior, dialogue, world
+    global engine, apprentice, sessions, web_research, voice_reviews, operation_approvals, actors, behavior, dialogue, world, findings
     engine = Engine(os.getenv("DATABASE_PATH", "/data/research.sqlite3"), load())
     apprentice = ApprenticeMemory(engine)
     sessions = ConversationStore(engine)
+    findings = ResearchFindings(engine)
     voice_reviews = VoiceReviews(engine,apprentice,sessions)
     behavior = BehaviorMemory(engine)
     operation_approvals = OperationApprovals(engine,sessions,behavior)
@@ -534,11 +537,42 @@ def research_session_turn(sid: str, req: SessionTurnIn):
                                   actor_id=req.actor_id)
         dialogue.record(sid,result["turn_id"],req.actor_id,req.question,
                         req.answer,req.result)
+        # Successful public searches are reusable experience, not world facts.
+        findings.remember(sid,req.actor_id,req.question,req.answer,req.result)
         if speaker:
             actors.record_turn_speaker(sid,req.actor_id)
         return result
     except ValueError as error:
         raise HTTPException(404,str(error))
+
+class SessionClearIn(BaseModel):
+    confirm: bool = Field(default=False)
+
+
+@app.post("/research/sessions/{sid}/clear")
+def research_session_clear(sid: str, req: SessionClearIn):
+    if req.confirm is not True:
+        raise HTTPException(422, "Для очистки нужен confirm=true")
+    try:
+        return sessions.clear(sid)
+    except ValueError as error:
+        raise HTTPException(404, str(error))
+
+
+class FindingRecallIn(BaseModel):
+    query: str = Field(min_length=2, max_length=1200)
+    session_id: str = Field(default="", max_length=60)
+    actor_id: str = Field(default="", max_length=36)
+
+
+@app.post("/research/findings/recall")
+def research_finding_recall(req: FindingRecallIn):
+    # Unlike confirmed graph facts, these are explicitly unverified
+    # public-web excerpts / answers, returned with original sources.
+    if req.actor_id and not actors.find(req.actor_id):
+        raise HTTPException(422, "Неизвестный профиль пользователя")
+    return findings.recall(req.query, req.session_id, req.actor_id)
+
 
 @app.post("/research/sessions/{sid}/events")
 def research_session_event(sid: str,req: SessionEventIn):
