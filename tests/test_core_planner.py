@@ -7,7 +7,7 @@ from services.core.planner import catalog, validate
 CAPS = [
     {"name": "knowledge.lookup", "status": "available", "executor": "research.context"},
     {"name": "knowledge.propose", "status": "available", "executor": "research.propose"},
-    {"name": "web.search", "status": "available", "executor": "research.web.search"},
+    {"name": "web.search", "status": "available", "executor": "search.search"},
     {"name": "external.action", "status": "unavailable", "executor": None},
 ]
 
