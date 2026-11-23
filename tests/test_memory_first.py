@@ -74,6 +74,24 @@ class FindingPersistenceTests(unittest.TestCase):
         self.assertTrue(self.findings.recall("дай рецепт котлет",self.two)["found"])
         self.assertFalse(self.findings.recall("дай рецепт котлет",self.one)["found"])
 
+    def test_legacy_search_turns_are_backfilled_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine=Engine(str(Path(tmp)/"legacy.sqlite3"),load())
+            sessions=ConversationStore(engine)
+            sid=sessions.create()["id"]
+            result=web_result()
+            sessions.save_turn(sid,"Поищи в интернете рецепт котлет",RECIPE,
+                "apprentice","fast","combined","ask",result,self.actor)
+            cache=ResearchFindings(engine)
+            found=cache.recall("дай рецепт котлет",actor_id=self.actor)
+            self.assertTrue(found["found"])
+            self.assertEqual(found["answer"],RECIPE)
+            # Reboot does not double-import one journal turn.
+            cache=ResearchFindings(engine)
+            with engine.connect() as con:
+                self.assertEqual(con.execute(
+                    "SELECT COUNT(*) FROM research_findings").fetchone()[0],1)
+
     def test_only_real_search_with_provenance_is_stored(self):
         fake = {**web_result(), "route": "gemini_general"}
         self.assertFalse(self.findings.remember(self.one,self.actor,
