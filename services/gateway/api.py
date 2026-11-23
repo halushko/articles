@@ -744,6 +744,7 @@ async def apprentice_chat(data: ChatIn, start: float):
                       f"«{approval['query']}». Поиск ещё не запущен. "
                       "Скажи «Разрешаю поиск» или нажми «Разрешить этот поиск»."),
                     "route":"apprentice_web_permission","web_approval":approval,
+                    "search_status":"approval_needed",
                     "requested_action":"web.search",
                     "utterance_intent":intent_info,"model":"SQLite",
                     "tokens":0,"executed":False,
