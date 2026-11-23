@@ -71,6 +71,17 @@ def output_summary(endpoint, data):
             k: str(v)[:80] for k, v in (data.get("identity") or {}).items()
             if k in ("user", "assistant") and isinstance(v, str)
         }
+        task = data.get("task_context") or {}
+        if isinstance(task, dict) and task:
+            out["task_resolution"] = {
+                "status": str(task.get("status") or "")[:40],
+                "explicit_search": bool(task.get("explicit_search")),
+                "context_used": bool(task.get("context_used")),
+                "subject_chars": len(str(task.get("subject") or "")),
+                "query_chars": len(str(task.get("search_query") or "")),
+                "history_turns_examined": int(task.get("history_turns_examined") or 0),
+                "source": str(task.get("source") or "")[:60]
+            }
         out["knowledge_items"] = _count(data.get("knowledge"))
         out["graph_items"] = _count(data.get("graph"))
         out["feedback_items"] = _count(data.get("teacher_feedback"))
