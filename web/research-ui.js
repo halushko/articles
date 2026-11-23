@@ -194,9 +194,38 @@ window.JarvisResearchUI = (() => {
     await list();
   }
 
+  async function clearCurrentSession() {
+    if (client.isBusy() || !current) return;
+    const yes = window.confirm(
+      'Удалить ВСЕ сообщения, оценки, события и трассировки из текущего диалога? '+
+      'Это нельзя отменить. Подтверждённые знания и публичные находки '+
+      'именованных пользователей сохраняются.'
+    );
+    if (!yes) return;
+    const button = $('session-clear');
+    button.disabled = true;
+    try {
+      const result = await client.api(
+        '/api/sessions/' + encodeURIComponent(current) + '/clear',
+        {method:'POST',body:JSON.stringify({confirm:true})});
+      await load(current);
+      await list();
+      if ($('message')) $('message').value = '';
+      if ($('google-question')) $('google-question').value = '';
+      if ($('google-paste')) $('google-paste').value = '';
+      alertStatus('Диалог очищен · удалено '+result.turns_deleted+
+                  ' ответов и '+result.events_deleted+
+                  ' событий. Подтверждённые знания сохранены.');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function download(format) {
     const id = await ensure();
-    const url = `/api/sessions/${encodeURIComponent(id)}/export?format=${format}`;
+    const last = format === 'md' ? 10 : 0;
+    const url = `/api/sessions/${encodeURIComponent(id)}/export?format=${format}`+
+                (last ? `&last=${last}` : '');
     const headers = {};
     if ($('token').value) headers['X-Jarvis-Token'] = $('token').value;
     const res = await fetch(url,{headers,cache:'no-store'});
@@ -205,7 +234,7 @@ window.JarvisResearchUI = (() => {
     const tempURL = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = tempURL;
-    anchor.download = `jarvis-${id}.${format}`;
+    anchor.download = `jarvis-${id}${last ? '-last-'+last : ''}.${format}`;
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
@@ -290,6 +319,10 @@ window.JarvisResearchUI = (() => {
     $('session-new').onclick = async () => {
       try { await newSession(); }
       catch(error) { alertStatus('Ошибка создания: '+error.message); }
+    };
+    $('session-clear').onclick = async () => {
+      try { await clearCurrentSession(); }
+      catch(error) { alertStatus('Ошибка очистки диалога: '+error.message); }
     };
     $('session-select').onchange = async event => {
       if (client.isBusy()) return;
