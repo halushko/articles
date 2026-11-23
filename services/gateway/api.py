@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 import httpx
 from .grounding import (response_from_records, looks_like_loop,
                         claims_unobserved_search)
+from .cloud import public_only, recipe_request, model_abstained
 from .tracing import (ChatTrace, CURRENT_TRACE, input_summary,
                       output_summary, trace_forward_endpoint)
 
@@ -583,6 +584,38 @@ async def answer_from_public_search(data: ChatIn, text: str,
     return grounded
 
 
+def gemini_enabled():
+    return os.getenv("GEMINI_ENABLED", "false").lower() in ("true", "1", "yes")
+
+
+async def gemini_public_answer(data: ChatIn, text: str, question: str, start: float):
+    """Send only a short public question; no actor, memories, HA or history."""
+    if not public_only(text, question):
+        return {"answer": ("В запросе могут быть личные данные. Я не передал "
+                           "их в Gemini. Сформулируй обезличенный публичный вопрос."),
+                "route": "gemini_private_data_blocked", "model": "SQLite",
+                "tokens": 0, "executed": False, "search_executed": False,
+                "total_ms": round((time.perf_counter()-start)*1000, 2)}
+    progress(data.request_id, "web_fetch", "Gemini: Google Search Grounding")
+    try:
+        result = await forward(LLM_URL+"/gemini-answer", "POST",
+                               {"question": question[:240], "search": True})
+    except HTTPException as error:
+        return {"answer": ("Не удалось обратиться к Gemini. Поиск не подтверждён. "
+                           "Проверь GEMINI_API_KEY, GEMINI_MODEL и квоты API. "
+                           f"Код ошибки сервиса: {error.status_code}."),
+                "route": "gemini_unavailable", "model": "Gemini",
+                "search_status": "error", "search_executed": False,
+                "tokens": 0, "executed": False,
+                "total_ms": round((time.perf_counter()-start)*1000, 2)}
+    result.update({"web_requested": True, "search_query": question[:240],
+                   "tool_trace": {"tool": "gemini.google_search",
+                                  "status": result.get("search_status"),
+                                  "source_count": len(result.get("sources") or [])},
+                   "total_ms": round((time.perf_counter()-start)*1000, 2)})
+    return result
+
+
 async def apprentice_chat(data: ChatIn, start: float):
     # Tool permissions are checked before any model call or memory teaching.
     # A previous request is bound to this session + exact query, consumed once.
@@ -682,8 +715,7 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Route explicit requests to a real, allowlisted tool before Qwen.
     # Never require Qwen to infer that "найди в интернете" needs a search.
     intent_info=memory.get("utterance_intent") or {}
-    candidate=(proposed_web_query(text,{})
-               if intent_info.get("intent")=="command" else "")
+    candidate=proposed_web_query(text,{})
     wanted_direct=contextual_search_query(text,candidate,memory)
     if candidate and not wanted_direct:
         return {"answer":"Что именно искать? В текущем разговоре нет "
@@ -696,6 +728,10 @@ async def apprentice_chat(data: ChatIn, start: float):
             return {"answer":"Интернет отключён. Поиск не выполнялся.",
                     "route":"apprentice_web_disabled","model":"SQLite",
                     "utterance_intent":intent_info,"tokens":0,"executed":False}
+        if gemini_enabled():
+            found=await gemini_public_answer(data,text,wanted_direct,start)
+            found["utterance_intent"]=intent_info
+            return found
         if data.web_mode=="auto":
             found=await answer_from_public_search(data,text,memory,wanted_direct,start)
             found["utterance_intent"]=intent_info
@@ -759,6 +795,10 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "сервисам или устройствам. Он сохранён как непроверенный источник.")
             grounded["integrity_warning"]="Blocked unsupported external action claim"
         return grounded
+    # A recipe not already resolved by confirmed SQLite knowledge is public
+    # information. Do not generate a guessed recipe with local Qwen.
+    if (gemini_enabled() and data.web_mode != "off" and recipe_request(text)):
+        return await gemini_public_answer(data, text, text, start)
     capabilities = {item.get("name"):item.get("status")
                     for item in memory.get("capabilities",[])}
     if (requests_external_connection(text)
@@ -784,6 +824,11 @@ async def apprentice_chat(data: ChatIn, start: float):
         grounded=await forward(LLM_URL+"/grounded-chat","POST",{
             "text":text,"profile":data.profile,
             "history":data.history,"memory":memory})
+        if (gemini_enabled() and data.web_mode != "off"
+                and public_only(text)
+                and (looks_like_loop(grounded.get("answer",""))
+                     or model_abstained(grounded.get("answer","")))):
+            return await gemini_public_answer(data, text, text, start)
         if looks_like_loop(grounded.get("answer","")):
             grounded["answer"]=("Ответ языковой модели зациклился на повторениях. "
                                 "Не буду выдавать его за достоверную инструкцию. "
@@ -857,6 +902,11 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Web evidence is only looked up when policy allows it. In ask mode
     # JARVIS can propose a search but must wait for explicit user approval.
     wanted=proposed_web_query(text,parsed)
+    if wanted and data.web_mode!="off" and gemini_enabled():
+        result=await gemini_public_answer(data,text,wanted,start)
+        result["planner_model"]=parsed.get("model")
+        result["planner_tokens"]=parsed.get("tokens",0)
+        return result
     if wanted and data.web_mode=="auto":
         result=await answer_from_public_search(data,text,memory,wanted,start)
         result["planner_model"]=parsed.get("model")
