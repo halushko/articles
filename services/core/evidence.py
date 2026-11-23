@@ -57,6 +57,32 @@ def query_eligible(text, query, task=None, private_names=()):
     return True, ""
 
 
+def sufficient_memory(question, knowledge):
+    """Conservative lexical coverage of a requested fact by confirmed records.
+
+    Matching an entity name alone is NOT enough to answer a question about
+    its properties or live state. Uncertain matches lead to clarification
+    or research, not pretrained-Qwen guesswork.
+    """
+    if not knowledge:
+        return False
+    relevant = []
+    for item in knowledge:
+        if not item.get("verified"):
+            continue
+        fields = ("name", "description", "subject", "predicate", "object")
+        relevant.extend(terms(" ".join(str(item.get(k) or "") for k in fields)))
+    if not relevant:
+        return False
+    requested = terms(question)
+    if not requested:
+        return False
+    def root(word):
+        return word[:5] if len(word) >= 5 else word[:3]
+    known = {root(word) for word in relevant}
+    return all(root(word) in known for word in requested)
+
+
 def reliable_pages(sources):
     return [s for s in (sources or [])
             if isinstance(s, dict) and s.get("status") == "read"
