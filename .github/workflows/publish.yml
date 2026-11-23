@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [llm, research, gateway, searxng]
+        component: [llm, research, core, gateway, searxng]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
