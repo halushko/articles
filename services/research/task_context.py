@@ -131,8 +131,13 @@ def merge_focus(previous, current):
         return prev, True
     before=prev.split()
     after=curr.split()
-    for ni, new in enumerate(after):
-        for oi, old in enumerate(before):
+    # Inspect the most specific (rightmost) shared head first. A second
+    # clarification of "классический рецепт" must not discard "борща"
+    # merely because "классический" also appeared in the previous focus.
+    for ni in range(len(after)-1,-1,-1):
+        new=after[ni]
+        for oi in range(len(before)-1,-1,-1):
+            old=before[oi]
             if not _common(normalize(new),normalize(old)):
                 continue
             # A noun supplied after the shared head is an explicit new topic;
