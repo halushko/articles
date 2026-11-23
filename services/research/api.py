@@ -538,7 +538,8 @@ def research_session_turn(sid: str, req: SessionTurnIn):
         dialogue.record(sid,result["turn_id"],req.actor_id,req.question,
                         req.answer,req.result)
         # Successful public searches are reusable experience, not world facts.
-        findings.remember(sid,req.actor_id,req.question,req.answer,req.result)
+        findings.remember(sid,req.actor_id,req.question,req.answer,req.result,
+                          turn_id=result["turn_id"])
         if speaker:
             actors.record_turn_speaker(sid,req.actor_id)
         return result
