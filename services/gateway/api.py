@@ -745,6 +745,7 @@ async def apprentice_chat(data: ChatIn, start: float):
                       "Скажи «Разрешаю поиск» или нажми «Разрешить этот поиск»."),
                     "route":"apprentice_web_permission","web_approval":approval,
                     "search_status":"approval_needed",
+                    "proposals":[], "web_requested":True,
                     "requested_action":"web.search",
                     "utterance_intent":intent_info,"model":"SQLite",
                     "tokens":0,"executed":False,
