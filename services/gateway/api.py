@@ -35,7 +35,7 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).resolve().parents[
 
 class ChatIn(BaseModel):
     text: str = Field(min_length=1,max_length=3000)
-    experiment: str = Field(default="hybrid", pattern="^(apprentice|hybrid|research_only|llm_only)$")
+    experiment: str = Field(default="hybrid", pattern="^(apprentice|hybrid|research_only|llm_only|core)$")
     profile: str = Field(default="fast",pattern="^(fast|deep)$")
     ablation: str = Field(default="combined",pattern="^(exact|online|combined)$")
     history: list[dict] = Field(default_factory=list,max_length=14)
@@ -1214,6 +1214,14 @@ async def chat_core(data: ChatIn):
                   index_before_llm=data.experiment == "hybrid",
                   index_only=data.experiment == "research_only",
                   isolated_llm_control=data.experiment == "llm_only")
+    if data.experiment == "core":
+        progress(data.request_id,"planning","Core: планирование и проверка источников")
+        return await forward(CORE_URL+"/v1/chat","POST",{
+            "text": data.text, "actor_id": data.actor_id,
+            "session_id": data.session_id or "",
+            "web_mode": data.web_mode, "profile": data.profile,
+            "approval_id": data.approval_id,
+            "allow_web_search": data.allow_web_search})
     if data.experiment == "apprentice":
         return await apprentice_chat(data,start)
     if data.experiment != "llm_only":
