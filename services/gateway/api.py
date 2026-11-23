@@ -305,7 +305,6 @@ async def clear_session(sid: str, req: SessionClearIn):
     # Do not expose a global memory erase as a conversation cleanup.
     result=await forward(RESEARCH_URL+"/research/sessions/"+sid+"/clear",
                          "POST",{"confirm":True})
-    CHAT_PHASES.clear()  # Old live progress cards are not conversation history.
     return result
 
 @app.post("/api/sessions/{sid}/events", dependencies=[Depends(auth)])
