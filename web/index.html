@@ -100,7 +100,7 @@
     <div id="voice-status" class="voice-status" role="status" aria-live="polite" hidden></div>
     <div id="tts-status" class="voice-status" role="status" aria-live="polite"></div>
     <div class="foot-actions">
-      <button id="download-md" type="button" class="secondary">📥 Скачать диалог + трассировку .md</button>
+      <button id="download-md" type="button" class="secondary">📥 Скачать последние 10 реплик + трассировки .md</button>
       <button id="download-json" type="button" class="secondary">📦 Экспорт JSON</button>
       <button id="show-learning" type="button" class="secondary">Показать все знания</button>
       <button id="run-ab" type="button" class="secondary">A/B: чистая LLM / старый Hybrid</button>
@@ -112,8 +112,10 @@
   <aside class="sidebar">
     <section class="panel">
       <div class="panel-title"><h2>История диалогов</h2><button id="session-new" type="button" class="text-button">+ Новый</button></div>
+      <button id="session-clear" type="button" class="secondary" style="width:100%;margin:7px 0 4px">🧹 Очистить текущий диалог и трассировки</button>
       <select id="session-select" aria-label="Открыть сохранённый диалог" style="width:100%"><option>Загрузка…</option></select>
       <p id="session-status" class="explain">Сообщения, оценки и источники сохраняются в SQLite после каждого ответа.</p>
+      <p class="explain">Очистка удаляет реплики, старые трассировки и ожидающие подтверждения только в выбранном диалоге. Знания и сохранённые публичные находки пользователей остаются.</p>
     </section>
     <section class="panel">
       <div class="panel-title"><h2>✨ Google AI Mode · бесплатно</h2></div>
