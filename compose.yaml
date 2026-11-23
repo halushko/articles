@@ -69,15 +69,40 @@ services:
     volumes:
       - research_data:/data
 
+  search:
+    image: ghcr.io/halushko/articles-llm-index-search:latest
+    restart: unless-stopped
+    depends_on:
+      - searxng
+    environment:
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
+      SEARXNG_URL: http://searxng:8080
+      SEARCH_DB: /data/search.sqlite3
+    volumes:
+      - search_data:/data
+
+  gemini:
+    image: ghcr.io/halushko/articles-llm-index-gemini:latest
+    restart: unless-stopped
+    environment:
+      GEMINI_ENABLED: ${GEMINI_ENABLED:-false}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      GEMINI_TIMEOUT: ${GEMINI_TIMEOUT:-50}
+
   core:
     image: ghcr.io/halushko/articles-llm-index-core:latest
     restart: unless-stopped
     depends_on:
       - llm
       - research
+      - search
+      - gemini
     environment:
       LLM_URL: http://llm:8000
       RESEARCH_URL: http://research:8000
+      SEARCH_URL: http://search:8000
+      GEMINI_URL: http://gemini:8000
 
   gateway:
     image: ghcr.io/halushko/articles-llm-index-gateway:latest
@@ -100,3 +125,4 @@ services:
 volumes:
   ollama_models:
   research_data:
+  search_data:
