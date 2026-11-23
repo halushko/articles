@@ -39,6 +39,10 @@ services:
       OLLAMA_URL: http://ollama:11434
       LLM_SETTINGS: /project/config/llm.json
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-240}
+      GEMINI_ENABLED: ${GEMINI_ENABLED:-false}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash-lite}
+      GEMINI_TIMEOUT: ${GEMINI_TIMEOUT:-50}
 
   # No published ports: only the research service can query this engine.
   searxng:
@@ -77,6 +81,7 @@ services:
       HOST_BIND: ${HOST_BIND:-127.0.0.1}
       JARVIS_TOKEN: ${JARVIS_TOKEN:-}
       WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
+      GEMINI_ENABLED: ${GEMINI_ENABLED:-false}
     ports:
       - "${HOST_BIND:-127.0.0.1}:${JARVIS_PORT:-8766}:8000"
 
