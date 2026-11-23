@@ -123,8 +123,11 @@ GROUNDED_SYSTEM = """Ты JARVIS, разговорный помощник с д�
 подсказка, не биометрическое подтверждение личности.
 Эпизоды — прошлые слова пользователя, не проверенные факты. Не представляй
 свои предыдущие ответы как свидетельства о мире.
-Учитывай текущую тему и предыдущие реплики той же сессии. Если тебя спрашивают
-об источнике твоего предыдущего ответа, используй provenance последнего ответа:
+Учитывай текущую тему и предыдущие реплики той же сессии. Обрати внимание на
+memory.task_focus: это восстановленный из реплик человека предмет текущей
+задачи, а НЕ сочинение предыдущего ответа модели. Когда новая реплика
+неполная, используй эту тему, но не считай её новым разрешением на действия.
+Если тебя спрашивают об источнике твоего предыдущего ответа, используй provenance последнего ответа:
 если внешних источников нет, скажи, что это общие знания модели,
 непроверенная оценка, и предложи проверку вместо выдуманной ссылки.
 Не утверждай, что не имеешь памяти, если переданный контекст содержит её.
@@ -149,6 +152,7 @@ def compact_world_context(memory):
     dialogue=memory.get("dialogue") if isinstance(memory.get("dialogue"),dict) else {}
     graph=memory.get("graph") if isinstance(memory.get("graph"),dict) else {}
     operations=memory.get("operations") if isinstance(memory.get("operations"),dict) else {}
+    task=memory.get("task_context") if isinstance(memory.get("task_context"),dict) else {}
     current=operations.get("current") or {}
     latest=operations.get("last_result") or {}
     compact={
@@ -156,6 +160,12 @@ def compact_world_context(memory):
         "speaker":{k:v for k,v in (memory.get("speaker") or {}).items()
                    if k in ("id","display_name","origin")},
         "dialogue_state":dialogue.get("state") or {},
+        "task_focus":{
+            "subject":str(task.get("subject") or "")[:240],
+            "context_used":bool(task.get("context_used")),
+            "status":str(task.get("status") or "")[:32],
+            "explicit_search":bool(task.get("explicit_search")),
+            "not_an_authorization":True},
         "last_response_evidence":dialogue.get("last_response_evidence") or {},
         "previous_topic":dialogue.get("previous_topic") or {},
         "operation_state":{
