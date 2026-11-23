@@ -175,7 +175,7 @@ class GatewayGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/gemini-answer", str(calls))
         self.assertNotIn("/research/web/search", str(calls))
 
-    async def test_auto_search_uses_searxng_then_free_gemini_without_tools(self):
+    async def test_auto_search_uses_searxng_then_local_qwen(self):
         calls = []
         async def forward(url, method="GET", payload=None):
             calls.append((url, payload))
@@ -184,85 +184,88 @@ class GatewayGeminiTests(unittest.IsolatedAsyncioTestCase):
                         "utterance_intent": {"intent": "question"}, "dialogue": {}}
             if url.endswith("/research/web/search"):
                 return {"available": True, "status": "ok", "sources": EVIDENCE}
-            if url.endswith("/gemini-answer"):
-                self.assertFalse(payload["search"])
-                self.assertEqual(payload["sources"], EVIDENCE)
-                return dict(gemini.parse_response(PLAIN, False, "gemini-test", .3),
-                            route="gemini_searxng_evidence")
-            raise AssertionError(url)
+            if url.endswith("/web-answer"):
+                return {"answer": "Публичный рецепт с источником [1]",
+                        "route": "apprentice_web_evidence", "model": "qwen2.5:3b"}
+            raise AssertionError("Unnecessary cloud call: "+url)
         with patch.dict(os.environ, {"GEMINI_ENABLED": "true"}), \
              patch.object(gateway, "forward", forward):
             result = await gateway.apprentice_chat(gateway.ChatIn(
                 text="поищи в интернете рецепт котлет", experiment="apprentice",
                 web_mode="auto"), time.perf_counter())
-        self.assertEqual(result["route"], "gemini_searxng_evidence")
+        self.assertEqual(result["route"], "apprentice_web_evidence")
         self.assertTrue(result["search_executed"])
         self.assertEqual(result["search_status"], "ok")
         self.assertEqual(result["sources"][0]["url"], EVIDENCE[0]["url"])
         self.assertEqual(len(calls), 3)
-        self.assertNotIn("/web-answer", str(calls))
+        self.assertNotIn("/gemini-answer", str(calls))
 
-    async def test_public_general_question_uses_gemini_even_when_web_off(self):
+    async def test_public_general_question_uses_local_qwen_first(self):
         calls = []
         async def forward(url, method="GET", payload=None):
             calls.append((url, payload))
             if url.endswith("/apprentice/context"):
                 return {"normalized_text": "Что такое Python",
                         "utterance_intent": {"intent": "question"}, "dialogue": {}}
-            if url.endswith("/gemini-answer"):
-                self.assertEqual(payload, {"question": "Что такое Python",
-                                           "search": False})
-                return gemini.parse_response(PLAIN, False, "gemini-test", .3)
-            raise AssertionError(url)
+            if url.endswith("/research/findings/recall"):
+                return {"found": False, "reason": "no_matching_public_research"}
+            if url.endswith("/grounded-chat"):
+                return {"answer": "Python — язык программирования",
+                        "route": "world_conversation", "model": "qwen2.5:3b"}
+            if url.endswith("/research/operations/web/clear"):
+                return {"cleared": True}
+            raise AssertionError("Unexpected cloud call: "+url)
         with patch.dict(os.environ, {"GEMINI_ENABLED": "true"}), \
              patch.object(gateway, "forward", forward):
             result = await gateway.apprentice_chat(gateway.ChatIn(
                 text="Что такое Python", web_mode="off"), time.perf_counter())
-        self.assertEqual(result["route"], "gemini_general")
-        self.assertFalse(result["search_executed"])
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["route"], "world_conversation")
+        self.assertEqual(result["model"], "qwen2.5:3b")
+        self.assertNotIn("/gemini-answer", str(calls))
 
-    async def test_gemini_quota_error_falls_back_to_qwen_for_general_question(self):
+    async def test_local_qwen_abstention_uses_gemini_only_as_backup(self):
         calls = []
         async def forward(url, method="GET", payload=None):
             calls.append(url)
             if url.endswith("/apprentice/context"):
                 return {"normalized_text": "Почему небо синее",
                         "utterance_intent": {"intent": "question"}, "dialogue": {}}
-            if url.endswith("/gemini-answer"):
-                raise HTTPException(429, "Gemini: квота исчерпана (429)")
+            if url.endswith("/research/findings/recall"):
+                return {"found": False}
             if url.endswith("/grounded-chat"):
-                return {"answer": "Рассеяние Рэлея.", "model": "qwen2.5:3b",
+                return {"answer": "Не знаю, нужно проверить", "model": "qwen2.5:3b",
                         "route": "world_conversation"}
+            if url.endswith("/gemini-answer"):
+                return gemini.parse_response(PLAIN, False, "gemini-test", .3)
             raise AssertionError(url)
         with patch.dict(os.environ, {"GEMINI_ENABLED": "true"}), \
              patch.object(gateway, "forward", forward):
             result = await gateway.apprentice_chat(gateway.ChatIn(
                 text="Почему небо синее"), time.perf_counter())
-        self.assertEqual(result["answer"], "Рассеяние Рэлея.")
-        self.assertEqual(result["fallback_from"], "gemini")
-        self.assertIn("квота", result["gemini_error"])
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(result["route"], "gemini_general")
+        self.assertEqual(calls[-1].split("/")[-1], "gemini-answer")
+        self.assertEqual(len(calls), 4)
 
-    async def test_gemini_quota_error_falls_back_to_qwen_for_real_search(self):
+    async def test_local_search_abstention_uses_gemini_backup(self):
         calls = []
         async def forward(url, method="GET", payload=None):
             calls.append(url)
             if url.endswith("/research/web/search"):
                 return {"available": True, "status": "ok", "sources": EVIDENCE}
-            if url.endswith("/gemini-answer"):
-                raise HTTPException(429, "Gemini: квота исчерпана (429)")
             if url.endswith("/web-answer"):
-                return {"answer": "По источнику [1] фарш и лук.",
+                return {"answer": "Не знаю, нужно проверить.",
                         "route": "apprentice_web_evidence", "model": "qwen2.5:3b"}
+            if url.endswith("/gemini-answer"):
+                return dict(gemini.parse_response(PLAIN, False, "gemini-test", .3),
+                            route="gemini_searxng_evidence")
             raise AssertionError(url)
         with patch.dict(os.environ, {"GEMINI_ENABLED": "true"}), \
              patch.object(gateway, "forward", forward):
             result = await gateway.answer_from_public_search(
                 gateway.ChatIn(text="рецепт котлет"), "рецепт котлет", {},
                 "рецепт котлет", time.perf_counter())
-        self.assertEqual(result["route"], "apprentice_web_evidence")
-        self.assertEqual(result["fallback_from"], "gemini")
+        self.assertEqual(result["route"], "gemini_searxng_evidence")
+        self.assertEqual(result["fallback_from"], "qwen")
         self.assertEqual(result["search_status"], "ok")
         self.assertEqual(len(calls), 3)
 
