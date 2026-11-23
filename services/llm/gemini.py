@@ -85,7 +85,7 @@ def parse_response(data: dict, search: bool, model: str, elapsed: float):
         "response_complete": bool(complete),
         "executed": False, "proposals": [],
         "prompt_trace": {"origin": "gemini_public_question",
-                         "question_chars": len(answer),
+                         "answer_chars": len(answer),
                          "search_tool_requested": search,
                          "history_supplied": False,
                          "private_memory_supplied": False,
