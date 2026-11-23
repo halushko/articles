@@ -79,7 +79,7 @@ window.JarvisResearchUI = (() => {
     card.append(container);
   }
 
-  function addPermission(card, permission, originTurnId) {
+  function addPermission(card, permission, originTurnId, mode='apprentice') {
     if (!permission?.query) return;
     // Old exports contain a query but no durable approval ID. They cannot
     // authorize new tool calls. Ask for a fresh request instead.
@@ -111,7 +111,7 @@ window.JarvisResearchUI = (() => {
         const question = permission.question || lastQuestion;
         client.putMessage(question, 'user', 'Повторный вопрос · поиск разрешён учителем');
         client.setBusy(true);
-        await client.send(question, 'apprentice', {
+        await client.send(question, mode === 'core' ? 'core' : 'apprentice', {
           web_mode: 'ask', allow_web_search: true,
           approval_id: permission.id
         });
@@ -160,9 +160,9 @@ window.JarvisResearchUI = (() => {
         window.JarvisChatRenderChange?.(proposal,card,turn.id);
       }
       if (turn.provenance?.web_approval) {
-        addPermission(card, turn.provenance.web_approval, turn.id);
+        addPermission(card, turn.provenance.web_approval, turn.id, turn.experiment);
       }
-      if (turn.experiment === 'apprentice' || turn.experiment === 'hybrid') {
+      if (turn.experiment === 'apprentice' || turn.experiment === 'hybrid' || turn.experiment === 'core') {
         history.push({role:'user',content:turn.question},
                      {role:'assistant',content:turn.answer});
       }
@@ -245,8 +245,8 @@ window.JarvisResearchUI = (() => {
     lastQuestion = question;
     if (!$('google-question').value.trim()) $('google-question').value = question;
     addSources(card, response.sources);
-    if (mode === 'apprentice' && response.web_approval) {
-      addPermission(card, response.web_approval, response.turn_id);
+    if ((mode === 'apprentice' || mode === 'core') && response.web_approval) {
+      addPermission(card, response.web_approval, response.turn_id, mode);
     }
     if (response.persistence_warning) {
       const warn = document.createElement('p');
