@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 import httpx
 from .grounding import (response_from_records, looks_like_loop,
                         claims_unobserved_search)
-from .cloud import public_only, recipe_request, model_abstained
+from .cloud import public_only, recipe_request, model_abstained, public_information_request
 from .tracing import (ChatTrace, CURRENT_TRACE, input_summary,
                       output_summary, trace_forward_endpoint)
 
@@ -201,6 +201,15 @@ async def forward(url: str, method: str = "GET", payload: dict | None = None):
             trace.add("service.error",status="error",service=service,endpoint=endpoint,
                       http_status=e.response.status_code,
                       duration_ms=round((time.perf_counter()-started)*1000,2))
+        # Gemini produces deliberately sanitized errors. Preserve its diagnostic
+        # detail (quota vs missing model vs timeout) instead of inventing a 502.
+        if endpoint.endswith("/gemini-answer"):
+            try:
+                detail = str(e.response.json().get("detail") or "")[:300]
+            except (ValueError, AttributeError, TypeError):
+                detail = ""
+            raise HTTPException(e.response.status_code,
+                                detail or f"Gemini service HTTP {e.response.status_code}")
         # Propagate meaningful client mistakes without hiding a failed experiment.
         if e.response.status_code in {400,409,422}:
             raise HTTPException(e.response.status_code,e.response.text[:500])
@@ -547,6 +556,15 @@ async def execute_approved_search(data: ChatIn, permission: dict, start: float):
 
 async def answer_from_public_search(data: ChatIn, text: str,
                                     memory: dict, query: str, start: float):
+    # Never send a private query to either an external search provider or Gemini.
+    if not public_only(text, query):
+        return {"answer": "Запрос содержит возможные личные данные. "
+                          "Не отправлял их в публичный поиск. "
+                          "Сформулируй обезличенный публичный вопрос.",
+                "route": "gemini_private_data_blocked", "model": "SQLite",
+                "search_status": "blocked", "search_executed": False,
+                "sources": [], "tokens": 0, "executed": False,
+                "total_ms": round((time.perf_counter()-start)*1000, 2)}
     progress(data.request_id,"web_fetch","SearXNG: поиск и чтение публичных страниц")
     results=await forward(RESEARCH_URL+"/research/web/search","POST",{
         "query":query[:240],"session_id":data.session_id or ""})
@@ -561,15 +579,50 @@ async def answer_from_public_search(data: ChatIn, text: str,
                 "tool_trace":{"tool":"public_web.search","status":results.get("status")},
                 "proposals":[],"tokens":0,"executed":False,
                 "total_ms":round((time.perf_counter()-start)*1000,2)}
-    progress(data.request_id,"web_answer","Qwen: анализирует найденные источники")
-    grounded=await forward(LLM_URL+"/web-answer","POST",{
-        "question":text,"profile":data.profile,"sources":evidence,
-        "memory":memory,"origin":"searxng"})
+
+    # Google Search Grounding is NOT required (and returned 429 on Free Tier).
+    # SearXNG supplies real sources; Gemini synthesizes WITHOUT google_search.
+    grounded = None
+    gemini_issue = ""
+    if gemini_enabled():
+        progress(data.request_id, "web_answer", "Gemini: анализирует публичные источники SearXNG")
+        try:
+            candidate = await forward(LLM_URL+"/gemini-answer","POST",{
+                "question": text[:1200], "search": False,
+                "sources": evidence[:5]})
+            if candidate.get("response_usable", True):
+                grounded = candidate
+            else:
+                gemini_issue = "Gemini не вернул пригодный ответ"
+        except HTTPException as error:
+            gemini_issue = str(error.detail)[:300]
+    if grounded is None:
+        progress(data.request_id,"web_answer","Qwen: анализирует найденные источники")
+        try:
+            grounded=await forward(LLM_URL+"/web-answer","POST",{
+                "question":text,"profile":data.profile,"sources":evidence,
+                "memory":memory,"origin":"searxng"})
+            if gemini_issue:
+                grounded["fallback_from"]="gemini"
+                grounded["gemini_error"]=gemini_issue
+        except HTTPException as error:
+            return {"answer": ("Поиск выполнен, но ни Gemini, ни локальная "
+                               "модель не смогли обработать источники. "
+                               "Найденные ссылки сохранены в результате."),
+                    "route":"apprentice_web_analysis_failed",
+                    "model":"none","tokens":0,"executed":False,
+                    "search_query":query[:240],"search_status":"analysis_failed",
+                    "search_error":(gemini_issue+"; "+str(error.detail))[:400],
+                    "sources":[{"title":v.get("title"),"url":v.get("url"),
+                                "snippet":v.get("snippet"),"status":v.get("status")}
+                               for v in evidence[:5]],
+                    "total_ms":round((time.perf_counter()-start)*1000,2)}
     grounded.update({"sources":[{"title":v.get("title"),"url":v.get("url"),
                                    "snippet":v.get("snippet"),"status":v.get("status"),
                                    "page_text":v.get("page_text","")[:4000]}
-                                  for v in evidence],
+                                  for v in evidence[:5]],
                      "search_query":query[:240],"search_status":"ok",
+                     "search_executed":True,
                      "tool_trace":{"tool":"public_web.search",
                                    "status":"ok","pages_read":sum(
                                        x.get("status")=="read" for x in evidence)},
@@ -589,30 +642,39 @@ def gemini_enabled():
 
 
 async def gemini_public_answer(data: ChatIn, text: str, question: str, start: float):
-    """Send only a short public question; no actor, memories, HA or history."""
+    """Free Gemini generation for a short PUBLIC question; no grounding tool."""
     if not public_only(text, question):
         return {"answer": ("В запросе могут быть личные данные. Я не передал "
                            "их в Gemini. Сформулируй обезличенный публичный вопрос."),
                 "route": "gemini_private_data_blocked", "model": "SQLite",
                 "tokens": 0, "executed": False, "search_executed": False,
                 "total_ms": round((time.perf_counter()-start)*1000, 2)}
-    progress(data.request_id, "web_fetch", "Gemini: Google Search Grounding")
+    progress(data.request_id, "planning", "Gemini: публичный ответ без Google Search")
     try:
         result = await forward(LLM_URL+"/gemini-answer", "POST",
-                               {"question": question[:240], "search": True})
+                               {"question": question[:1200], "search": False})
     except HTTPException as error:
-        return {"answer": ("Не удалось обратиться к Gemini. Поиск не подтверждён. "
-                           "Проверь GEMINI_API_KEY, GEMINI_MODEL и квоты API. "
-                           f"Код ошибки сервиса: {error.status_code}."),
+        detail=str(error.detail)[:300]
+        return {"answer": "Gemini сейчас недоступен: "+detail,
                 "route": "gemini_unavailable", "model": "Gemini",
-                "search_status": "error", "search_executed": False,
+                "gemini_error": detail, "gemini_error_status": error.status_code,
+                "search_status": "not_requested", "search_executed": False,
                 "tokens": 0, "executed": False,
                 "total_ms": round((time.perf_counter()-start)*1000, 2)}
-    result.update({"web_requested": True, "search_query": question[:240],
-                   "tool_trace": {"tool": "gemini.google_search",
-                                  "status": result.get("search_status"),
-                                  "source_count": len(result.get("sources") or [])},
+    if not result.get("response_usable", True):
+        return {"answer": "Gemini не вернул пригодный ответ.",
+                "route": "gemini_unavailable", "model": "Gemini",
+                "gemini_error": "Gemini не вернул пригодный ответ",
+                "search_status": "not_requested", "search_executed": False,
+                "tokens": 0, "executed": False,
+                "total_ms": round((time.perf_counter()-start)*1000, 2)}
+    result.update({"web_requested": False,
+                   "tool_trace": {"tool": "gemini.generateContent",
+                                  "status": "ok", "google_search_used": False},
                    "total_ms": round((time.perf_counter()-start)*1000, 2)})
+    if unverified_external_activity(result.get("answer", "")):
+        result["answer"]="Gemini не выполнял внешних действий или подключений."
+        result["integrity_warning"]="Blocked unsupported external action claim"
     return result
 
 
@@ -728,7 +790,7 @@ async def apprentice_chat(data: ChatIn, start: float):
             return {"answer":"Интернет отключён. Поиск не выполнялся.",
                     "route":"apprentice_web_disabled","model":"SQLite",
                     "utterance_intent":intent_info,"tokens":0,"executed":False}
-        if gemini_enabled():
+        if not public_only(text, wanted_direct):
             found=await gemini_public_answer(data,text,wanted_direct,start)
             found["utterance_intent"]=intent_info
             return found
@@ -797,10 +859,18 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "сервисам или устройствам. Он сохранён как непроверенный источник.")
             grounded["integrity_warning"]="Blocked unsupported external action claim"
         return grounded
-    # A recipe not already resolved by confirmed SQLite knowledge is public
-    # information. Do not generate a guessed recipe with local Qwen.
-    if (gemini_enabled() and data.web_mode != "off" and recipe_request(text)):
-        return await gemini_public_answer(data, text, text, start)
+    # Gemini handles standalone public knowledge first, without paid grounding.
+    # web_mode=off disables search, not the explicitly enabled cloud LLM.
+    # Personal/contextual questions and commands stay with local Qwen + SQLite.
+    gemini_issue = ""
+    if (gemini_enabled() and public_only(text)
+            and (recipe_request(text) or
+                 public_information_request(text, intent_info.get("intent","")))):
+        candidate=await gemini_public_answer(data, text, text, start)
+        if candidate.get("route")!="gemini_unavailable":
+            candidate["utterance_intent"]=intent_info
+            return candidate
+        gemini_issue=candidate.get("gemini_error","Gemini недоступен")
     capabilities = {item.get("name"):item.get("status")
                     for item in memory.get("capabilities",[])}
     if (requests_external_connection(text)
@@ -826,11 +896,13 @@ async def apprentice_chat(data: ChatIn, start: float):
         grounded=await forward(LLM_URL+"/grounded-chat","POST",{
             "text":text,"profile":data.profile,
             "history":data.history,"memory":memory})
-        if (gemini_enabled() and data.web_mode != "off"
-                and public_only(text)
+        if (gemini_enabled() and not gemini_issue and public_only(text)
                 and (looks_like_loop(grounded.get("answer",""))
                      or model_abstained(grounded.get("answer","")))):
-            return await gemini_public_answer(data, text, text, start)
+            candidate=await gemini_public_answer(data, text, text, start)
+            if candidate.get("route")!="gemini_unavailable":
+                return candidate
+            gemini_issue=candidate.get("gemini_error","Gemini недоступен")
         if looks_like_loop(grounded.get("answer","")):
             grounded["answer"]=("Ответ языковой модели зациклился на повторениях. "
                                 "Не буду выдавать его за достоверную инструкцию. "
@@ -848,6 +920,9 @@ async def apprentice_chat(data: ChatIn, start: float):
                 "Я не выполнял внешних действий или подключений. "
                 "Для реальной операции требуется доступный серверный инструмент.")
             grounded["integrity_warning"]="Blocked unsupported external action claim"
+        if gemini_issue:
+            grounded["fallback_from"]="gemini"
+            grounded["gemini_error"]=gemini_issue
         grounded.update({
             "utterance_intent":intent_info,
             "normalized_input":text if text!=data.text else None,
@@ -904,11 +979,8 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Web evidence is only looked up when policy allows it. In ask mode
     # JARVIS can propose a search but must wait for explicit user approval.
     wanted=proposed_web_query(text,parsed)
-    if wanted and data.web_mode!="off" and gemini_enabled():
-        result=await gemini_public_answer(data,text,wanted,start)
-        result["planner_model"]=parsed.get("model")
-        result["planner_tokens"]=parsed.get("tokens",0)
-        return result
+    if wanted and not public_only(text, wanted):
+        return await gemini_public_answer(data,text,wanted,start)
     if wanted and data.web_mode=="auto":
         result=await answer_from_public_search(data,text,memory,wanted,start)
         result["planner_model"]=parsed.get("model")
