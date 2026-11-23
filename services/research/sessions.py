@@ -202,6 +202,52 @@ class ConversationStore:
                            AND title='Новый диалог'""",(question[:90],sid))
         return {"turn_id":cur.lastrowid,"session_id":sid,"saved":True}
 
+    def clear(self, sid):
+        """Forget one conversation and its traces, NOT globally learned knowledge.
+
+        This is an explicit destructive session operation. The retained
+        research_findings cache belongs to the speaker if an actor was
+        selected; anonymous session-only findings are removed with the chat.
+        """
+        with self.engine.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute("SELECT 1 FROM research_sessions WHERE id=?",
+                              (sid,)).fetchone()
+            if not row or not isinstance(sid, str) or not re.fullmatch(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    sid):
+                raise ValueError("Диалог не найден")
+            tables = {r["name"] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            # Clear side tables first, respecting foreign-key relationships.
+            # operation_executions references pending_operations.
+            side_tables = ("operation_executions", "operation_audit",
+                           "pending_operations", "voice_review_audit",
+                           "voice_review_queue", "dialogue_frames",
+                           "actor_session_history", "research_events",
+                           "research_turns")
+            counts = {}
+            for table in side_tables:
+                if table in tables:
+                    count = con.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE session_id=?",
+                        (sid,)).fetchone()[0]
+                    con.execute(f"DELETE FROM {table} WHERE session_id=?", (sid,))
+                    counts[table] = count
+            if "research_findings" in tables:
+                # Without a speaker, a finding cannot be safely used in a new
+                # session; with an actor, public findings are independent memory.
+                con.execute("""DELETE FROM research_findings
+                               WHERE actor_id='' AND session_id=?""", (sid,))
+            con.execute("""UPDATE research_sessions
+                           SET title='Новый диалог',updated_at=CURRENT_TIMESTAMP
+                           WHERE id=?""", (sid,))
+        return {"cleared": True, "session_id": sid,
+                "turns_deleted": counts.get("research_turns", 0),
+                "events_deleted": counts.get("research_events", 0),
+                "knowledge_preserved": True,
+                "actor_scoped_public_findings_preserved": True}
+
     def grade(self,sid,turn_id,rating,note=""):
         if rating not in ("good","bad"):
             raise ValueError("Некорректная оценка")
