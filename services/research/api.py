@@ -92,8 +92,15 @@ def planner_context(req: PlannerContextIn):
             "SELECT id,name,entity_type,domain,description FROM world_entities ORDER BY id DESC LIMIT 200")]
         capabilities = [dict(r) for r in con.execute(
             "SELECT name,status,description,executor FROM runtime_capabilities ORDER BY name")]
-    knowledge = [r for r in rows if words & terms(r["name"] + " " + r["description"])]
+    knowledge = [{**r, "type": "entity", "verified": True}
+                 for r in rows if words & terms(r["name"] + " " + r["description"])]
+    with engine.connect() as con:
+        facts = [dict(r) for r in con.execute(
+            "SELECT id,subject,predicate,object,domain FROM world_facts ORDER BY id DESC LIMIT 200")]
+    knowledge.extend({**r, "type": "fact", "verified": True} for r in facts
+                     if words & terms(r["subject"] + " " + r["predicate"] + " " + r["object"]))
     return {"history": history[-6:], "task": task,
+            "private_names": [r["name"] for r in rows if r["entity_type"] != "concept"][:200],
             "knowledge": knowledge[:6],
             "experiences": world.recall(req.text, req.actor_id, req.session_id, limit=3),
             "capabilities": capabilities, "executed": False}
