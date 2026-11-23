@@ -856,6 +856,7 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Source-backed findings are NOT confirmed personal facts. Never reuse
     # if this request explicitly asks to visit the internet again.
     if (not data.external_context and not memory.get("unavailable_operation")
+            and not wanted_direct
             and public_research_reuse_eligible(text, intent_info.get("intent", ""))):
         progress(data.request_id, "memory", "SQLite: ищу ранее найденные источники")
         found=await forward(RESEARCH_URL+"/research/findings/recall", "POST",{
