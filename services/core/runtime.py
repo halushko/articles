@@ -69,7 +69,7 @@ async def research_answer(req, context, query, call, approval=None):
                         "sources": pages[:3]})
                     candidate = str(answer.get("answer") or "")
                     if (answer.get("response_usable")
-                            and cited_synthesis(candidate, pages[:3])):
+                            and cited_synthesis(candidate, pages[:3], query)):
                         outcome.update(answer=candidate[:5500],
                                        route="gemini_searxng_evidence",
                                        model=answer.get("model", "Gemini"),
