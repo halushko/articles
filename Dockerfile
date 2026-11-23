@@ -12,6 +12,11 @@ COPY config/llm.json config/llm.json
 EXPOSE 8000
 CMD ["uvicorn", "services.llm.api:app", "--host", "0.0.0.0", "--port", "8000"]
 
+FROM base AS core
+COPY services/core/ services/core/
+EXPOSE 8000
+CMD ["uvicorn", "services.core.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
 FROM base AS research
 COPY services/research/ services/research/
 COPY config/research.json config/research.json
