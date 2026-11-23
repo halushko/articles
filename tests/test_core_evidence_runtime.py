@@ -39,8 +39,8 @@ class EvidencePolicyTests(unittest.TestCase):
                                         "почему котлеты с мёдом")[0])
 
     def test_fabricated_citations_and_urls_rejected(self):
-        self.assertTrue(cited_synthesis("В источнике [1] упоминаются котлеты.", [SRC]))
-        self.assertFalse(cited_synthesis("Котлеты с мёдом!", [SRC]))
+        self.assertTrue(cited_synthesis("Котлеты готовят из фарша [1]", [SRC]))
+        self.assertFalse(cited_synthesis("Котлеты с мёдом [1]", [SRC]))
         self.assertFalse(cited_synthesis("Факт [2]", [SRC]))
         self.assertFalse(cited_synthesis(
             "Факт [1] https://wrong.example/recipe", [SRC]))
