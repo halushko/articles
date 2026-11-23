@@ -962,7 +962,8 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Fast conversational cognition and structured teaching are different tasks.
     # Do not ask a 3B model to extract a full graph for an ordinary question.
     # Both paths read the SAME world/context (provenance, history, experience).
-    if intent_info.get("intent") in ("question", "unknown"):
+    if (intent_info.get("intent") in ("question", "unknown")
+            or (recipe_request(text) and public_only(text))):
         progress(data.request_id,"planning","Qwen: разговор с контекстом мира")
         grounded=await forward(LLM_URL+"/grounded-chat","POST",{
             "text":text,"profile":data.profile,
