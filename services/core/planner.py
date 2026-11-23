@@ -23,7 +23,7 @@ CONTRACTS = {
     },
     "web.search": {
         "description": "Request a public web search using the existing search approval policy.",
-        "side_effects": True, "approval": True, "executor": "research.web.search"
+        "side_effects": True, "approval": True, "executor": "search.search"
     },
 }
 INTENTS = {"question", "teaching", "action", "research", "recall", "mixed", "unclear"}
