@@ -69,11 +69,11 @@ def parse_response(data: dict, search: bool, model: str, elapsed: float):
     elif not answer:
         answer = "Gemini не вернул текстовый ответ."
     if search and sources and answer:
-        answer += "\\n\\nИсточники (Google Search Grounding):\\n" + "\\n".join(
+        answer += "\n\nИсточники (Google Search Grounding):\n" + "\n".join(
             f"[{i}] {source['title']} — {source['url']}"
             for i, source in enumerate(sources[:5], 1)
         )
-    elif not complete:
+    if not complete:
         answer += "\n\n⚠️ Ответ Gemini неполный."
     usage = data.get("usageMetadata") or {}
     return {
