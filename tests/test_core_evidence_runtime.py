@@ -109,7 +109,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_memory_is_verbatim_and_no_model_answer(self):
         self.ctx["knowledge"] = [{
             "type": "fact", "subject": "Наскулил",
-            "predicate": "модель", "object": "EcoFlow DELTA Pro"}]
+            "predicate": "модель", "object": "EcoFlow DELTA Pro", "verified": True}]
         p = plan(step("memory", "knowledge.lookup"), intent="recall")
         out = await run_plan(self.req, self.ctx, p, self.fake_call)
         self.assertEqual(out["route"], "core_confirmed_memory")
