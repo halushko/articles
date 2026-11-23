@@ -51,21 +51,24 @@ async def health():
             "models_downloaded":models, "index_access":False}
 
 class GeminiAnswerIn(BaseModel):
-    question: str = Field(min_length=1, max_length=240)
-    search: bool = True
+    question: str = Field(min_length=1, max_length=1200)
+    # Free Gemini generation is the default; Google Search Grounding needs
+    # separate model/tool quota and must be explicitly requested.
+    search: bool = False
+    sources: list[dict] = Field(default_factory=list, max_length=5)
 
 
 @app.get("/gemini/status")
 async def gemini_status():
     """Never reveal the key, only whether API calls are configured."""
     return {"configured": gemini_configured(),
-            "model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")}
+            "model": os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")}
 
 
 @app.post("/gemini-answer")
 async def gemini_answer(req: GeminiAnswerIn):
     """No conversation history, user memory or device details enter the provider."""
-    return await generate_gemini(req.question, search=req.search)
+    return await generate_gemini(req.question, search=req.search, sources=req.sources)
 
 
 @app.post("/chat")
