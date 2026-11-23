@@ -705,13 +705,22 @@ async def gemini_public_answer(data: ChatIn, text: str, question: str, start: fl
     return result
 
 
-def public_research_reuse_eligible(text: str, web_requested: str = "") -> bool:
+def public_research_reuse_eligible(text: str, intent: str = "") -> bool:
     """Read-only recall may never bypass an EXPLICIT fresh internet request.
 
     For "дай рецепт котлет" reuse previous sourced answer; for "поищи в
     интернете рецепт котлет" perform the actual permitted web search.
     """
     if not public_only(text):
+        return False
+    # Descriptions of voice commands or teaching are not knowledge questions.
+    if intent not in ("question", "unknown", "ask") and not (
+            recipe_request(text) or re.match(
+                r"(?iu)^\s*(?:найди|найдите|поищи|поищите|дай|покажи)\b", text)):
+        return False
+    if re.search(r"(?iu)\b(?:значит|означает\s+согласие|"
+                 r"подтвержден(?:ие|ия)|разрешени(?:е|я)|"
+                 r"это\s+команда)\b", text):
         return False
     if re.search(r"(?iu)\b(?:в\s+интернете|в\s+сети|вебе|"
                  r"search\s+the\s+web|on\s+the\s+web|"
@@ -839,7 +848,7 @@ async def apprentice_chat(data: ChatIn, start: float):
     # Source-backed findings are NOT confirmed personal facts. Never reuse
     # if this request explicitly asks to visit the internet again.
     if (not data.external_context and not memory.get("unavailable_operation")
-            and public_research_reuse_eligible(text, wanted_direct)):
+            and public_research_reuse_eligible(text, intent_info.get("intent", ""))):
         progress(data.request_id, "memory", "SQLite: ищу ранее найденные источники")
         found=await forward(RESEARCH_URL+"/research/findings/recall", "POST",{
             "query": text[:1200], "session_id": data.session_id or "",
