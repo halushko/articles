@@ -19,7 +19,7 @@ from services.gateway import api as gateway
 URL = "https://example.org/kotlety"
 EVIDENCE = [{"title": "Котлеты — рецепт", "url": URL,
              "snippet": "Котлеты: фарш, лук, соль.", "status": "read"}]
-RECIPE = "Проверенный на сайте [1] рецепт котлет: фарш и лук, поджарить. "
+RECIPE = "Проверенный на сайте [1] рецепт котлет: фарш и лук, поджарить."
 TWO = "Рецепт борща из публичного источника."
 
 
