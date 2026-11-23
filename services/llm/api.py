@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 import httpx
 from .settings import load
+from .gemini import generate as generate_gemini, configured as gemini_configured
 
 app = FastAPI(title="JARVIS LLM Baseline", version="0.3.2")
 
@@ -48,6 +49,24 @@ async def health():
         pass
     return {"status":"ok", "version":"0.3.2", "module":"llm", "profiles":cfg["profiles"],
             "models_downloaded":models, "index_access":False}
+
+class GeminiAnswerIn(BaseModel):
+    question: str = Field(min_length=1, max_length=240)
+    search: bool = True
+
+
+@app.get("/gemini/status")
+async def gemini_status():
+    """Never reveal the key, only whether API calls are configured."""
+    return {"configured": gemini_configured(),
+            "model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")}
+
+
+@app.post("/gemini-answer")
+async def gemini_answer(req: GeminiAnswerIn):
+    """No conversation history, user memory or device details enter the provider."""
+    return await generate_gemini(req.question, search=req.search)
+
 
 @app.post("/chat")
 async def chat(req: ChatIn):
