@@ -1,4 +1,6 @@
 import json
+import io
+import zipfile
 import os
 import random
 import sqlite3
@@ -20,6 +22,7 @@ def connect():
 def init_db():
     Path(DB).parent.mkdir(parents=True, exist_ok=True)
     with connect() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS knowledge (profile TEXT, world TEXT, model TEXT, body TEXT, PRIMARY KEY(profile,world,model))")
         for rid, body in db.execute("SELECT id,body FROM runs").fetchall():
@@ -217,7 +220,7 @@ def worker(r):
     finally:
         LOCK.release()
 
-def start(data):
+def make_run(data):
     wid = data["world"]
     profile = data.get("profile", "default")
     steps = data.get("steps", 12)
@@ -230,24 +233,78 @@ def start(data):
         raise ValueError("Invalid steps or seed")
     if type(prob) not in (float, int) or not 0 <= prob <= 1 or type(reuse) is not bool:
         raise ValueError("Invalid probability or reuse flag")
+    return {"id": uuid.uuid4().hex[:12], "created": time.time(), "model": MODEL,
+            "status": "queued", "phase": "queued",
+            "config": {"world": wid, "profile": profile, "steps": steps, "seed": seed,
+                       "event_probability": prob, "reuse": reuse},
+            "steps": [], "llm_calls": [], "knowledge": ""}
+
+def batch_worker(runs):
+    try:
+        for r in runs:
+            run_experiment(r)
+    finally:
+        LOCK.release()
+
+def start_batch(data):
+    configs = data["experiments"]
+    if not isinstance(configs, list) or not 1 <= len(configs) <= 100:
+        raise ValueError("Expected 1–100 experiments")
+    runs = [make_run(c) for c in configs]
     if not LOCK.acquire(blocking=False):
         raise ValueError("An experiment is already running")
     try:
-        r = {"id": uuid.uuid4().hex[:12], "created": time.time(), "model": MODEL,
-             "status": "queued", "phase": "queued",
-             "config": {"world": wid, "profile": profile, "steps": steps, "seed": seed,
-                        "event_probability": prob, "reuse": reuse},
-             "steps": [], "llm_calls": [], "knowledge": ""}
-        save(r)
-        threading.Thread(target=worker, args=(r,), daemon=True).start()
-        return {"id": r["id"]}
+        bid = uuid.uuid4().hex[:12]
+        with connect() as db:
+            db.execute("INSERT INTO batches VALUES (?,?)", (bid, json.dumps({"id": bid, "created": time.time(), "runs": [r["id"] for r in runs]})))
+            db.executemany("INSERT INTO runs VALUES (?,?)", [(r["id"], json.dumps(r)) for r in runs])
+        threading.Thread(target=batch_worker, args=(runs,), daemon=True).start()
+        return {"id": bid, "runs": [r["id"] for r in runs]}
     except Exception:
         LOCK.release()
         raise
 
+def start(data):
+    return {"id": start_batch({"experiments": [data]})["runs"][0]}
+
+def get_batch(bid):
+    with connect() as db:
+        row = db.execute("SELECT body FROM batches WHERE id=?", (bid,)).fetchone()
+    if row is None:
+        raise ValueError("Unknown batch")
+    b = json.loads(row[0])
+    runs = [get_run(rid) for rid in b["runs"]]
+    b["experiments"] = [{"id": r["id"], "config": r["config"], "status": r["status"],
+                         "phase": r["phase"], "completed_steps": len(r["steps"]),
+                         "baseline": r.get("baseline"), "evaluation": r.get("evaluation"),
+                         "online_correct": sum(s["correct"] for s in r["steps"]),
+                         "error": r.get("error")} for r in runs]
+    b["complete"] = all(r["status"] not in ("queued", "running") for r in runs)
+    return b
+
+def batch_zip(bid):
+    b = get_batch(bid)
+    if not b["complete"]:
+        raise ValueError("Batch is not finished")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", json.dumps(b, ensure_ascii=False, indent=2))
+        for i, rid in enumerate(b["runs"], 1):
+            z.writestr(f"{i:03d}-{rid}.json", json.dumps(get_run(rid), ensure_ascii=False, indent=2))
+    return "application/zip", out.getvalue()
+
 def dispatch(method, path, data):
     if method == "GET" and path == "/":
         return "text/html", PAGE
+    if method == "POST" and path == "/api/batches":
+        return start_batch(data)
+    if method == "GET" and path == "/api/batches":
+        with connect() as db:
+            ids = [x[0] for x in db.execute("SELECT id FROM batches ORDER BY rowid DESC")]
+        return {"batches": [get_batch(bid) for bid in ids]}
+    if method == "GET" and path.startswith("/api/batches/"):
+        parts = path.split("/")
+        return batch_zip(parts[3]) if len(parts) == 5 and parts[4] == "zip" else get_batch(parts[3])
     if method == "GET" and path == "/api/worlds":
         return post(WORLD, "/catalog", {})
     if method == "POST" and path == "/api/runs":
@@ -273,6 +330,7 @@ PAGE = """<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewp
 <label>Вероятность события<input id="prob" type="number" value="0.25" min="0" max="1" step="0.01" required></label>
 <label>Память<select id="reuse"><option value="false">Чистый старт</option><option value="true">Использовать знания</option></select></label>
 <button id="start">Запустить</button></form><p id="error"></p></section>
+<section><h2>Очередь экспериментов</h2><button id="add">+ Experiment</button> <button id="batchStart">Run batch</button><div id="queue"></div><h2>История серий</h2><div id="batches"></div></section>
 <section><h2>История запусков</h2><select id="runs"></select> <a id="export" hidden>JSON отчёт</a></section>
 <section><h2 id="status">Нет выбранного запуска</h2><div class="metrics"><div>До обучения<b id="baseline">—</b></div><div>После опыта<b id="evaluation">—</b></div><div>Прогнозы на шагах<b id="online">—</b></div></div>
 <h2>Текущие знания модели</h2><pre id="knowledge">—</pre><h2>Наблюдения</h2><div style="overflow:auto"><table><thead><tr><th>Шаг</th><th>До</th><th>Вход</th><th>Прогноз</th><th>Факт</th></tr></thead><tbody id="rows"></tbody></table></div>
@@ -281,10 +339,17 @@ PAGE = """<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewp
 const $=id=>document.getElementById(id);let selected='',polling=false;
 async function api(path,body){const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw Error(j.error||r.status);return j}
 function opt(value,label){const o=document.createElement('option');o.value=value;o.textContent=label;return o}
+let queue=[];
+function config(){return {world:$('world').value,profile:$('profile').value,steps:Number($('steps').value),seed:Number($('seed').value),event_probability:Number($('prob').value),reuse:$('reuse').value==='true'}}
+function drawQueue(){ $('queue').replaceChildren(...queue.map((c,i)=>{const p=document.createElement('p');p.textContent=(i+1)+'. '+JSON.stringify(c)+' ';for(const [label,fn] of [['↑',()=>{if(i>0)[queue[i-1],queue[i]]=[queue[i],queue[i-1]]}],['↓',()=>{if(i+1<queue.length)[queue[i+1],queue[i]]=[queue[i],queue[i+1]]}],['Duplicate',()=>queue.splice(i+1,0,{...c})],['×',()=>queue.splice(i,1)]]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>{fn();drawQueue()};p.append(b)}return p}));}
+$('add').onclick=()=>{if($('form').reportValidity()){queue.push(config());drawQueue()}};
+$('batchStart').onclick=async()=>{if(!queue.length)return; $('batchStart').disabled=true;try{const b=await api('/api/batches',{experiments:queue});queue=[];drawQueue();selected=b.runs[0];await refresh()}catch(e){$('error').textContent=e.message;$('batchStart').disabled=false}};
+async function refreshBatches(){const {batches}=await api('/api/batches');$('batches').replaceChildren(...batches.map(b=>{const p=document.createElement('div');const title=document.createElement('p');title.textContent=b.id+' · '+b.experiments.filter(r=>!['queued','running'].includes(r.status)).length+'/'+b.experiments.length;p.append(title);for(const r of b.experiments){const line=document.createElement('p');const link=document.createElement('button');link.textContent=r.config.profile+' · seed '+r.config.seed+' · '+r.status+' · '+r.completed_steps+'/'+r.config.steps;link.onclick=()=>{selected=r.id;refresh()};line.append(link);p.append(line)}if(b.complete){const a=document.createElement('a');a.href='/api/batches/'+b.id+'/zip';a.download=b.id+'.zip';a.textContent='Download ZIP';p.append(a)}return p}));}
 function score(x){return x?x.correct+'/'+x.total:'—'}
 async function refresh(){if(polling)return;polling=true;try{
 const {runs}=await api('/api/runs');$('runs').replaceChildren(...runs.map(r=>opt(r.id,r.id+' · '+r.config.world+' · '+r.status)));
 $('start').disabled=runs.some(r=>['queued','running'].includes(r.status));
+ $('batchStart').disabled=$('start').disabled;await refreshBatches();
 if(!selected&&runs.length)selected=runs[0].id;if(!selected)return;$('runs').value=selected;
 const r=await api('/api/runs/'+selected);$('status').textContent=r.status+' / '+r.phase+' · '+r.model+' · '+r.steps.length+'/'+r.config.steps+(r.error?' — '+r.error:'');
 $('baseline').textContent=score(r.baseline);$('evaluation').textContent=score(r.evaluation);$('online').textContent=r.steps.filter(s=>s.correct).length+'/'+r.steps.length;

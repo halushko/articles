@@ -32,7 +32,7 @@ def serve(dispatch, port=8000):
                 result = dispatch(self.command, url.path, data)
                 if isinstance(result, tuple):
                     content_type, body = result
-                    body = body.encode()
+                    body = body.encode() if isinstance(body, str) else body
                 else:
                     content_type, body = "application/json", json.dumps(result, ensure_ascii=False).encode()
                 status = 200
