@@ -1,0 +1,45 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - models:/root/.ollama
+    networks: [model_net]
+  agent:
+    build:
+      context: .
+      args: {SERVICE: agent}
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      MODEL: ${MODEL:-qwen3:4b}
+    networks: [model_net, agent_net]
+    depends_on: [ollama]
+  world:
+    build:
+      context: .
+      args: {SERVICE: world}
+    volumes:
+      - ./worlds:/worlds:ro
+    networks: [world_net]
+  laboratory:
+    build:
+      context: .
+      args: {SERVICE: laboratory}
+    environment:
+      WORLD_URL: http://world:8000
+      AGENT_URL: http://agent:8000
+      DB_PATH: /data/lab.sqlite3
+      MODEL: ${MODEL:-qwen3:4b}
+    volumes:
+      - experience:/data
+    ports:
+      - "127.0.0.1:8765:8000"
+    networks: [world_net, agent_net, ui_net]
+    depends_on: [agent, world]
+networks:
+  model_net: {}
+  agent_net: {internal: true}
+  world_net: {internal: true}
+  ui_net: {}
+volumes:
+  models:
+  experience:
