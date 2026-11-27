@@ -1,13 +1,22 @@
 import json
 import urllib.request
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 def post(base, path, data, timeout=600):
     req = urllib.request.Request(base + path, data=json.dumps(data).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(detail).get("error", detail)
+        except (ValueError, AttributeError):
+            pass
+        raise RuntimeError(f"{base}{path}: HTTP {exc.code}: {detail}") from exc
 
 def serve(dispatch, port=8000):
     class Handler(BaseHTTPRequestHandler):

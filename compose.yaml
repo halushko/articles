@@ -4,6 +4,25 @@ services:
     volumes:
       - models:/root/.ollama
     networks: [model_net]
+  model-init:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODEL: ${MODEL:-qwen3:4b}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for i in $(seq 1 120); do
+          if ollama list >/dev/null 2>&1; then
+            ollama show "$MODEL" >/dev/null 2>&1 || ollama pull "$MODEL"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "Ollama not ready" >&2
+        exit 1
+    networks: [model_net]
+    depends_on: [ollama]
   agent:
     build:
       context: .
@@ -12,11 +31,15 @@ services:
       OLLAMA_URL: http://ollama:11434
       MODEL: ${MODEL:-qwen3:4b}
     networks: [model_net, agent_net]
-    depends_on: [ollama]
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
   world:
     build:
       context: .
       args: {SERVICE: world}
+    environment:
+      WORLDS_DIR: /worlds
     volumes:
       - ./worlds:/worlds:ro
     networks: [world_net]

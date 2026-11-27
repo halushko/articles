@@ -53,12 +53,79 @@ def save_knowledge(profile, world, knowledge):
 def world(path, world_id, **data):
     return post(WORLD, path, {"world": world_id, **data})
 
+def object_schema(properties):
+    return {"type": "object", "properties": properties,
+            "required": list(properties), "additionalProperties": False}
+
+def response_schema(interface, data):
+    output = {"type": "integer", "enum": interface["values"]}
+    knowledge = {"type": "string", "maxLength": 2400}
+    if "cases" in data:
+        return object_schema({"predictions": object_schema({
+            str(c["id"]): output for c in data["cases"]})})
+    if "y" in data:
+        allowed = ([data["announced_event"]] if data["announced_event"] is not None
+                   else interface[data["kind"]])
+        return object_schema({"knowledge": knowledge,
+                              "input": {"type": "string", "enum": allowed},
+                              "prediction": output})
+    return object_schema({"knowledge": knowledge})
+
+def validate_answer(value, schema, path="answer"):
+    kind = schema["type"]
+    if kind == "object":
+        if not isinstance(value, dict):
+            raise ValueError(path + " must be an object")
+        expected = set(schema["required"])
+        if set(value) != expected:
+            raise ValueError(f"{path}: missing {sorted(expected-set(value))}, unexpected {sorted(set(value)-expected)}")
+        for key, child in schema["properties"].items():
+            validate_answer(value[key], child, path + "." + key)
+    elif kind == "integer" and type(value) is not int:
+        raise ValueError(path + " must be an integer")
+    elif kind == "string" and not isinstance(value, str):
+        raise ValueError(path + " must be a string")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(path + " is outside allowed values")
+    if "maxLength" in schema and len(value) > schema["maxLength"]:
+        raise ValueError(path + " exceeds maximum length")
+
 def ask(r, task, **data):
-    prompt = json.dumps({"task": task, "interface": r["interface"], **data}, ensure_ascii=False)
-    result = post(AGENT, "/ask", {"prompt": prompt, "seed": r["config"]["seed"]})
-    r["llm_calls"].append({"task": task, "model": result.get("model"),
-                           "tokens": result.get("tokens"), "prompt_tokens": result.get("prompt_tokens")})
-    return result["answer"]
+    schema = response_schema(r["interface"], data)
+    payload = {"task": task, "interface": r["interface"], **data}
+    error = None
+    for attempt in range(1, 4):
+        prompt = json.dumps(payload, ensure_ascii=False)
+        request = {"prompt": prompt, "seed": (r["config"]["seed"] + attempt - 1) % 2147483648,
+                   "schema": schema}
+        trace = {"task": task, "phase": r.get("phase"), "attempt": attempt, "request": request}
+        r["llm_calls"].append(trace)
+        save(r)
+        try:
+            result = post(AGENT, "/ask", request)
+        except Exception as exc:
+            trace["error"] = str(exc)
+            save(r)
+            raise
+        trace.update({"response": result, "model": result.get("model"),
+                      "tokens": result.get("tokens"), "prompt_tokens": result.get("prompt_tokens")})
+        try:
+            if result.get("error"):
+                raise ValueError(result["error"])
+            answer = result.get("answer")
+            validate_answer(answer, schema)
+        except ValueError as exc:
+            error = str(exc)
+            trace["error"] = error
+            trace["valid"] = False
+            save(r)
+            # Format feedback only; never reveal correct world predictions.
+            payload["format_feedback"] = error
+            continue
+        trace["valid"] = True
+        save(r)
+        return answer
+    raise ValueError("Model response invalid after 3 attempts: " + str(error))
 
 def prediction(value, allowed):
     if type(value) is not int or value not in allowed:

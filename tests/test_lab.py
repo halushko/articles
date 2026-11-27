@@ -45,6 +45,21 @@ class ExperimentTest(unittest.TestCase):
             self.assertEqual(lab.load_knowledge("test","w01")["knowledge"],"learned")
             self.assertEqual(r["evaluation"]["total"],6)
             self.assertEqual(r["initial_knowledge"],"")
+    def test_schema_and_retry(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(lab,"DB",str(Path(d)/"db")):
+            lab.init_db()
+            r = {"id":"retry","status":"running","phase":"baseline","config":{"seed":42},
+                 "interface":{"values":[0,1],"actions":["A"],"events":["E"]},"llm_calls":[]}
+            with patch.object(lab,"post",side_effect=[{"answer":{"wrong":0}},{"answer":{"predictions":{"0":1}}}]) as mock:
+                answer = lab.ask(r,"test",cases=[{"id":0,"before":0,"input":"A"}])
+            self.assertEqual(answer,{"predictions":{"0":1}})
+            self.assertEqual(mock.call_count,2)
+            traces = lab.get_run("retry")["llm_calls"]
+            self.assertFalse(traces[0]["valid"])
+            self.assertTrue(traces[1]["valid"])
+            self.assertEqual(traces[0]["request"]["schema"]["required"],["predictions"])
+            self.assertIn("format_feedback",traces[1]["request"]["prompt"])
+
     def test_invalid_prediction(self):
         for bad in [True, "1", 2]:
             with self.assertRaises(ValueError):
